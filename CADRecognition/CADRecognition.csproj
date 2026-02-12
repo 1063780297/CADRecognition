@@ -8,4 +8,10 @@
     <UseWPF>true</UseWPF>
   </PropertyGroup>
 
+  <ItemGroup>
+    <PackageReference Include="DevExpress.Images" Version="25.2.3" />
+    <PackageReference Include="DevExpress.Wpf.Core" Version="25.2.3" />
+    <PackageReference Include="DevExpress.Wpf.Grid" Version="25.2.3" />
+  </ItemGroup>
+
 </Project>

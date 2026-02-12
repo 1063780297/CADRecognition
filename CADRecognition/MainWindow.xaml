@@ -3,6 +3,9 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:dx="http://schemas.devexpress.com/winfx/2008/xaml/core"
+        xmlns:dxg="http://schemas.devexpress.com/winfx/2008/xaml/grid"
+        xmlns:dxe="http://schemas.devexpress.com/winfx/2008/xaml/editors"
         xmlns:local="clr-namespace:CADRecognition"
         mc:Ignorable="d"
         Title="模具拼接识别工作台" Height="720" Width="1280" MinHeight="600" MinWidth="1000"
@@ -57,15 +60,11 @@
             </Setter>
         </Style>
 
-        <!-- Tool Button (icon-only) -->
-        <Style x:Key="ToolButtonStyle" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
-            <Setter Property="Width" Value="40"/>
-            <Setter Property="Height" Value="36"/>
-            <Setter Property="Padding" Value="0"/>
-            <Setter Property="Margin" Value="0,3"/>
-            <Setter Property="Background" Value="#FF2F2F2F"/>
-            <Setter Property="BorderBrush" Value="{StaticResource Brush.BorderSoft}"/>
-            <Setter Property="BorderThickness" Value="1"/>
+        <!-- Tool Button base style (used by DevExpress buttons) -->
+        <Style x:Key="ToolButtonBaseStyle" TargetType="Control">
+            <Setter Property="Width" Value="44"/>
+            <Setter Property="Height" Value="40"/>
+            <Setter Property="Margin" Value="0,4"/>
         </Style>
 
         <!-- Section Header -->
@@ -75,45 +74,8 @@
             <Setter Property="FontSize" Value="13"/>
             <Setter Property="Margin" Value="0,0,0,6"/>
         </Style>
-
-        <!-- DataGrid styles -->
-        <Style TargetType="DataGrid">
-            <Setter Property="RowHeight" Value="26"/>
-            <Setter Property="FontSize" Value="12"/>
-            <Setter Property="HeadersVisibility" Value="Column"/>
-            <Setter Property="CanUserAddRows" Value="False"/>
-            <Setter Property="CanUserResizeRows" Value="False"/>
-            <Setter Property="GridLinesVisibility" Value="Horizontal"/>
-            <Setter Property="BorderThickness" Value="0"/>
-            <Setter Property="Background" Value="{StaticResource Brush.Panel2}"/>
-            <Setter Property="Foreground" Value="{StaticResource Brush.Text}"/>
-        </Style>
-        <Style TargetType="DataGridColumnHeader">
-            <Setter Property="Background" Value="#FF343434"/>
-            <Setter Property="Foreground" Value="{StaticResource Brush.Text}"/>
-            <Setter Property="FontWeight" Value="SemiBold"/>
-            <Setter Property="Height" Value="28"/>
-            <Setter Property="Padding" Value="8,0"/>
-            <Setter Property="HorizontalContentAlignment" Value="Center"/>
-            <Setter Property="BorderBrush" Value="{StaticResource Brush.BorderSoft}"/>
-            <Setter Property="BorderThickness" Value="0,0,0,1"/>
-        </Style>
-        <Style TargetType="DataGridRow">
-            <Setter Property="Background" Value="#FF262626"/>
-            <Setter Property="Foreground" Value="{StaticResource Brush.Text}"/>
-        </Style>
-        <Style TargetType="DataGridCell">
-            <Setter Property="Padding" Value="8,0"/>
-            <Setter Property="BorderThickness" Value="0"/>
-            <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
-            <Style.Triggers>
-                <Trigger Property="IsSelected" Value="True">
-                    <Setter Property="Background" Value="#FF3D3D3D"/>
-                    <Setter Property="Foreground" Value="#FFFFFFFF"/>
-                </Trigger>
-            </Style.Triggers>
-        </Style>
     </Window.Resources>
+
     <Grid Background="#FF1E1E1E">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
@@ -139,27 +101,27 @@
                 <StackPanel Orientation="Vertical" Margin="0,4">
                     <TextBlock Text="文件" Foreground="White" FontWeight="Bold" Margin="0,0,0,4" HorizontalAlignment="Center"/>
                     <StackPanel Orientation="Horizontal">
-                        <Button Content="导入模具 DXF" Margin="4,0" Padding="8,4"/>
-                        <Button Content="导入工程 DXF" Margin="4,0" Padding="8,4"/>
-                        <Button Content="导出识别报告" Margin="4,0" Padding="8,4"/>
+                        <Button Content="导入模具 DXF"/>
+                        <Button Content="导入工程 DXF"/>
+                        <Button Content="导出识别报告"/>
                     </StackPanel>
                 </StackPanel>
                 <Separator Margin="8" VerticalAlignment="Stretch" Width="1" Background="#FF444444"/>
                 <StackPanel Orientation="Vertical" Margin="0,4">
                     <TextBlock Text="绘制" Foreground="White" FontWeight="Bold" Margin="0,0,0,4" HorizontalAlignment="Center"/>
                     <StackPanel Orientation="Horizontal">
-                        <Button Content="直线" Margin="4,0" Padding="8,4"/>
-                        <Button Content="多段线" Margin="4,0" Padding="8,4"/>
-                        <Button Content="矩形" Margin="4,0" Padding="8,4"/>
-                        <Button Content="圆" Margin="4,0" Padding="8,4"/>
+                        <Button Content="直线"/>
+                        <Button Content="多段线"/>
+                        <Button Content="矩形"/>
+                        <Button Content="圆"/>
                     </StackPanel>
                 </StackPanel>
                 <Separator Margin="8" VerticalAlignment="Stretch" Width="1" Background="#FF444444"/>
                 <StackPanel Orientation="Vertical" Margin="0,4">
                     <TextBlock Text="识别与匹配" Foreground="White" FontWeight="Bold" Margin="0,0,0,4" HorizontalAlignment="Center"/>
                     <StackPanel Orientation="Horizontal">
-                        <Button Content="一键识别工程图" Margin="4,0" Padding="8,4"/>
-                        <Button Content="刷新匹配结果" Margin="4,0" Padding="8,4"/>
+                        <Button Content="一键识别工程图"/>
+                        <Button Content="刷新匹配结果"/>
                     </StackPanel>
                 </StackPanel>
             </StackPanel>
@@ -194,11 +156,11 @@
                 <!-- 工程管理 -->
                 <Border Grid.Row="0" BorderBrush="#FF3A3A3A" BorderThickness="0,0,1,1" Padding="8">
                     <DockPanel>
-                        <TextBlock Text="工程管理" Foreground="#FFEEEEEE" FontWeight="Bold" DockPanel.Dock="Top"/>
+                        <TextBlock Text="工程管理" Style="{StaticResource SectionHeaderText}" DockPanel.Dock="Top"/>
                         <StackPanel Orientation="Horizontal" DockPanel.Dock="Top" Margin="0,6,0,4">
-                            <Button Content="导入工程 DXF" Margin="0,0,6,0" Padding="6,2"/>
-                            <Button Content="导入模具 DXF" Margin="0,0,6,0" Padding="6,2"/>
-                            <Button Content="刷新" Padding="6,2"/>
+                            <Button Content="导入工程 DXF"/>
+                            <Button Content="导入模具 DXF"/>
+                            <Button Content="刷新"/>
                         </StackPanel>
                         <TreeView Margin="0,4,0,0" Background="#FF2A2A2A" Foreground="#FFDDDDDD">
                             <TreeViewItem Header="工程 A - 模具拼接方案" IsExpanded="True">
@@ -216,41 +178,23 @@
                 <!-- 图层管理 -->
                 <Border Grid.Row="1" BorderBrush="#FF3A3A3A" BorderThickness="0,1,1,0" Padding="8">
                     <DockPanel>
-                        <TextBlock Text="图层" Foreground="#FFEEEEEE" FontWeight="Bold" DockPanel.Dock="Top"/>
+                        <TextBlock Text="图层" Style="{StaticResource SectionHeaderText}" DockPanel.Dock="Top"/>
                         <StackPanel Orientation="Horizontal" DockPanel.Dock="Top" Margin="0,6,0,4">
-                            <Button Content="新建" Margin="0,0,6,0" Padding="6,2"/>
-                            <Button Content="删除" Margin="0,0,6,0" Padding="6,2"/>
-                            <Button Content="合并" Padding="6,2"/>
+                            <Button Content="新建"/>
+                            <Button Content="删除"/>
+                            <Button Content="合并"/>
                         </StackPanel>
-                        <DataGrid Margin="0,4,0,0"
-                                  AutoGenerateColumns="False"
-                                  HeadersVisibility="Column"
-                                  CanUserAddRows="False"
-                                  Background="#FF2A2A2A"
-                                  Foreground="#FFDDDDDD"
-                                  GridLinesVisibility="Horizontal"
-                                  BorderThickness="0">
-                            <DataGrid.ColumnHeaderStyle>
-                                <Style TargetType="DataGridColumnHeader">
-                                    <Setter Property="Background" Value="#FF3A3A3A"/>
-                                    <Setter Property="Foreground" Value="#FFF0F0F0"/>
-                                    <Setter Property="FontWeight" Value="Bold"/>
-                                    <Setter Property="HorizontalContentAlignment" Value="Center"/>
-                                </Style>
-                            </DataGrid.ColumnHeaderStyle>
-                            <DataGrid.RowStyle>
-                                <Style TargetType="DataGridRow">
-                                    <Setter Property="Background" Value="#FF262626"/>
-                                    <Setter Property="Foreground" Value="#FFDDDDDD"/>
-                                    <Setter Property="FontSize" Value="12"/>
-                                </Style>
-                            </DataGrid.RowStyle>
-                            <DataGrid.Columns>
-                                <DataGridCheckBoxColumn Header="显" Width="40"/>
-                                <DataGridCheckBoxColumn Header="锁" Width="40"/>
-                                <DataGridTextColumn Header="名称" Width="*"/>
-                            </DataGrid.Columns>
-                        </DataGrid>
+                        <!-- 图层列表：使用 DevExpress GridControl -->
+                        <dxg:GridControl Margin="0,4,0,0">
+                            <dxg:GridControl.View>
+                                <dxg:TableView ShowGroupPanel="False" AutoWidth="True" AllowEditing="False" />
+                            </dxg:GridControl.View>
+                            <dxg:GridControl.Columns>
+                                <dxg:GridColumn FieldName="IsVisible" Header="显示" Width="50"/>
+                                <dxg:GridColumn FieldName="IsLocked" Header="锁定" Width="50"/>
+                                <dxg:GridColumn FieldName="LayerName" Header="图层名称" Width="*"/>
+                            </dxg:GridControl.Columns>
+                        </dxg:GridControl>
                     </DockPanel>
                 </Border>
             </Grid>
@@ -265,9 +209,9 @@
                 <!-- 视图工具条 -->
                 <DockPanel Grid.Row="0" Background="#FF2B2B2B" Height="32">
                     <StackPanel Orientation="Horizontal" DockPanel.Dock="Left" Margin="8,0">
-                        <Button Content="放大" Margin="2" Padding="8,2"/>
-                        <Button Content="缩小" Margin="2" Padding="8,2"/>
-                        <Button Content="适应窗口" Margin="2" Padding="8,2"/>
+                        <Button Content="放大"/>
+                        <Button Content="缩小"/>
+                        <Button Content="适应窗口"/>
                         <Separator Margin="8,4" Width="1" Background="#FF444444"/>
                         <CheckBox Content="显示网格" Margin="4,0" Foreground="White" VerticalAlignment="Center"/>
                         <CheckBox Content="捕捉端点" Margin="4,0" Foreground="White" VerticalAlignment="Center"/>
@@ -282,90 +226,89 @@
                         <ColumnDefinition Width="*"/>
                     </Grid.ColumnDefinitions>
 
-                    <!-- 左侧垂直工具栏（重新设计图标，粗线条 + ToolTip） -->
+                    <!-- 左侧 CAD 风格矢量线条工具栏 -->
                     <Border Grid.Column="0" Background="#FF2B2B2B" BorderBrush="#FF3A3A3A" BorderThickness="0,1,1,0">
                         <StackPanel Orientation="Vertical" Margin="4">
                             <!-- 选择 -->
-                            <Button Margin="0,2" Height="32" ToolTip="选择">
+                            <Button ToolTip="选择" Style="{StaticResource ToolButtonBaseStyle}">
                                 <Canvas Width="24" Height="24">
-                                    <Polygon Points="4,4 18,10 11,13 13,20" Stroke="White" StrokeThickness="1.5" Fill="Transparent"/>
+                                    <Polygon Points="4,4 18,10 11,13 13,20" Stroke="#FFF0F0F0" StrokeThickness="1.8" Fill="Transparent" StrokeLineJoin="Round"/>
                                 </Canvas>
                             </Button>
                             <!-- 直线 -->
-                            <Button Margin="0,2" Height="32" ToolTip="直线">
+                            <Button ToolTip="直线" Style="{StaticResource ToolButtonBaseStyle}">
                                 <Canvas Width="24" Height="24">
-                                    <Line X1="4" Y1="18" X2="20" Y2="6" Stroke="White" StrokeThickness="2"/>
+                                    <Line X1="4" Y1="18" X2="20" Y2="6" Stroke="#FFF0F0F0" StrokeThickness="2.2" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
                                 </Canvas>
                             </Button>
                             <!-- 多段线 -->
-                            <Button Margin="0,2" Height="32" ToolTip="多段线">
+                            <Button ToolTip="多段线" Style="{StaticResource ToolButtonBaseStyle}">
                                 <Canvas Width="24" Height="24">
-                                    <Polyline Points="4,18 10,8 16,18 22,8" Stroke="White" StrokeThickness="2"/>
+                                    <Polyline Points="4,18 10,8 16,18 22,8" Stroke="#FFF0F0F0" StrokeThickness="2.0" StrokeLineJoin="Round" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
                                 </Canvas>
                             </Button>
                             <!-- 矩形 -->
-                            <Button Margin="0,2" Height="32" ToolTip="矩形">
+                            <Button ToolTip="矩形" Style="{StaticResource ToolButtonBaseStyle}">
                                 <Canvas Width="24" Height="24">
-                                    <Rectangle Width="18" Height="12" Canvas.Left="3" Canvas.Top="6" Stroke="White" StrokeThickness="2"/>
+                                    <Rectangle Width="18" Height="12" Canvas.Left="3" Canvas.Top="6" Stroke="#FFF0F0F0" StrokeThickness="2.0" RadiusX="1" RadiusY="1"/>
                                 </Canvas>
                             </Button>
                             <!-- 圆 -->
-                            <Button Margin="0,2" Height="32" ToolTip="圆">
+                            <Button ToolTip="圆" Style="{StaticResource ToolButtonBaseStyle}">
                                 <Canvas Width="24" Height="24">
-                                    <Ellipse Width="16" Height="16" Canvas.Left="4" Canvas.Top="4" Stroke="White" StrokeThickness="2"/>
+                                    <Ellipse Width="16" Height="16" Canvas.Left="4" Canvas.Top="4" Stroke="#FFF0F0F0" StrokeThickness="2.0"/>
                                 </Canvas>
                             </Button>
 
-                            <Separator Margin="0,8" Background="#FF444444"/>
+                            <Separator Margin="0,10" Background="#FF444444"/>
 
                             <!-- 测量 -->
-                            <Button Margin="0,2" Height="32" ToolTip="测量">
+                            <Button ToolTip="测量" Style="{StaticResource ToolButtonBaseStyle}">
                                 <Canvas Width="24" Height="24">
-                                    <Line X1="4" Y1="16" X2="20" Y2="16" Stroke="White" StrokeThickness="2"/>
-                                    <Line X1="4" Y1="16" X2="8" Y2="12" Stroke="White" StrokeThickness="2"/>
-                                    <Line X1="4" Y1="16" X2="8" Y2="20" Stroke="White" StrokeThickness="2"/>
-                                    <Line X1="20" Y1="16" X2="16" Y2="12" Stroke="White" StrokeThickness="2"/>
-                                    <Line X1="20" Y1="16" X2="16" Y2="20" Stroke="White" StrokeThickness="2"/>
+                                    <Line X1="4" Y1="16" X2="20" Y2="16" Stroke="#FFF0F0F0" StrokeThickness="2.0" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
+                                    <Line X1="4" Y1="16" X2="8" Y2="12" Stroke="#FFF0F0F0" StrokeThickness="2.0"/>
+                                    <Line X1="4" Y1="16" X2="8" Y2="20" Stroke="#FFF0F0F0" StrokeThickness="2.0"/>
+                                    <Line X1="20" Y1="16" X2="16" Y2="12" Stroke="#FFF0F0F0" StrokeThickness="2.0"/>
+                                    <Line X1="20" Y1="16" X2="16" Y2="20" Stroke="#FFF0F0F0" StrokeThickness="2.0"/>
                                 </Canvas>
                             </Button>
                             <!-- 移动 -->
-                            <Button Margin="0,2" Height="32" ToolTip="移动">
+                            <Button ToolTip="移动" Style="{StaticResource ToolButtonBaseStyle}">
                                 <Canvas Width="24" Height="24">
-                                    <Polygon Points="12,4 9,8 11,8 11,12 13,12 13,8 15,8" Stroke="White" Fill="Transparent" StrokeThickness="1.5"/>
-                                    <Polygon Points="12,20 9,16 11,16 11,12 13,12 13,16 15,16" Stroke="White" Fill="Transparent" StrokeThickness="1.5"/>
-                                    <Polygon Points="4,12 8,9 8,11 12,11 12,13 8,13 8,15" Stroke="White" Fill="Transparent" StrokeThickness="1.5"/>
-                                    <Polygon Points="20,12 16,9 16,11 12,11 12,13 16,13 16,15" Stroke="White" Fill="Transparent" StrokeThickness="1.5"/>
+                                    <Path Stroke="#FFF0F0F0" StrokeThickness="1.8" StrokeLineJoin="Round" Fill="Transparent"
+                                          Data="M12,4 L9,8 L11,8 L11,11 L8,11 L8,9 L4,12 L8,15 L8,13 L11,13 L11,16 L9,16 L12,20 L15,16 L13,16 L13,13 L16,13 L16,15 L20,12 L16,9 L16,11 L13,11 L13,8 L15,8 Z"/>
                                 </Canvas>
                             </Button>
                             <!-- 旋转 -->
-                            <Button Margin="0,2" Height="32" ToolTip="旋转">
+                            <Button ToolTip="旋转" Style="{StaticResource ToolButtonBaseStyle}">
                                 <Canvas Width="24" Height="24">
-                                    <Path Stroke="White" StrokeThickness="2" Data="M6,16 A6,6 0 1 1 18,10"/>
-                                    <Polygon Points="16,6 18,10 20,6" Stroke="White" Fill="Transparent" StrokeThickness="1.5"/>
+                                    <Path Stroke="#FFF0F0F0" StrokeThickness="2.0" Fill="Transparent" StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                                          Data="M6,14 A6,6 0 1 1 18,10"/>
+                                    <Polyline Points="16,6 18,10 20,6" Stroke="#FFF0F0F0" StrokeThickness="2.0" StrokeLineJoin="Round"/>
                                 </Canvas>
                             </Button>
                             <!-- 缩放 -->
-                            <Button Margin="0,2" Height="32" ToolTip="缩放">
+                            <Button ToolTip="缩放" Style="{StaticResource ToolButtonBaseStyle}">
                                 <Canvas Width="24" Height="24">
-                                    <Rectangle Width="14" Height="14" Canvas.Left="5" Canvas.Top="5" Stroke="White" StrokeThickness="1.5"/>
-                                    <Line X1="5" Y1="5" X2="2" Y2="2" Stroke="White" StrokeThickness="1.5"/>
-                                    <Line X1="19" Y1="19" X2="22" Y2="22" Stroke="White" StrokeThickness="1.5"/>
+                                    <Rectangle Width="12" Height="12" Canvas.Left="4" Canvas.Top="4" Stroke="#FFF0F0F0" StrokeThickness="1.8"/>
+                                    <Line X1="14" Y1="14" X2="20" Y2="20" Stroke="#FFF0F0F0" StrokeThickness="2.0" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
+                                    <Line X1="16" Y1="18" X2="18" Y2="16" Stroke="#FFF0F0F0" StrokeThickness="2.0"/>
                                 </Canvas>
                             </Button>
                             <!-- 镜像 -->
-                            <Button Margin="0,2" Height="32" ToolTip="镜像">
+                            <Button ToolTip="镜像" Style="{StaticResource ToolButtonBaseStyle}">
                                 <Canvas Width="24" Height="24">
-                                    <Line X1="12" Y1="4" X2="12" Y2="20" Stroke="White" StrokeThickness="1.5"/>
-                                    <Polyline Points="8,6 5,12 8,18" Stroke="White" StrokeThickness="1.5"/>
-                                    <Polyline Points="16,6 19,12 16,18" Stroke="White" StrokeThickness="1.5" Opacity="0.7"/>
+                                    <Line X1="12" Y1="4" X2="12" Y2="20" Stroke="#FFF0F0F0" StrokeThickness="1.6" StrokeDashArray="2 2"/>
+                                    <Polyline Points="8,6 5,12 8,18" Stroke="#FFF0F0F0" StrokeThickness="2.0" StrokeLineJoin="Round" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
+                                    <Polyline Points="16,6 19,12 16,18" Stroke="#FFF0F0F0" StrokeThickness="2.0" StrokeLineJoin="Round" StrokeStartLineCap="Round" StrokeEndLineCap="Round" Opacity="0.7"/>
                                 </Canvas>
                             </Button>
                             <!-- 删除 -->
-                            <Button Margin="0,2" Height="32" ToolTip="删除">
+                            <Button ToolTip="删除" Style="{StaticResource ToolButtonBaseStyle}">
                                 <Canvas Width="24" Height="24">
-                                    <Rectangle Width="14" Height="14" Canvas.Left="5" Canvas.Top="6" Stroke="White" StrokeThickness="1.5"/>
-                                    <Line X1="8" Y1="9" X2="16" Y2="17" Stroke="White" StrokeThickness="1.5"/>
-                                    <Line X1="16" Y1="9" X2="8" Y2="17" Stroke="White" StrokeThickness="1.5"/>
+                                    <Rectangle Width="14" Height="14" Canvas.Left="5" Canvas.Top="6" Stroke="#FFF0F0F0" StrokeThickness="1.6"/>
+                                    <Line X1="8" Y1="9" X2="16" Y2="17" Stroke="#FFF0F0F0" StrokeThickness="2.0" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
+                                    <Line X1="16" Y1="9" X2="8" Y2="17" Stroke="#FFF0F0F0" StrokeThickness="2.0" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
                                 </Canvas>
                             </Button>
                         </StackPanel>
@@ -373,7 +316,7 @@
 
                     <!-- 画布占位 -->
                     <Border Grid.Column="1" Margin="4" Background="#FF111111" BorderBrush="#FF3A3A3A" BorderThickness="1">
-    <Grid>
+                        <Grid>
                             <Canvas>
                                 <Line X1="0" Y1="120" X2="500" Y2="120" Stroke="#FF555555" StrokeThickness="1" StrokeDashArray="4 4"/>
                                 <Line X1="260" Y1="0" X2="260" Y2="320" Stroke="#FF555555" StrokeThickness="1" StrokeDashArray="4 4"/>
@@ -395,7 +338,7 @@
                 <Border Grid.Row="0" BorderBrush="#FF3A3A3A" BorderThickness="1,0,0,1" Padding="8">
                     <DockPanel>
                         <StackPanel DockPanel.Dock="Top">
-                            <TextBlock Text="模具清单" Foreground="#FFEEEEEE" FontWeight="Bold"/>
+                            <TextBlock Text="模具清单" Style="{StaticResource SectionHeaderText}"/>
                             <StackPanel Orientation="Horizontal" Margin="0,6,0,4">
                                 <TextBox Width="160" Margin="0,0,6,0" Padding="4" Text="搜索模具编号/名称"/>
                                 <ComboBox Width="100" Margin="0,0,6,0" SelectedIndex="0">
@@ -407,75 +350,40 @@
                             </StackPanel>
                         </StackPanel>
 
-                        <DataGrid Margin="0,4,0,0"
-                                  AutoGenerateColumns="False"
-                                  HeadersVisibility="Column"
-                                  CanUserAddRows="False"
-                                  Background="#FF2A2A2A"
-                                  Foreground="#FFDDDDDD"
-                                  GridLinesVisibility="Horizontal"
-                                  BorderThickness="0">
-                            <DataGrid.ColumnHeaderStyle>
-                                <Style TargetType="DataGridColumnHeader">
-                                    <Setter Property="Background" Value="#FF3A3A3A"/>
-                                    <Setter Property="Foreground" Value="#FFF0F0F0"/>
-                                    <Setter Property="FontWeight" Value="Bold"/>
-                                    <Setter Property="HorizontalContentAlignment" Value="Center"/>
-                                </Style>
-                            </DataGrid.ColumnHeaderStyle>
-                            <DataGrid.RowStyle>
-                                <Style TargetType="DataGridRow">
-                                    <Setter Property="Background" Value="#FF262626"/>
-                                    <Setter Property="Foreground" Value="#FFDDDDDD"/>
-                                    <Setter Property="FontSize" Value="12"/>
-                                </Style>
-                            </DataGrid.RowStyle>
-                            <DataGrid.Columns>
-                                <DataGridTextColumn Header="模具编号" Width="*"/>
-                                <DataGridTextColumn Header="名称" Width="*"/>
-                                <DataGridTextColumn Header="数量" Width="60"/>
-                                <DataGridTextColumn Header="状态" Width="80"/>
-                            </DataGrid.Columns>
-                        </DataGrid>
+                        <!-- 模具清单表格：DevExpress GridControl -->
+                        <dxg:GridControl Margin="0,4,0,0">
+                            <dxg:GridControl.View>
+                                <dxg:TableView ShowGroupPanel="False" AutoWidth="True" AllowEditing="False" />
+                            </dxg:GridControl.View>
+                            <dxg:GridControl.Columns>
+                                <dxg:GridColumn FieldName="MoldCode" Header="模具编号" Width="110"/>
+                                <dxg:GridColumn FieldName="MoldName" Header="模具名称" Width="*"/>
+                                <dxg:GridColumn FieldName="UsedCount" Header="工程用量" Width="70"/>
+                                <dxg:GridColumn FieldName="MatchType" Header="匹配类型" Width="90"/>
+                                <dxg:GridColumn FieldName="Remark" Header="备注" Width="120"/>
+                            </dxg:GridControl.Columns>
+                        </dxg:GridControl>
                     </DockPanel>
                 </Border>
 
                 <!-- 位置明细 -->
                 <Border Grid.Row="1" BorderBrush="#FF3A3A3A" BorderThickness="1,1,0,0" Padding="8">
                     <DockPanel>
-                        <TextBlock Text="位置明细" Foreground="#FFEEEEEE" FontWeight="Bold" DockPanel.Dock="Top"/>
-                        <DataGrid Margin="0,4,0,0"
-                                  AutoGenerateColumns="False"
-                                  HeadersVisibility="Column"
-                                  CanUserAddRows="False"
-                                  Background="#FF2A2A2A"
-                                  Foreground="#FFDDDDDD"
-                                  GridLinesVisibility="Horizontal"
-                                  BorderThickness="0">
-                            <DataGrid.ColumnHeaderStyle>
-                                <Style TargetType="DataGridColumnHeader">
-                                    <Setter Property="Background" Value="#FF3A3A3A"/>
-                                    <Setter Property="Foreground" Value="#FFF0F0F0"/>
-                                    <Setter Property="FontWeight" Value="Bold"/>
-                                    <Setter Property="HorizontalContentAlignment" Value="Center"/>
-                                </Style>
-                            </DataGrid.ColumnHeaderStyle>
-                            <DataGrid.RowStyle>
-                                <Style TargetType="DataGridRow">
-                                    <Setter Property="Background" Value="#FF262626"/>
-                                    <Setter Property="Foreground" Value="#FFDDDDDD"/>
-                                    <Setter Property="FontSize" Value="12"/>
-                                </Style>
-                            </DataGrid.RowStyle>
-                            <DataGrid.Columns>
-                                <DataGridTextColumn Header="#" Width="40"/>
-                                <DataGridTextColumn Header="区域" Width="*"/>
-                                <DataGridTextColumn Header="X" Width="70"/>
-                                <DataGridTextColumn Header="Y" Width="70"/>
-                                <DataGridTextColumn Header="角度" Width="70"/>
-                                <DataGridTextColumn Header="镜像" Width="60"/>
-                            </DataGrid.Columns>
-                        </DataGrid>
+                        <TextBlock Text="位置明细" Style="{StaticResource SectionHeaderText}" DockPanel.Dock="Top"/>
+                        <!-- 位置明细表格：DevExpress GridControl -->
+                        <dxg:GridControl Margin="0,4,0,0">
+                            <dxg:GridControl.View>
+                                <dxg:TableView ShowGroupPanel="False" AutoWidth="True" AllowEditing="False" />
+                            </dxg:GridControl.View>
+                            <dxg:GridControl.Columns>
+                                <dxg:GridColumn FieldName="Index" Header="序号" Width="50"/>
+                                <dxg:GridColumn FieldName="ViewName" Header="所在视图" Width="*"/>
+                                <dxg:GridColumn FieldName="PosX" Header="X 坐标" Width="80"/>
+                                <dxg:GridColumn FieldName="PosY" Header="Y 坐标" Width="80"/>
+                                <dxg:GridColumn FieldName="RotationDeg" Header="旋转角度(°)" Width="110"/>
+                                <dxg:GridColumn FieldName="IsMirrored" Header="是否镜像" Width="90"/>
+                            </dxg:GridControl.Columns>
+                        </dxg:GridControl>
                     </DockPanel>
                 </Border>
             </Grid>
