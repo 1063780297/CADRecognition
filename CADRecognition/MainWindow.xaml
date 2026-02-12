@@ -106,6 +106,7 @@
                         <Button Content="导出识别报告"/>
                     </StackPanel>
                 </StackPanel>
+                
                 <Separator Margin="8" VerticalAlignment="Stretch" Width="1" Background="#FF444444"/>
                 <StackPanel Orientation="Vertical" Margin="0,4">
                     <TextBlock Text="绘制" Foreground="White" FontWeight="Bold" Margin="0,0,0,4" HorizontalAlignment="Center"/>
@@ -129,7 +130,7 @@
             <!-- 右侧工程选择 / 用户 -->
             <StackPanel Orientation="Horizontal" DockPanel.Dock="Right" Margin="0,0,12,0" VerticalAlignment="Center">
                 <ComboBox Width="180" Margin="0,0,12,0" SelectedIndex="0">
-                    <ComboBoxItem Content="当前工程：工程 A"/>
+                    <ComboBoxItem Content="工程 A"/>
                     <ComboBoxItem Content="工程 B"/>
                 </ComboBox>
                 <Border Width="32" Height="32" CornerRadius="16" Background="#FF555555">
@@ -173,30 +174,7 @@
                             </TreeViewItem>
                         </TreeView>
                     </DockPanel>
-                </Border>
-
-                <!-- 图层管理 -->
-                <Border Grid.Row="1" BorderBrush="#FF3A3A3A" BorderThickness="0,1,1,0" Padding="8">
-                    <DockPanel>
-                        <TextBlock Text="图层" Style="{StaticResource SectionHeaderText}" DockPanel.Dock="Top"/>
-                        <StackPanel Orientation="Horizontal" DockPanel.Dock="Top" Margin="0,6,0,4">
-                            <Button Content="新建"/>
-                            <Button Content="删除"/>
-                            <Button Content="合并"/>
-                        </StackPanel>
-                        <!-- 图层列表：使用 DevExpress GridControl -->
-                        <dxg:GridControl Margin="0,4,0,0">
-                            <dxg:GridControl.View>
-                                <dxg:TableView ShowGroupPanel="False" AutoWidth="True" AllowEditing="False" />
-                            </dxg:GridControl.View>
-                            <dxg:GridControl.Columns>
-                                <dxg:GridColumn FieldName="IsVisible" Header="显示" Width="50"/>
-                                <dxg:GridColumn FieldName="IsLocked" Header="锁定" Width="50"/>
-                                <dxg:GridColumn FieldName="LayerName" Header="图层名称" Width="*"/>
-                            </dxg:GridControl.Columns>
-                        </dxg:GridControl>
-                    </DockPanel>
-                </Border>
+                </Border>                
             </Grid>
 
             <!-- 中：CAD 画布区域 -->
@@ -232,31 +210,31 @@
                             <!-- 选择 -->
                             <Button ToolTip="选择" Style="{StaticResource ToolButtonBaseStyle}">
                                 <Canvas Width="24" Height="24">
-                                    <Polygon Points="4,4 18,10 11,13 13,20" Stroke="#FFF0F0F0" StrokeThickness="1.8" Fill="Transparent" StrokeLineJoin="Round"/>
+                                    <Polygon Points="4,4 18,10 11,13 13,20" Stroke="#FF000000" StrokeThickness="1.8" Fill="Transparent" StrokeLineJoin="Round"/>
                                 </Canvas>
                             </Button>
                             <!-- 直线 -->
                             <Button ToolTip="直线" Style="{StaticResource ToolButtonBaseStyle}">
                                 <Canvas Width="24" Height="24">
-                                    <Line X1="4" Y1="18" X2="20" Y2="6" Stroke="#FFF0F0F0" StrokeThickness="2.2" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
+                                    <Line X1="4" Y1="18" X2="20" Y2="6" Stroke="#FF000000" StrokeThickness="2.2" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
                                 </Canvas>
                             </Button>
                             <!-- 多段线 -->
                             <Button ToolTip="多段线" Style="{StaticResource ToolButtonBaseStyle}">
                                 <Canvas Width="24" Height="24">
-                                    <Polyline Points="4,18 10,8 16,18 22,8" Stroke="#FFF0F0F0" StrokeThickness="2.0" StrokeLineJoin="Round" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
+                                    <Polyline Points="4,18 10,8 16,18 22,8" Stroke="#FF000000" StrokeThickness="2.0" StrokeLineJoin="Round" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
                                 </Canvas>
                             </Button>
                             <!-- 矩形 -->
                             <Button ToolTip="矩形" Style="{StaticResource ToolButtonBaseStyle}">
                                 <Canvas Width="24" Height="24">
-                                    <Rectangle Width="18" Height="12" Canvas.Left="3" Canvas.Top="6" Stroke="#FFF0F0F0" StrokeThickness="2.0" RadiusX="1" RadiusY="1"/>
+                                    <Rectangle Width="18" Height="12" Canvas.Left="3" Canvas.Top="6" Stroke="#FF000000" StrokeThickness="2.0" RadiusX="1" RadiusY="1"/>
                                 </Canvas>
                             </Button>
                             <!-- 圆 -->
                             <Button ToolTip="圆" Style="{StaticResource ToolButtonBaseStyle}">
                                 <Canvas Width="24" Height="24">
-                                    <Ellipse Width="16" Height="16" Canvas.Left="4" Canvas.Top="4" Stroke="#FFF0F0F0" StrokeThickness="2.0"/>
+                                    <Ellipse Width="16" Height="16" Canvas.Left="4" Canvas.Top="4" Stroke="#FF000000" StrokeThickness="2.0"/>
                                 </Canvas>
                             </Button>
 
@@ -265,50 +243,50 @@
                             <!-- 测量 -->
                             <Button ToolTip="测量" Style="{StaticResource ToolButtonBaseStyle}">
                                 <Canvas Width="24" Height="24">
-                                    <Line X1="4" Y1="16" X2="20" Y2="16" Stroke="#FFF0F0F0" StrokeThickness="2.0" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
-                                    <Line X1="4" Y1="16" X2="8" Y2="12" Stroke="#FFF0F0F0" StrokeThickness="2.0"/>
-                                    <Line X1="4" Y1="16" X2="8" Y2="20" Stroke="#FFF0F0F0" StrokeThickness="2.0"/>
-                                    <Line X1="20" Y1="16" X2="16" Y2="12" Stroke="#FFF0F0F0" StrokeThickness="2.0"/>
-                                    <Line X1="20" Y1="16" X2="16" Y2="20" Stroke="#FFF0F0F0" StrokeThickness="2.0"/>
+                                    <Line X1="4" Y1="16" X2="20" Y2="16" Stroke="#FF000000" StrokeThickness="2.0" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
+                                    <Line X1="4" Y1="16" X2="8" Y2="12" Stroke="#FF000000" StrokeThickness="2.0"/>
+                                    <Line X1="4" Y1="16" X2="8" Y2="20" Stroke="#FF000000" StrokeThickness="2.0"/>
+                                    <Line X1="20" Y1="16" X2="16" Y2="12" Stroke="#FF000000" StrokeThickness="2.0"/>
+                                    <Line X1="20" Y1="16" X2="16" Y2="20" Stroke="#FF000000" StrokeThickness="2.0"/>
                                 </Canvas>
                             </Button>
                             <!-- 移动 -->
                             <Button ToolTip="移动" Style="{StaticResource ToolButtonBaseStyle}">
                                 <Canvas Width="24" Height="24">
-                                    <Path Stroke="#FFF0F0F0" StrokeThickness="1.8" StrokeLineJoin="Round" Fill="Transparent"
+                                    <Path Stroke="#FF000000" StrokeThickness="1.8" StrokeLineJoin="Round" Fill="Transparent"
                                           Data="M12,4 L9,8 L11,8 L11,11 L8,11 L8,9 L4,12 L8,15 L8,13 L11,13 L11,16 L9,16 L12,20 L15,16 L13,16 L13,13 L16,13 L16,15 L20,12 L16,9 L16,11 L13,11 L13,8 L15,8 Z"/>
                                 </Canvas>
                             </Button>
                             <!-- 旋转 -->
                             <Button ToolTip="旋转" Style="{StaticResource ToolButtonBaseStyle}">
                                 <Canvas Width="24" Height="24">
-                                    <Path Stroke="#FFF0F0F0" StrokeThickness="2.0" Fill="Transparent" StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                                    <Path Stroke="#FF000000" StrokeThickness="2.0" Fill="Transparent" StrokeStartLineCap="Round" StrokeEndLineCap="Round"
                                           Data="M6,14 A6,6 0 1 1 18,10"/>
-                                    <Polyline Points="16,6 18,10 20,6" Stroke="#FFF0F0F0" StrokeThickness="2.0" StrokeLineJoin="Round"/>
+                                    <Polyline Points="16,6 18,10 20,6" Stroke="#FF000000" StrokeThickness="2.0" StrokeLineJoin="Round"/>
                                 </Canvas>
                             </Button>
                             <!-- 缩放 -->
                             <Button ToolTip="缩放" Style="{StaticResource ToolButtonBaseStyle}">
                                 <Canvas Width="24" Height="24">
-                                    <Rectangle Width="12" Height="12" Canvas.Left="4" Canvas.Top="4" Stroke="#FFF0F0F0" StrokeThickness="1.8"/>
-                                    <Line X1="14" Y1="14" X2="20" Y2="20" Stroke="#FFF0F0F0" StrokeThickness="2.0" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
-                                    <Line X1="16" Y1="18" X2="18" Y2="16" Stroke="#FFF0F0F0" StrokeThickness="2.0"/>
+                                    <Rectangle Width="12" Height="12" Canvas.Left="4" Canvas.Top="4" Stroke="#FF000000" StrokeThickness="1.8"/>
+                                    <Line X1="14" Y1="14" X2="20" Y2="20" Stroke="#FF000000" StrokeThickness="2.0" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
+                                    <Line X1="16" Y1="18" X2="18" Y2="16" Stroke="#FF000000" StrokeThickness="2.0"/>
                                 </Canvas>
                             </Button>
                             <!-- 镜像 -->
                             <Button ToolTip="镜像" Style="{StaticResource ToolButtonBaseStyle}">
                                 <Canvas Width="24" Height="24">
-                                    <Line X1="12" Y1="4" X2="12" Y2="20" Stroke="#FFF0F0F0" StrokeThickness="1.6" StrokeDashArray="2 2"/>
-                                    <Polyline Points="8,6 5,12 8,18" Stroke="#FFF0F0F0" StrokeThickness="2.0" StrokeLineJoin="Round" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
-                                    <Polyline Points="16,6 19,12 16,18" Stroke="#FFF0F0F0" StrokeThickness="2.0" StrokeLineJoin="Round" StrokeStartLineCap="Round" StrokeEndLineCap="Round" Opacity="0.7"/>
+                                    <Line X1="12" Y1="4" X2="12" Y2="20" Stroke="#FF000000" StrokeThickness="1.6" StrokeDashArray="2 2"/>
+                                    <Polyline Points="8,6 5,12 8,18" Stroke="#FF000000" StrokeThickness="2.0" StrokeLineJoin="Round" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
+                                    <Polyline Points="16,6 19,12 16,18" Stroke="#FF000000" StrokeThickness="2.0" StrokeLineJoin="Round" StrokeStartLineCap="Round" StrokeEndLineCap="Round" Opacity="0.7"/>
                                 </Canvas>
                             </Button>
                             <!-- 删除 -->
                             <Button ToolTip="删除" Style="{StaticResource ToolButtonBaseStyle}">
                                 <Canvas Width="24" Height="24">
-                                    <Rectangle Width="14" Height="14" Canvas.Left="5" Canvas.Top="6" Stroke="#FFF0F0F0" StrokeThickness="1.6"/>
-                                    <Line X1="8" Y1="9" X2="16" Y2="17" Stroke="#FFF0F0F0" StrokeThickness="2.0" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
-                                    <Line X1="16" Y1="9" X2="8" Y2="17" Stroke="#FFF0F0F0" StrokeThickness="2.0" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
+                                    <Rectangle Width="14" Height="14" Canvas.Left="5" Canvas.Top="6" Stroke="#FF000000" StrokeThickness="1.6"/>
+                                    <Line X1="8" Y1="9" X2="16" Y2="17" Stroke="#FF000000" StrokeThickness="2.0" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
+                                    <Line X1="16" Y1="9" X2="8" Y2="17" Stroke="#FF000000" StrokeThickness="2.0" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
                                 </Canvas>
                             </Button>
                         </StackPanel>
@@ -340,8 +318,8 @@
                         <StackPanel DockPanel.Dock="Top">
                             <TextBlock Text="模具清单" Style="{StaticResource SectionHeaderText}"/>
                             <StackPanel Orientation="Horizontal" Margin="0,6,0,4">
-                                <TextBox Width="160" Margin="0,0,6,0" Padding="4" Text="搜索模具编号/名称"/>
-                                <ComboBox Width="100" Margin="0,0,6,0" SelectedIndex="0">
+                                <TextBox Width="150" Margin="0,0,6,0" Padding="4" Text="搜索模具编号/名称"/>
+                                <ComboBox Width="80" Margin="0,0,6,0" SelectedIndex="0">
                                     <ComboBoxItem Content="全部"/>
                                     <ComboBoxItem Content="已使用"/>
                                     <ComboBoxItem Content="未使用"/>
@@ -356,11 +334,11 @@
                                 <dxg:TableView ShowGroupPanel="False" AutoWidth="True" AllowEditing="False" />
                             </dxg:GridControl.View>
                             <dxg:GridControl.Columns>
-                                <dxg:GridColumn FieldName="MoldCode" Header="模具编号" Width="110"/>
+                                <dxg:GridColumn FieldName="MoldCode" Header="模具编号" Width="*"/>
                                 <dxg:GridColumn FieldName="MoldName" Header="模具名称" Width="*"/>
-                                <dxg:GridColumn FieldName="UsedCount" Header="工程用量" Width="70"/>
-                                <dxg:GridColumn FieldName="MatchType" Header="匹配类型" Width="90"/>
-                                <dxg:GridColumn FieldName="Remark" Header="备注" Width="120"/>
+                                <dxg:GridColumn FieldName="UsedCount" Header="工程用量" Width="*"/>
+                                <dxg:GridColumn FieldName="MatchType" Header="匹配类型" Width="*"/>
+                                <dxg:GridColumn FieldName="Remark" Header="备注" Width="*"/>
                             </dxg:GridControl.Columns>
                         </dxg:GridControl>
                     </DockPanel>
@@ -376,12 +354,12 @@
                                 <dxg:TableView ShowGroupPanel="False" AutoWidth="True" AllowEditing="False" />
                             </dxg:GridControl.View>
                             <dxg:GridControl.Columns>
-                                <dxg:GridColumn FieldName="Index" Header="序号" Width="50"/>
+                                <dxg:GridColumn FieldName="Index" Header="序号" Width="*"/>
                                 <dxg:GridColumn FieldName="ViewName" Header="所在视图" Width="*"/>
-                                <dxg:GridColumn FieldName="PosX" Header="X 坐标" Width="80"/>
-                                <dxg:GridColumn FieldName="PosY" Header="Y 坐标" Width="80"/>
-                                <dxg:GridColumn FieldName="RotationDeg" Header="旋转角度(°)" Width="110"/>
-                                <dxg:GridColumn FieldName="IsMirrored" Header="是否镜像" Width="90"/>
+                                <dxg:GridColumn FieldName="PosX" Header="X 坐标" Width="*"/>
+                                <dxg:GridColumn FieldName="PosY" Header="Y 坐标" Width="*"/>
+                                <dxg:GridColumn FieldName="RotationDeg" Header="旋转角度(°)" Width="*"/>
+                                <dxg:GridColumn FieldName="IsMirrored" Header="是否镜像" Width="*"/>
                             </dxg:GridControl.Columns>
                         </dxg:GridControl>
                     </DockPanel>
