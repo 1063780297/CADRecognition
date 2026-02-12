@@ -14,4 +14,25 @@
     <SourceRoot Include="D:\Program Files\DevExpress 25.2\Components\Offline Packages\" />
     <SourceRoot Include="F:\Program Files (x86)\Microsoft Visual Studio\Shared\NuGetPackages\" />
   </ItemGroup>
+  <ImportGroup Condition=" '$(ExcludeRestorePackageImports)' != 'true' ">
+    <Import Project="D:\Program Files\DevExpress 25.2\Components\Offline Packages\devexpress.data.desktop\25.2.3\build\net8.0-windows\DevExpress.Data.Desktop.props" Condition="Exists('D:\Program Files\DevExpress 25.2\Components\Offline Packages\devexpress.data.desktop\25.2.3\build\net8.0-windows\DevExpress.Data.Desktop.props')" />
+    <Import Project="D:\Program Files\DevExpress 25.2\Components\Offline Packages\devexpress.wpf.core\25.2.3\build\net8.0-windows\DevExpress.Wpf.Core.props" Condition="Exists('D:\Program Files\DevExpress 25.2\Components\Offline Packages\devexpress.wpf.core\25.2.3\build\net8.0-windows\DevExpress.Wpf.Core.props')" />
+  </ImportGroup>
+  <PropertyGroup Condition=" '$(ExcludeRestorePackageImports)' != 'true' ">
+    <PkgDevExpress_Data Condition=" '$(PkgDevExpress_Data)' == '' ">D:\Program Files\DevExpress 25.2\Components\Offline Packages\devexpress.data\25.2.3</PkgDevExpress_Data>
+    <PkgDevExpress_Xpo Condition=" '$(PkgDevExpress_Xpo)' == '' ">D:\Program Files\DevExpress 25.2\Components\Offline Packages\devexpress.xpo\25.2.3</PkgDevExpress_Xpo>
+    <PkgDevExpress_Wpf_Core Condition=" '$(PkgDevExpress_Wpf_Core)' == '' ">D:\Program Files\DevExpress 25.2\Components\Offline Packages\devexpress.wpf.core\25.2.3</PkgDevExpress_Wpf_Core>
+    <PkgDevExpress_Wpf_Ribbon Condition=" '$(PkgDevExpress_Wpf_Ribbon)' == '' ">D:\Program Files\DevExpress 25.2\Components\Offline Packages\devexpress.wpf.ribbon\25.2.3</PkgDevExpress_Wpf_Ribbon>
+    <PkgDevExpress_Wpf_LayoutControl Condition=" '$(PkgDevExpress_Wpf_LayoutControl)' == '' ">D:\Program Files\DevExpress 25.2\Components\Offline Packages\devexpress.wpf.layoutcontrol\25.2.3</PkgDevExpress_Wpf_LayoutControl>
+    <PkgDevExpress_Wpf_Grid_Core Condition=" '$(PkgDevExpress_Wpf_Grid_Core)' == '' ">D:\Program Files\DevExpress 25.2\Components\Offline Packages\devexpress.wpf.grid.core\25.2.3</PkgDevExpress_Wpf_Grid_Core>
+    <PkgDevExpress_Wpf_Controls Condition=" '$(PkgDevExpress_Wpf_Controls)' == '' ">D:\Program Files\DevExpress 25.2\Components\Offline Packages\devexpress.wpf.controls\25.2.3</PkgDevExpress_Wpf_Controls>
+    <PkgDevExpress_Wpf_DocumentViewer_Core Condition=" '$(PkgDevExpress_Wpf_DocumentViewer_Core)' == '' ">D:\Program Files\DevExpress 25.2\Components\Offline Packages\devexpress.wpf.documentviewer.core\25.2.3</PkgDevExpress_Wpf_DocumentViewer_Core>
+    <PkgDevExpress_Wpf_Docking Condition=" '$(PkgDevExpress_Wpf_Docking)' == '' ">D:\Program Files\DevExpress 25.2\Components\Offline Packages\devexpress.wpf.docking\25.2.3</PkgDevExpress_Wpf_Docking>
+    <PkgDevExpress_Wpf_Printing Condition=" '$(PkgDevExpress_Wpf_Printing)' == '' ">D:\Program Files\DevExpress 25.2\Components\Offline Packages\devexpress.wpf.printing\25.2.3</PkgDevExpress_Wpf_Printing>
+    <PkgDevExpress_Wpf_RichEdit Condition=" '$(PkgDevExpress_Wpf_RichEdit)' == '' ">D:\Program Files\DevExpress 25.2\Components\Offline Packages\devexpress.wpf.richedit\25.2.3</PkgDevExpress_Wpf_RichEdit>
+    <PkgDevExpress_Wpf_Grid_Printing Condition=" '$(PkgDevExpress_Wpf_Grid_Printing)' == '' ">D:\Program Files\DevExpress 25.2\Components\Offline Packages\devexpress.wpf.grid.printing\25.2.3</PkgDevExpress_Wpf_Grid_Printing>
+    <PkgDevExpress_DataAccess Condition=" '$(PkgDevExpress_DataAccess)' == '' ">D:\Program Files\DevExpress 25.2\Components\Offline Packages\devexpress.dataaccess\25.2.3</PkgDevExpress_DataAccess>
+    <PkgDevExpress_Wpf_ExpressionEditor Condition=" '$(PkgDevExpress_Wpf_ExpressionEditor)' == '' ">D:\Program Files\DevExpress 25.2\Components\Offline Packages\devexpress.wpf.expressioneditor\25.2.3</PkgDevExpress_Wpf_ExpressionEditor>
+    <PkgDevExpress_Wpf_Grid Condition=" '$(PkgDevExpress_Wpf_Grid)' == '' ">D:\Program Files\DevExpress 25.2\Components\Offline Packages\devexpress.wpf.grid\25.2.3</PkgDevExpress_Wpf_Grid>
+  </PropertyGroup>
 </Project>
