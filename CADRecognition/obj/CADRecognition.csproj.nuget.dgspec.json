@@ -64,6 +64,10 @@
             "DevExpress.Wpf.Grid": {
               "target": "Package",
               "version": "[25.2.3, )"
+            },
+            "netDxf": {
+              "target": "Package",
+              "version": "[2023.11.10, )"
             }
           },
           "imports": [

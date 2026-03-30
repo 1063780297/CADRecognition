@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "dgSpecHash": "n+OLWoac2b4=",
+  "dgSpecHash": "/BMzc/arfzM=",
   "success": true,
   "projectFilePath": "G:\\工作\\冲压机CAD识别\\CADRecognition\\CADRecognition\\CADRecognition.csproj",
   "expectedPackageFiles": [
@@ -42,6 +42,7 @@
     "C:\\Users\\Administrator\\.nuget\\packages\\microsoft.extensions.filesystemglobbing\\8.0.0\\microsoft.extensions.filesystemglobbing.8.0.0.nupkg.sha512",
     "C:\\Users\\Administrator\\.nuget\\packages\\microsoft.extensions.objectpool\\8.0.10\\microsoft.extensions.objectpool.8.0.10.nupkg.sha512",
     "C:\\Users\\Administrator\\.nuget\\packages\\microsoft.extensions.primitives\\8.0.0\\microsoft.extensions.primitives.8.0.0.nupkg.sha512",
+    "C:\\Users\\Administrator\\.nuget\\packages\\netdxf\\2023.11.10\\netdxf.2023.11.10.nupkg.sha512",
     "C:\\Users\\Administrator\\.nuget\\packages\\system.data.oledb\\8.0.1\\system.data.oledb.8.0.1.nupkg.sha512",
     "C:\\Users\\Administrator\\.nuget\\packages\\system.servicemodel.http\\8.1.2\\system.servicemodel.http.8.1.2.nupkg.sha512",
     "C:\\Users\\Administrator\\.nuget\\packages\\system.servicemodel.netframingbase\\8.1.2\\system.servicemodel.netframingbase.8.1.2.nupkg.sha512",

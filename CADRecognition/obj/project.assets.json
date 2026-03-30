@@ -713,6 +713,19 @@
           "buildTransitive/net6.0/_._": {}
         }
       },
+      "netDxf/2023.11.10": {
+        "type": "package",
+        "compile": {
+          "lib/net6.0/netDxf.dll": {
+            "related": ".xml"
+          }
+        },
+        "runtime": {
+          "lib/net6.0/netDxf.dll": {
+            "related": ".xml"
+          }
+        }
+      },
       "System.Data.OleDb/8.0.1": {
         "type": "package",
         "compile": {
@@ -1774,6 +1787,22 @@
         "useSharedDesignerContext.txt"
       ]
     },
+    "netDxf/2023.11.10": {
+      "sha512": "7BFtw6P5Zfli59HJJ3INq6InaWzgNnC7qQopP+5H8CUg/7FjUX0qG63kLLPplOy1sZSjnwGzAPEjk67g1O7LuQ==",
+      "type": "package",
+      "path": "netdxf/2023.11.10",
+      "files": [
+        ".nupkg.metadata",
+        ".signature.p7s",
+        "README.md",
+        "lib/net48/netDxf.dll",
+        "lib/net48/netDxf.xml",
+        "lib/net6.0/netDxf.dll",
+        "lib/net6.0/netDxf.xml",
+        "netdxf.2023.11.10.nupkg.sha512",
+        "netdxf.nuspec"
+      ]
+    },
     "System.Data.OleDb/8.0.1": {
       "sha512": "RO+/y2ggU5956uQDRXdjA1e2l5yJ4rTWNX76eZ+3sgtYGqGapCe2kQCyiUci+/y6Fyb21Irp4RQEdfrIiuYrxQ==",
       "type": "package",
@@ -1999,7 +2028,8 @@
     "net10.0-windows7.0": [
       "DevExpress.Images >= 25.2.3",
       "DevExpress.Wpf.Core >= 25.2.3",
-      "DevExpress.Wpf.Grid >= 25.2.3"
+      "DevExpress.Wpf.Grid >= 25.2.3",
+      "netDxf >= 2023.11.10"
     ]
   },
   "packageFolders": {
@@ -2067,6 +2097,10 @@
           "DevExpress.Wpf.Grid": {
             "target": "Package",
             "version": "[25.2.3, )"
+          },
+          "netDxf": {
+            "target": "Package",
+            "version": "[2023.11.10, )"
           }
         },
         "imports": [

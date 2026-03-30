@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
@@ -12,6 +12,7 @@
     <PackageReference Include="DevExpress.Images" Version="25.2.3" />
     <PackageReference Include="DevExpress.Wpf.Core" Version="25.2.3" />
     <PackageReference Include="DevExpress.Wpf.Grid" Version="25.2.3" />
+    <PackageReference Include="netDxf" Version="2023.11.10" />
   </ItemGroup>
 
 </Project>
