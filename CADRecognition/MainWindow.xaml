@@ -73,6 +73,15 @@
                             <dxg:TableView ShowGroupPanel="False" AutoWidth="True" AllowEditing="False"/>
                         </dxg:GridControl.View>
                         <dxg:GridControl.Columns>
+                            <dxg:GridColumn FieldName="MoldPreview" Header="预览" Width="92">
+                                <dxg:GridColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <Border Width="80" Height="52" Background="#111111" BorderBrush="#3D3D3D" BorderThickness="1" CornerRadius="2" Padding="1">
+                                            <Image Source="{Binding RowData.Row.MoldPreview}" Stretch="Uniform"/>
+                                        </Border>
+                                    </DataTemplate>
+                                </dxg:GridColumn.CellTemplate>
+                            </dxg:GridColumn>
                             <dxg:GridColumn FieldName="MoldCode" Header="模具编号"/>
                             <dxg:GridColumn FieldName="MoldName" Header="模具名称"/>
                             <dxg:GridColumn FieldName="UsedCount" Header="使用次数"/>
