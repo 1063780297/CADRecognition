@@ -18,6 +18,7 @@ using WpfBrushes = System.Windows.Media.Brushes;
 using WpfColor = System.Windows.Media.Color;
 using WpfEllipse = System.Windows.Shapes.Ellipse;
 using WpfLine = System.Windows.Shapes.Line;
+using WpfRectangle = System.Windows.Shapes.Rectangle;
 
 namespace CADRecognition
 {
@@ -33,6 +34,7 @@ namespace CADRecognition
         private MatchResult? _lastMatchResult;
         private ProjectProfile? _lastProjectProfile;
         private List<MoldProfile> _lastMolds = [];
+        private IReadOnlyList<(double X, double Y)> _lastOuterContourPoints = [];
 
         private string? _projectFile;
         private DxfDocument? _projectDoc;
@@ -116,6 +118,7 @@ namespace CADRecognition
 
             var project = DxfAnalyzer.ExtractProject(_projectDoc);
             _lastProjectProfile = project;
+            _lastOuterContourPoints = DxfAnalyzer.ExtractOuterContourForDebug(_projectDoc);
             var molds = _moldFiles
                 .Select((f, idx) => DxfAnalyzer.ExtractMold(idx + 1, f))
                 .ToList();
@@ -257,17 +260,26 @@ namespace CADRecognition
         private void RenderPreview(DxfDocument doc, string? path, bool withAnnotation)
         {
             _previewPlugin.CreatePreview(doc, _viewer);
-            if (withAnnotation && !string.IsNullOrWhiteSpace(path) && path == _projectFile && _lastMatchResult is not null)
+            if (withAnnotation && !string.IsNullOrWhiteSpace(path) && path == _projectFile)
             {
-                if (_lastProjectProfile is not null)
+                _viewer.RenderCornerContours(
+                    _lastProjectProfile?.OuterRectangle,
+                    _lastOuterContourPoints,
+                    _lastProjectProfile?.CornerStepPaths,
+                    _lastProjectProfile?.CornerCandidates);
+
+                if (_lastMatchResult is not null)
                 {
-                    _viewer.RenderCornerZones(_lastProjectProfile.OuterRectangle, 0.22);
+                    _viewer.RenderAnnotations(_lastMatchResult.HoleAssignments, _lastMolds);
                 }
-                _viewer.RenderAnnotations(_lastMatchResult.HoleAssignments, _lastMolds);
+                else
+                {
+                    _viewer.RenderAnnotations([], []);
+                }
             }
             else
             {
-                _viewer.RenderCornerZones(null, 0);
+                _viewer.RenderCornerContours(null, null, null, null);
                 _viewer.RenderAnnotations([], []);
             }
             PreviewHintText.Visibility = Visibility.Collapsed;
@@ -578,6 +590,30 @@ namespace CADRecognition
                 var color = GetMoldColor(ass.MoldId);
                 var brush = new SolidColorBrush(color);
 
+                // Draw a tiny cross at the reported centroid for coordinate verification.
+                var cross = new Polyline
+                {
+                    Stroke = WpfBrushes.White,
+                    StrokeThickness = 1,
+                    Points = new PointCollection
+                    {
+                        new System.Windows.Point(p.X - 4, p.Y),
+                        new System.Windows.Point(p.X + 4, p.Y),
+                    }
+                };
+                _markCanvas.Children.Add(cross);
+                var cross2 = new Polyline
+                {
+                    Stroke = WpfBrushes.White,
+                    StrokeThickness = 1,
+                    Points = new PointCollection
+                    {
+                        new System.Windows.Point(p.X, p.Y - 4),
+                        new System.Windows.Point(p.X, p.Y + 4),
+                    }
+                };
+                _markCanvas.Children.Add(cross2);
+
                 if (moldMap.TryGetValue(ass.MoldId, out var mold) && mold.OutlinePoints.Count >= 2)
                 {
                     var rad = ass.RotationDeg * Math.PI / 180.0;
@@ -626,45 +662,179 @@ namespace CADRecognition
             }
         }
 
-        public void RenderCornerZones(RectBounds? rect, double ratio)
+        public void RenderCornerContours(
+            RectBounds? rect,
+            IReadOnlyList<(double X, double Y)>? outerContourPoints,
+            IReadOnlyList<CornerStepPath>? cornerPaths,
+            IReadOnlyList<HoleFeature>? cornerHints)
         {
             _zoneCanvas.Children.Clear();
-            if (rect is null || ratio <= 0)
+            if (rect is null)
             {
                 return;
             }
 
-            var zoneW = rect.Width * ratio;
-            var zoneH = rect.Height * ratio;
-            var zones = new[]
+            // 1) 画最小外包矩形（黄色）
+            var r1 = ModelToCanvas(rect.MinX, rect.MinY);
+            var r2 = ModelToCanvas(rect.MaxX, rect.MaxY);
+            var rectBox = new WpfRectangle
             {
-                (rect.MinX, rect.MinY),
-                (rect.MinX, rect.MaxY - zoneH),
-                (rect.MaxX - zoneW, rect.MinY),
-                (rect.MaxX - zoneW, rect.MaxY - zoneH)
+                Width = Math.Abs(r2.X - r1.X),
+                Height = Math.Abs(r2.Y - r1.Y),
+                Stroke = new SolidColorBrush(WpfColor.FromArgb(240, 255, 235, 59)),
+                StrokeThickness = 1.8,
+                StrokeDashArray = new DoubleCollection([4, 3]),
+                Fill = WpfBrushes.Transparent
             };
+            Canvas.SetLeft(rectBox, Math.Min(r1.X, r2.X));
+            Canvas.SetTop(rectBox, Math.Min(r1.Y, r2.Y));
+            _zoneCanvas.Children.Add(rectBox);
 
-            foreach (var z in zones)
+            // 2) 画当前识别到的真实外轮廓（红色）
+            if (outerContourPoints is not null && outerContourPoints.Count >= 2)
             {
-                var p1 = ModelToCanvas(z.Item1, z.Item2);
-                var p2 = ModelToCanvas(z.Item1 + zoneW, z.Item2 + zoneH);
-                var left = Math.Min(p1.X, p2.X);
-                var top = Math.Min(p1.Y, p2.Y);
-                var w = Math.Abs(p2.X - p1.X);
-                var h = Math.Abs(p2.Y - p1.Y);
-
-                var box = new Border
+                var polyAll = new Polyline
                 {
-                    Width = w,
-                    Height = h,
-                    Background = new SolidColorBrush(WpfColor.FromArgb(35, 255, 152, 0)),
-                    BorderBrush = new SolidColorBrush(WpfColor.FromArgb(160, 255, 152, 0)),
-                    BorderThickness = new Thickness(1)
+                    Stroke = new SolidColorBrush(WpfColor.FromArgb(245, 255, 82, 82)),
+                    StrokeThickness = 1.8,
+                    StrokeLineJoin = PenLineJoin.Round,
+                    StrokeStartLineCap = PenLineCap.Round,
+                    StrokeEndLineCap = PenLineCap.Round
                 };
-                Canvas.SetLeft(box, left);
-                Canvas.SetTop(box, top);
-                _zoneCanvas.Children.Add(box);
+                foreach (var p in outerContourPoints)
+                {
+                    polyAll.Points.Add(ModelToCanvas(p.X, p.Y));
+                }
+                _zoneCanvas.Children.Add(polyAll);
             }
+
+            // 3) 青色线 = 红色外轮廓 - 矩形外轮廓（按“线段差集”绘制，避免跨段误连）
+            if (outerContourPoints is null || outerContourPoints.Count < 2)
+            {
+                return;
+            }
+
+            var edgeTol = Math.Max(Math.Min(rect.Width, rect.Height) * 0.003, 0.8);
+            bool IsOnRectEdge((double X, double Y) p)
+            {
+                var onLeft = Math.Abs(p.X - rect.MinX) <= edgeTol;
+                var onRight = Math.Abs(p.X - rect.MaxX) <= edgeTol;
+                var onBottom = Math.Abs(p.Y - rect.MinY) <= edgeTol;
+                var onTop = Math.Abs(p.Y - rect.MaxY) <= edgeTol;
+                return onLeft || onRight || onBottom || onTop;
+            }
+
+            var contour = outerContourPoints.ToList();
+            if (contour.Count > 2)
+            {
+                var first = contour[0];
+                var last = contour[^1];
+                if (Math.Sqrt((first.X - last.X) * (first.X - last.X) + (first.Y - last.Y) * (first.Y - last.Y)) < edgeTol)
+                {
+                    contour.RemoveAt(contour.Count - 1);
+                }
+            }
+
+            var runs = new List<List<(double X, double Y)>>();
+            var current = new List<(double X, double Y)>();
+
+            // 按“线段”做差集：只要线段中点不在矩形边上，就保留该段。
+            // 这样即使角落只采样到很少点，也不会整段丢失。
+            for (var i = 0; i < contour.Count - 1; i++)
+            {
+                var a = contour[i];
+                var b = contour[i + 1];
+                var mid = ((a.X + b.X) * 0.5, (a.Y + b.Y) * 0.5);
+                var keepSeg = !IsOnRectEdge(mid);
+
+                if (!keepSeg)
+                {
+                    if (current.Count >= 2)
+                    {
+                        runs.Add(current);
+                    }
+                    current = new List<(double X, double Y)>();
+                    continue;
+                }
+
+                if (current.Count == 0)
+                {
+                    current.Add(a);
+                    current.Add(b);
+                }
+                else
+                {
+                    var last = current[^1];
+                    if (Math.Abs(last.X - a.X) <= 1e-6 && Math.Abs(last.Y - a.Y) <= 1e-6)
+                    {
+                        current.Add(b);
+                    }
+                    else
+                    {
+                        if (current.Count >= 2)
+                        {
+                            runs.Add(current);
+                        }
+                        current = new List<(double X, double Y)> { a, b };
+                    }
+                }
+            }
+
+            if (current.Count >= 2)
+            {
+                runs.Add(current);
+            }
+
+            if (runs.Count == 0)
+            {
+                return;
+            }
+
+            foreach (var run in runs)
+            {
+                // 仅显示角落附近的差集段（避免把长直边误显示为青色）
+                var nearCorner = run.Any(p =>
+                {
+                    var dx = Math.Min(Math.Abs(p.X - rect.MinX), Math.Abs(rect.MaxX - p.X));
+                    var dy = Math.Min(Math.Abs(p.Y - rect.MinY), Math.Abs(rect.MaxY - p.Y));
+                    var cornerBand = Math.Max(Math.Min(rect.Width, rect.Height) * 0.16, 12.0);
+                    return dx <= cornerBand && dy <= cornerBand;
+                });
+
+                if (!nearCorner)
+                {
+                    continue;
+                }
+
+                var cyanPoly = new Polyline
+                {
+                    Stroke = new SolidColorBrush(WpfColor.FromArgb(245, 0, 255, 255)),
+                    StrokeThickness = 2.4,
+                    StrokeLineJoin = PenLineJoin.Round,
+                    StrokeStartLineCap = PenLineCap.Round,
+                    StrokeEndLineCap = PenLineCap.Round
+                };
+
+                foreach (var p in run)
+                {
+                    cyanPoly.Points.Add(ModelToCanvas(p.X, p.Y));
+                }
+                _zoneCanvas.Children.Add(cyanPoly);
+            }
+
+            var firstRun = runs[0];
+            var labelAnchor = ModelToCanvas(firstRun[0].X, firstRun[0].Y);
+            var label = new TextBlock
+            {
+                Text = "待冲轮廓",
+                Foreground = new SolidColorBrush(WpfColor.FromArgb(245, 0, 255, 255)),
+                FontSize = 11,
+                FontWeight = FontWeights.Bold,
+                Background = new SolidColorBrush(WpfColor.FromArgb(120, 0, 0, 0))
+            };
+            Canvas.SetLeft(label, labelAnchor.X + 6);
+            Canvas.SetTop(label, labelAnchor.Y - 18);
+            _zoneCanvas.Children.Add(label);
         }
 
         public static WpfColor GetMoldColor(int moldId)
@@ -838,7 +1008,7 @@ namespace CADRecognition
             }
 
             feature ??= new HoleFeature("Unknown", (0, 0), 1, 1, 1, 1, 0, CreateCircleSignature(1, SignatureSamples));
-            var outline = ExtractMoldOutline(doc);
+            var outline = ExtractMoldOutline(doc, feature.Centroid);
             return new MoldProfile(moldId, path, feature, outline);
         }
 
@@ -846,7 +1016,9 @@ namespace CADRecognition
         {
             var holes = ExtractHoles(doc);
             var outer = DetectOuterRectangle(doc);
-            holes.AddRange(ExtractCornerMissingFeatures(doc, outer));
+            var edgeCandidates = ExtractEdgePartialCandidates(doc, outer);
+            var cornerCandidates = ExtractCornerMissingFeatures(doc, outer);
+            var cornerStepPaths = ExtractCornerStepPaths(doc, outer);
 
             var maxHoleArea = Math.Max(outer.Area * 0.2, 1.0);
             var innerHoles = holes
@@ -869,7 +1041,586 @@ namespace CADRecognition
                     .Where(h => h.Area <= maxHoleArea)
                     .ToList();
             }
-            return new ProjectProfile(outer, DeduplicateHoles(innerHoles));
+            return new ProjectProfile(
+                outer,
+                DeduplicateHoles(innerHoles),
+                cornerCandidates,
+                edgeCandidates,
+                cornerStepPaths);
+        }
+
+        private static IReadOnlyList<CornerStepPath> ExtractCornerStepPaths(DxfDocument doc, RectBounds outer)
+        {
+            // 思路：先拿到真实外轮廓点，再去掉“与最小外包矩形重合”的点；
+            // 角落窗口内剩下的就是角缺失区域的外轮廓（应呈连续 L 型）。
+            var contour = SelectOuterContourPoints(doc, outer);
+            var pts = contour
+                .DistinctBy(p => ($"{Math.Round(p.X, 2)}|{Math.Round(p.Y, 2)}"))
+                .ToList();
+
+            var result = new List<CornerStepPath>();
+            var zoneX = outer.Width * 0.30;
+            var zoneY = outer.Height * 0.30;
+            var edgeTol = Math.Max(Math.Min(outer.Width, outer.Height) * 0.003, 0.8);
+            var simplifyEps = Math.Max(Math.Min(outer.Width, outer.Height) * 0.01, 1.5);
+
+            foreach (var c in outer.Corners)
+            {
+                var isLeft = c.X <= (outer.MinX + outer.MaxX) * 0.5;
+                var isBottom = c.Y <= (outer.MinY + outer.MaxY) * 0.5;
+                var x0 = isLeft ? outer.MinX : outer.MaxX - zoneX;
+                var x1 = x0 + zoneX;
+                var y0 = isBottom ? outer.MinY : outer.MaxY - zoneY;
+                var y1 = y0 + zoneY;
+
+                var zonePts = pts
+                    .Where(p => p.X >= x0 && p.X <= x1 && p.Y >= y0 && p.Y <= y1)
+                    .ToList();
+
+                if (zonePts.Count < 4)
+                {
+                    result.Add(new CornerStepPath(c.Name, []));
+                    continue;
+                }
+
+                // 去掉与矩形边重合的点，仅保留“角缺失轮廓”相关点。
+                var remain = zonePts
+                    .Where(p => !IsOnOuterRectangleEdge(p, outer, edgeTol))
+                    .ToList();
+
+                if (remain.Count < 2)
+                {
+                    result.Add(new CornerStepPath(c.Name, []));
+                    continue;
+                }
+
+                // 强制为正交 L 型：分成“近水平”和“近垂直”两支，再在拐点拼接。
+                var ordered = remain
+                    .OrderBy(p =>
+                    {
+                        var dx = p.X - c.X;
+                        var dy = p.Y - c.Y;
+                        return Math.Sqrt(dx * dx + dy * dy);
+                    })
+                    .ToList();
+
+                var cornerRef = ordered[0];
+                var hPts = ordered
+                    .Where(p => Math.Abs(p.Y - cornerRef.Y) <= Math.Max(edgeTol * 2.5, 1.2))
+                    .OrderBy(p => isLeft ? p.X : -p.X)
+                    .ToList();
+                var vPts = ordered
+                    .Where(p => Math.Abs(p.X - cornerRef.X) <= Math.Max(edgeTol * 2.5, 1.2))
+                    .OrderBy(p => isBottom ? p.Y : -p.Y)
+                    .ToList();
+
+                var path = new List<(double X, double Y)>();
+                if (hPts.Count >= 2)
+                {
+                    path.AddRange(SimplifyStepPoints(hPts, byX: true, epsilon: simplifyEps));
+                }
+                else
+                {
+                    path.Add(cornerRef);
+                }
+
+                if (vPts.Count >= 2)
+                {
+                    path.AddRange(SimplifyStepPoints(vPts, byX: false, epsilon: simplifyEps));
+                }
+
+                path = path
+                    .DistinctBy(p => ($"{Math.Round(p.X, 2)}|{Math.Round(p.Y, 2)}"))
+                    .ToList();
+
+                result.Add(new CornerStepPath(c.Name, path));
+            }
+
+            return result;
+        }
+
+        public static IReadOnlyList<(double X, double Y)> ExtractOuterContourForDebug(DxfDocument doc)
+        {
+            var outer = DetectOuterRectangle(doc);
+            var contour = SelectOuterContourPoints(doc, outer).ToList();
+            if (contour.Count >= 2)
+            {
+                return contour;
+            }
+
+            // Debug fallback: pick points near outer rectangle edges so red contour is always visible.
+            var tol = Math.Max(Math.Min(outer.Width, outer.Height) * 0.01, 2.0);
+            var edgePts = CollectGeometryPoints(doc)
+                .Where(p =>
+                    Math.Abs(p.X - outer.MinX) <= tol ||
+                    Math.Abs(p.X - outer.MaxX) <= tol ||
+                    Math.Abs(p.Y - outer.MinY) <= tol ||
+                    Math.Abs(p.Y - outer.MaxY) <= tol)
+                .DistinctBy(p => ($"{Math.Round(p.X, 2)}|{Math.Round(p.Y, 2)}"))
+                .ToList();
+
+            if (edgePts.Count < 2)
+            {
+                return [];
+            }
+
+            var cx = (outer.MinX + outer.MaxX) * 0.5;
+            var cy = (outer.MinY + outer.MaxY) * 0.5;
+            return edgePts
+                .OrderBy(p => Math.Atan2(p.Y - cy, p.X - cx))
+                .ThenBy(p => Math.Sqrt((p.X - cx) * (p.X - cx) + (p.Y - cy) * (p.Y - cy)))
+                .ToList();
+        }
+
+        private static List<(double X, double Y)> SelectOuterContourPoints(DxfDocument doc, RectBounds outer)
+        {
+            var loop = BuildOuterContourByStitching(doc, outer);
+            return loop ?? [];
+        }
+
+        private static List<(double X, double Y)>? BuildOuterContourByStitching(DxfDocument doc, RectBounds outer)
+        {
+            // 仅基于 Line + Polyline2D 重建外轮廓（不使用 Arc）。
+            var chains = new List<List<(double X, double Y)>>();
+
+            foreach (var l in doc.Entities.Lines)
+            {
+                chains.Add([(l.StartPoint.X, l.StartPoint.Y), (l.EndPoint.X, l.EndPoint.Y)]);
+            }
+
+            foreach (var pl in doc.Entities.Polylines2D.Where(p => p.Vertexes.Count >= 2))
+            {
+                var pts = ExpandPolyline2D(pl, 24).ToList();
+                if (pts.Count >= 2)
+                {
+                    chains.Add(pts);
+                }
+            }
+
+            if (chains.Count == 0)
+            {
+                return null;
+            }
+
+            var diag = Math.Sqrt(outer.Width * outer.Width + outer.Height * outer.Height);
+            var tol = Math.Clamp(diag * 0.0005, 1e-4, 0.2);
+
+            (double X, double Y) Snap((double X, double Y) p)
+            {
+                var nx = Math.Round(p.X / tol) * tol;
+                var ny = Math.Round(p.Y / tol) * tol;
+                return (nx, ny);
+            }
+
+            string EdgeKey((double X, double Y) a, (double X, double Y) b)
+            {
+                var k1 = $"{a.X:F4},{a.Y:F4}";
+                var k2 = $"{b.X:F4},{b.Y:F4}";
+                return string.CompareOrdinal(k1, k2) <= 0 ? $"{k1}|{k2}" : $"{k2}|{k1}";
+            }
+
+            var adj = new Dictionary<(double X, double Y), HashSet<(double X, double Y)>>();
+            var edgeSet = new HashSet<string>();
+
+            void AddEdge((double X, double Y) a, (double X, double Y) b)
+            {
+                var dx = Math.Abs(a.X - b.X);
+                var dy = Math.Abs(a.Y - b.Y);
+                if (dx <= 1e-9 && dy <= 1e-9)
+                {
+                    return;
+                }
+
+                // 只接受水平/竖直边，避免把错误候选中的斜边并入外轮廓。
+                if (dx > tol && dy > tol)
+                {
+                    return;
+                }
+
+                var key = EdgeKey(a, b);
+                if (!edgeSet.Add(key))
+                {
+                    return;
+                }
+
+                if (!adj.TryGetValue(a, out var la))
+                {
+                    la = [];
+                    adj[a] = la;
+                }
+                la.Add(b);
+
+                if (!adj.TryGetValue(b, out var lb))
+                {
+                    lb = [];
+                    adj[b] = lb;
+                }
+                lb.Add(a);
+            }
+
+            var axisTol = Math.Max(tol * 0.6, 1e-5);
+
+            foreach (var c in chains)
+            {
+                for (var i = 1; i < c.Count; i++)
+                {
+                    var a = Snap(c[i - 1]);
+                    var b = Snap(c[i]);
+                    if (Math.Abs(a.X - b.X) <= 1e-9 && Math.Abs(a.Y - b.Y) <= 1e-9)
+                    {
+                        continue;
+                    }
+
+                    // 外轮廓只使用正交边（水平/垂直）。
+                    var dx = Math.Abs(a.X - b.X);
+                    var dy = Math.Abs(a.Y - b.Y);
+                    var orthogonal = dx <= axisTol || dy <= axisTol;
+                    if (!orthogonal)
+                    {
+                        continue;
+                    }
+
+                    AddEdge(a, b);
+                }
+
+                var first = Snap(c[0]);
+                var last = Snap(c[^1]);
+                var closedLike = Math.Abs(first.X - last.X) <= tol && Math.Abs(first.Y - last.Y) <= tol;
+                if (closedLike)
+                {
+                    var dx = Math.Abs(first.X - last.X);
+                    var dy = Math.Abs(first.Y - last.Y);
+                    var orthogonal = dx <= axisTol || dy <= axisTol;
+                    if (orthogonal)
+                    {
+                        AddEdge(last, first);
+                    }
+                }
+            }
+
+            var nodes = adj.Keys.ToList();
+            if (nodes.Count < 4)
+            {
+                return null;
+            }
+
+            var adjList = adj.ToDictionary(kv => kv.Key, kv => kv.Value.ToList());
+            var comps = GetConnectedComponents(nodes, adjList);
+
+            List<(double X, double Y)>? bestOrthogonalPath = null;
+            var bestOrthogonalArea = -1.0;
+            List<(double X, double Y)>? bestAnyPath = null;
+            var bestAnyArea = -1.0;
+
+            foreach (var comp in comps)
+            {
+                if (comp.Count < 4)
+                {
+                    continue;
+                }
+
+                // 闭环候选：分量内每个节点都必须是度2
+                var degree2 = comp.All(n => adj.TryGetValue(n, out var nbs) && nbs.Count == 2);
+                if (!degree2)
+                {
+                    continue;
+                }
+
+                var start = comp.First();
+                var path = new List<(double X, double Y)>();
+                (double X, double Y)? prev = null;
+                var curr = start;
+
+                for (var step = 0; step < comp.Count + 2; step++)
+                {
+                    path.Add(curr);
+                    var nbs = adj[curr].Where(comp.Contains).ToList();
+                    if (nbs.Count != 2)
+                    {
+                        path.Clear();
+                        break;
+                    }
+
+                    var next = prev is null
+                        ? nbs[0]
+                        : (Math.Abs(nbs[0].X - prev.Value.X) <= 1e-9 && Math.Abs(nbs[0].Y - prev.Value.Y) <= 1e-9 ? nbs[1] : nbs[0]);
+
+                    prev = curr;
+                    curr = next;
+
+                    if (Math.Abs(curr.X - start.X) <= 1e-9 && Math.Abs(curr.Y - start.Y) <= 1e-9)
+                    {
+                        path.Add(start);
+                        break;
+                    }
+                }
+
+                if (path.Count < 5)
+                {
+                    continue;
+                }
+
+                var unique = path.ToList();
+                if (unique.Count < 4)
+                {
+                    continue;
+                }
+
+                var area = Math.Abs(PolygonArea(unique));
+                if (area > bestAnyArea)
+                {
+                    bestAnyArea = area;
+                    bestAnyPath = unique;
+                }
+
+                var allOrthogonal = true;
+                for (var i = 1; i < unique.Count; i++)
+                {
+                    var dx = Math.Abs(unique[i].X - unique[i - 1].X);
+                    var dy = Math.Abs(unique[i].Y - unique[i - 1].Y);
+                    if (dx > tol && dy > tol)
+                    {
+                        allOrthogonal = false;
+                        break;
+                    }
+                }
+
+                if (allOrthogonal && area > bestOrthogonalArea)
+                {
+                    bestOrthogonalArea = area;
+                    bestOrthogonalPath = unique;
+                }
+            }
+
+            return bestOrthogonalPath ?? bestAnyPath;
+        }
+
+        private static List<HashSet<(double X, double Y)>> GetConnectedComponents(
+            IReadOnlyList<(double X, double Y)> nodes,
+            Dictionary<(double X, double Y), List<(double X, double Y)>> adj)
+        {
+            var result = new List<HashSet<(double X, double Y)>>();
+            var visited = new HashSet<(double X, double Y)>();
+
+            foreach (var n in nodes)
+            {
+                if (visited.Contains(n))
+                {
+                    continue;
+                }
+
+                var comp = new HashSet<(double X, double Y)>();
+                var q = new Queue<(double X, double Y)>();
+                q.Enqueue(n);
+                visited.Add(n);
+
+                while (q.Count > 0)
+                {
+                    var cur = q.Dequeue();
+                    comp.Add(cur);
+                    if (!adj.TryGetValue(cur, out var nbs))
+                    {
+                        continue;
+                    }
+
+                    foreach (var nb in nbs)
+                    {
+                        if (visited.Add(nb))
+                        {
+                            q.Enqueue(nb);
+                        }
+                    }
+                }
+
+                result.Add(comp);
+            }
+
+            return result;
+        }
+
+        private static bool IsOnOuterRectangleEdge((double X, double Y) p, RectBounds outer, double tol)
+        {
+            var onLeft = Math.Abs(p.X - outer.MinX) <= tol;
+            var onRight = Math.Abs(p.X - outer.MaxX) <= tol;
+            var onBottom = Math.Abs(p.Y - outer.MinY) <= tol;
+            var onTop = Math.Abs(p.Y - outer.MaxY) <= tol;
+            return onLeft || onRight || onBottom || onTop;
+        }
+
+        private static List<(double X, double Y)> SimplifyStepPoints(
+            IReadOnlyList<(double X, double Y)> points,
+            bool byX,
+            double epsilon)
+        {
+            if (points.Count == 0) return [];
+            var result = new List<(double X, double Y)> { points[0] };
+            for (var i = 1; i < points.Count; i++)
+            {
+                var prev = result[^1];
+                var curr = points[i];
+                var dv = byX ? Math.Abs(curr.Y - prev.Y) : Math.Abs(curr.X - prev.X);
+                var du = byX ? Math.Abs(curr.X - prev.X) : Math.Abs(curr.Y - prev.Y);
+                if (dv >= epsilon || du >= epsilon)
+                {
+                    result.Add(curr);
+                }
+            }
+            return result;
+        }
+
+        private static List<EdgeCandidate> ExtractEdgePartialCandidates(DxfDocument doc, RectBounds outer)
+        {
+            var pts = CollectGeometryPoints(doc);
+            var result = new List<EdgeCandidate>();
+            if (pts.Count < 10)
+            {
+                // still try polyline-based extraction below
+            }
+
+            // Edge band (exclude corner zones)
+            var cornerX = outer.Width * 0.22;
+            var cornerY = outer.Height * 0.22;
+            var band = Math.Max(Math.Min(outer.Width, outer.Height) * 0.06, 15.0);
+            var depth = Math.Max(Math.Min(outer.Width, outer.Height) * 0.02, 5.0);
+            var gap = Math.Max(Math.Min(outer.Width, outer.Height) * 0.03, 25.0);
+
+            IEnumerable<(double X, double Y)> top = pts.Where(p =>
+                p.Y <= outer.MaxY - depth && p.Y >= outer.MaxY - band &&
+                p.X > outer.MinX + cornerX && p.X < outer.MaxX - cornerX);
+            IEnumerable<(double X, double Y)> bottom = pts.Where(p =>
+                p.Y >= outer.MinY + depth && p.Y <= outer.MinY + band &&
+                p.X > outer.MinX + cornerX && p.X < outer.MaxX - cornerX);
+            IEnumerable<(double X, double Y)> left = pts.Where(p =>
+                p.X >= outer.MinX + depth && p.X <= outer.MinX + band &&
+                p.Y > outer.MinY + cornerY && p.Y < outer.MaxY - cornerY);
+            IEnumerable<(double X, double Y)> right = pts.Where(p =>
+                p.X <= outer.MaxX - depth && p.X >= outer.MaxX - band &&
+                p.Y > outer.MinY + cornerY && p.Y < outer.MaxY - cornerY);
+
+            void AddGroups(IEnumerable<(double X, double Y)> bandPts, bool sortByX, string side)
+            {
+                var sorted = (sortByX ? bandPts.OrderBy(p => p.X) : bandPts.OrderBy(p => p.Y)).ToList();
+                if (sorted.Count < 8)
+                {
+                    return;
+                }
+
+                var current = new List<(double X, double Y)>();
+                for (var i = 0; i < sorted.Count; i++)
+                {
+                    if (current.Count == 0)
+                    {
+                        current.Add(sorted[i]);
+                        continue;
+                    }
+                    var prev = current[^1];
+                    var d = Math.Sqrt((sorted[i].X - prev.X) * (sorted[i].X - prev.X) + (sorted[i].Y - prev.Y) * (sorted[i].Y - prev.Y));
+                    if (d <= gap)
+                    {
+                        current.Add(sorted[i]);
+                    }
+                    else
+                    {
+                        if (current.Count >= 12)
+                        {
+                            result.Add(BuildEdgeCandidate(side, current));
+                        }
+                        current = [sorted[i]];
+                    }
+                }
+                if (current.Count >= 12)
+                {
+                    result.Add(BuildEdgeCandidate(side, current));
+                }
+            }
+
+            AddGroups(top, true, "Top");
+            AddGroups(bottom, true, "Bottom");
+            AddGroups(left, false, "Left");
+            AddGroups(right, false, "Right");
+
+            // Extra: use open polylines as edge-notch candidates (common DXF export).
+            foreach (var pl in doc.Entities.Polylines2D.Where(p => !IsPolylineClosedLike(p) && p.Vertexes.Count >= 3))
+            {
+                var polyPts = ExpandPolyline2D(pl, 24).ToList();
+                if (polyPts.Count < 6)
+                {
+                    continue;
+                }
+                var minX = polyPts.Min(p => p.X);
+                var maxX = polyPts.Max(p => p.X);
+                var minY = polyPts.Min(p => p.Y);
+                var maxY = polyPts.Max(p => p.Y);
+                var w = maxX - minX;
+                var h = maxY - minY;
+                if (w < 1e-6 || h < 1e-6)
+                {
+                    continue;
+                }
+
+                var cx = polyPts.Average(p => p.X);
+                var cy = polyPts.Average(p => p.Y);
+                var nearLeft = Math.Abs(cx - outer.MinX) <= band;
+                var nearRight = Math.Abs(outer.MaxX - cx) <= band;
+                var nearBottom = Math.Abs(cy - outer.MinY) <= band;
+                var nearTop = Math.Abs(outer.MaxY - cy) <= band;
+
+                // Exclude corner zones
+                var inCornerZone = (cx <= outer.MinX + cornerX || cx >= outer.MaxX - cornerX) &&
+                                   (cy <= outer.MinY + cornerY || cy >= outer.MaxY - cornerY);
+                if (inCornerZone)
+                {
+                    continue;
+                }
+
+                string? side = null;
+                if (nearLeft) side = "Left";
+                else if (nearRight) side = "Right";
+                else if (nearBottom) side = "Bottom";
+                else if (nearTop) side = "Top";
+                if (side is null)
+                {
+                    continue;
+                }
+
+                // Avoid duplicates near existing candidates
+                var thresh = Math.Max(Math.Min(w, h) * 0.8, 40.0);
+                var dup = result.Any(r =>
+                {
+                    var dx = r.Centroid.X - cx;
+                    var dy = r.Centroid.Y - cy;
+                    return Math.Sqrt(dx * dx + dy * dy) <= thresh;
+                });
+                if (dup)
+                {
+                    continue;
+                }
+
+                result.Add(BuildEdgeCandidate(side, polyPts));
+            }
+
+            return result;
+        }
+
+        private static EdgeCandidate BuildEdgeCandidate(string side, IReadOnlyList<(double X, double Y)> points)
+        {
+            var minX = points.Min(p => p.X);
+            var maxX = points.Max(p => p.X);
+            var minY = points.Min(p => p.Y);
+            var maxY = points.Max(p => p.Y);
+            var w = Math.Max(maxX - minX, 1.0);
+            var h = Math.Max(maxY - minY, 1.0);
+            double peri = 0;
+            for (var i = 1; i < points.Count; i++)
+            {
+                var dx = points[i].X - points[i - 1].X;
+                var dy = points[i].Y - points[i - 1].Y;
+                peri += Math.Sqrt(dx * dx + dy * dy);
+            }
+            var cx = points.Average(p => p.X);
+            var cy = points.Average(p => p.Y);
+            var sig = CreatePolylineSignature(points, SignatureSamples);
+            return new EdgeCandidate(side, points, (cx, cy), w, h, Math.Max(peri, 1.0), sig);
         }
 
         public static RawBounds GetRawBounds(DxfDocument doc)
@@ -959,6 +1710,15 @@ namespace CADRecognition
             {
                 var sweep = NormalizeArcSweep(a.StartAngle, a.EndAngle);
                 if (sweep < 350.0)
+                {
+                    continue;
+                }
+                // Avoid duplicating with a real circle at same center/radius.
+                var hasCircle = doc.Entities.Circles.Any(c =>
+                    Math.Abs(c.Center.X - a.Center.X) < 1e-3 &&
+                    Math.Abs(c.Center.Y - a.Center.Y) < 1e-3 &&
+                    Math.Abs(c.Radius - a.Radius) < 1e-3);
+                if (hasCircle)
                 {
                     continue;
                 }
@@ -1166,11 +1926,13 @@ namespace CADRecognition
             var result = new List<HoleFeature>();
             foreach (var h in source.OrderBy(x => x.Area))
             {
+                var tolPos = Math.Max(Math.Min(h.Width, h.Height) * 0.15, 2.0);
+                var tolSize = Math.Max(Math.Min(h.Width, h.Height) * 0.12, 2.0);
                 var exists = result.Any(r =>
-                    Math.Abs(r.Centroid.X - h.Centroid.X) < 1e-3 &&
-                    Math.Abs(r.Centroid.Y - h.Centroid.Y) < 1e-3 &&
-                    Math.Abs(r.Width - h.Width) < 1e-3 &&
-                    Math.Abs(r.Height - h.Height) < 1e-3);
+                    Math.Abs(r.Centroid.X - h.Centroid.X) <= tolPos &&
+                    Math.Abs(r.Centroid.Y - h.Centroid.Y) <= tolPos &&
+                    Math.Abs(r.Width - h.Width) <= tolSize &&
+                    Math.Abs(r.Height - h.Height) <= tolSize);
                 if (!exists)
                 {
                     result.Add(h);
@@ -1386,18 +2148,15 @@ namespace CADRecognition
                 signature);
         }
 
-        private static List<(double X, double Y)> ExtractMoldOutline(DxfDocument doc)
+        private static List<(double X, double Y)> ExtractMoldOutline(DxfDocument doc, (double X, double Y) referenceCenter)
         {
             var pts = CollectGeometryPoints(doc);
             if (pts.Count < 2)
             {
                 return [];
             }
-
-            var cx = pts.Average(p => p.X);
-            var cy = pts.Average(p => p.Y);
             var ordered = pts
-                .Select(p => (X: p.X - cx, Y: p.Y - cy))
+                .Select(p => (X: p.X - referenceCenter.X, Y: p.Y - referenceCenter.Y))
                 .OrderBy(p => Math.Atan2(p.Y, p.X))
                 .ToList();
 
@@ -1406,6 +2165,16 @@ namespace CADRecognition
             for (var i = 0; i < ordered.Count; i += step)
             {
                 outline.Add((ordered[i].X, ordered[i].Y));
+            }
+            // Recenter again after downsampling to remove any residual bias.
+            if (outline.Count > 2)
+            {
+                var ox = outline.Average(p => p.X);
+                var oy = outline.Average(p => p.Y);
+                for (var i = 0; i < outline.Count; i++)
+                {
+                    outline[i] = (outline[i].X - ox, outline[i].Y - oy);
+                }
             }
             if (outline.Count > 0)
             {
@@ -1531,6 +2300,7 @@ namespace CADRecognition
         private const double Mold1AbsoluteScoreThreshold = 0.55;
         private const double Mold1MarginFactor = 0.82;
         private const double EdgePartialDistanceRatio = 0.06;
+        private const int CornerPathMaxPointsPerCorner = 24;
 
         public MatchResult Match(ProjectProfile project, IReadOnlyList<MoldProfile> molds)
         {
@@ -1549,68 +2319,14 @@ namespace CADRecognition
                 nonCornerMolds.Add(mold1);
             }
 
+            // 暂停 M01 自动打点：当前仅显示“要冲轮廓”，不把 M01 注入识别结果。
+            // 如需恢复，可在此处重新启用角落路径点生成。
+
             var diag = Math.Sqrt(project.OuterRectangle.Width * project.OuterRectangle.Width +
                                  project.OuterRectangle.Height * project.OuterRectangle.Height);
             var safeDiag = Math.Max(diag, 1e-6);
 
-            var usedCorner = new HashSet<HoleFeature>();
-            foreach (var corner in corners)
-            {
-                var synthetic = holePool
-                    .Where(h => !usedCorner.Contains(h) && h.HoleType == $"CornerMissing:{corner.Name}")
-                    .OrderBy(h => Dist2(h.Centroid, corner))
-                    .FirstOrDefault();
-                if (synthetic is not null)
-                {
-                    usedCorner.Add(synthetic);
-                    rows.Add(new HoleAssignment(
-                        synthetic,
-                        mold1.MoldId,
-                        $"角落连续冲压({corner.Name})",
-                        true,
-                        true,
-                        BuildTopCandidates(synthetic, molds, project.OuterRectangle, 3)));
-                    continue;
-                }
-
-                var nearest = holePool
-                    .Where(h => !usedCorner.Contains(h))
-                    .Where(h => IsInCornerMissingZone(h, project.OuterRectangle, corner))
-                    .Select(h =>
-                    {
-                        var m1 = ScoreForHoleAgainstMold(h, mold1.Feature, project.OuterRectangle);
-                        var bestOther = nonCornerMolds.Min(m => ScoreForHoleAgainstMold(h, m.Feature, project.OuterRectangle));
-                        var distNorm = Math.Sqrt(Dist2(h.Centroid, corner)) / safeDiag;
-                        var combined = distNorm * 0.55 + m1 * 0.45;
-                        return new
-                        {
-                            Hole = h,
-                            Mold1Score = m1,
-                            BestOtherScore = bestOther,
-                            DistNorm = distNorm,
-                            Combined = combined
-                        };
-                    })
-                    .Where(x => x.DistNorm <= CornerMaxNormalizedDistance &&
-                                x.Mold1Score <= Mold1AbsoluteScoreThreshold &&
-                                x.Mold1Score <= x.BestOtherScore * Mold1MarginFactor)
-                    .OrderBy(x => x.Combined)
-                    .FirstOrDefault();
-                if (nearest is null)
-                {
-                    continue;
-                }
-                usedCorner.Add(nearest.Hole);
-                rows.Add(new HoleAssignment(
-                    nearest.Hole,
-                    mold1.MoldId,
-                    $"角落连续冲压({corner.Name})",
-                    true,
-                    IsNearOuterEdge(nearest.Hole, project.OuterRectangle),
-                    BuildTopCandidates(nearest.Hole, molds, project.OuterRectangle, 3)));
-            }
-
-            foreach (var hole in holePool.Where(h => !usedCorner.Contains(h)))
+            foreach (var hole in holePool)
             {
                 var best = nonCornerMolds
                     .Select(m => new
@@ -1629,14 +2345,164 @@ namespace CADRecognition
                     BuildTopCandidates(hole, nonCornerMolds, project.OuterRectangle, 3)));
             }
 
-            return new MatchResult(rows);
+            // Edge partial stamping: translation-only, trimmed chamfer to allow partial imprint
+            var addedEdge = new List<HoleFeature>();
+            foreach (var cand in project.EdgeCandidates)
+            {
+                // If this edge candidate overlaps a real hole, skip it to avoid "one hole, two molds".
+                var overlapThreshold = Math.Max(Math.Min(cand.Width, cand.Height) * 0.6, 25.0);
+                var overlapsRealHole = holePool.Any(h =>
+                {
+                    var dx = h.Centroid.X - cand.Centroid.X;
+                    var dy = h.Centroid.Y - cand.Centroid.Y;
+                    return Math.Sqrt(dx * dx + dy * dy) <= overlapThreshold;
+                });
+                if (overlapsRealHole)
+                {
+                    continue;
+                }
+
+                var best = nonCornerMolds
+                    .Select(m =>
+                    {
+                        var score = TrimmedChamferScore(m.OutlinePoints, cand.Points, out var placement);
+                        return new { m.MoldId, Score = score, Placement = placement };
+                    })
+                    .OrderBy(x => x.Score)
+                    .FirstOrDefault();
+                if (best is null || double.IsInfinity(best.Score))
+                {
+                    continue;
+                }
+
+                var placementHole = new HoleFeature(
+                    $"EdgePartial:{cand.Side}",
+                    best.Placement,
+                    cand.Width,
+                    cand.Height,
+                    Math.Max(cand.Width * cand.Height * 0.45, 1.0),
+                    Math.Max(cand.Perimeter, 1.0),
+                    0,
+                    cand.Signature);
+
+                // De-duplicate edge partials near each other (one notch -> one mold).
+                var dup = addedEdge.Any(h =>
+                {
+                    var dx = h.Centroid.X - placementHole.Centroid.X;
+                    var dy = h.Centroid.Y - placementHole.Centroid.Y;
+                    return Math.Sqrt(dx * dx + dy * dy) <= overlapThreshold;
+                });
+                if (dup)
+                {
+                    continue;
+                }
+                addedEdge.Add(placementHole);
+                rows.Add(new HoleAssignment(
+                    placementHole,
+                    best.MoldId,
+                    "边缘局部冲压",
+                    false,
+                    true,
+                    BuildTopCandidates(placementHole, nonCornerMolds, project.OuterRectangle, 3)));
+            }
+
+            var cleaned = DeduplicateAssignments(rows);
+            return new MatchResult(cleaned);
         }
 
-        private static double Dist2((double X, double Y) a, RectCorner b)
+        private static double TrimmedChamferScore(
+            IReadOnlyList<(double X, double Y)> moldOutlineCentered,
+            IReadOnlyList<(double X, double Y)> candidatePointsAbs,
+            out (double X, double Y) bestPlacement)
         {
-            var dx = a.X - b.X;
-            var dy = a.Y - b.Y;
-            return dx * dx + dy * dy;
+            bestPlacement = (0, 0);
+            if (moldOutlineCentered.Count < 8 || candidatePointsAbs.Count < 12)
+            {
+                return double.PositiveInfinity;
+            }
+
+            var cx = candidatePointsAbs.Average(p => p.X);
+            var cy = candidatePointsAbs.Average(p => p.Y);
+            var basePlacement = (X: cx, Y: cy);
+
+            var searchRadius = 25.0;
+            var step = 2.5;
+            var best = double.PositiveInfinity;
+            for (var dx = -searchRadius; dx <= searchRadius; dx += step)
+            {
+                for (var dy = -searchRadius; dy <= searchRadius; dy += step)
+                {
+                    var placement = (basePlacement.X + dx, basePlacement.Y + dy);
+                    var score = TrimmedChamferOnce(moldOutlineCentered, candidatePointsAbs, placement, trimRatio: 0.65);
+                    if (score < best)
+                    {
+                        best = score;
+                        bestPlacement = placement;
+                    }
+                }
+            }
+            return best;
+        }
+
+        private static double TrimmedChamferOnce(
+            IReadOnlyList<(double X, double Y)> moldOutlineCentered,
+            IReadOnlyList<(double X, double Y)> candidatePointsAbs,
+            (double X, double Y) placement,
+            double trimRatio)
+        {
+            var n = moldOutlineCentered.Count;
+            var d2 = new double[n];
+            for (var i = 0; i < n; i++)
+            {
+                var mx = moldOutlineCentered[i].X + placement.X;
+                var my = moldOutlineCentered[i].Y + placement.Y;
+                var best = double.PositiveInfinity;
+                for (var j = 0; j < candidatePointsAbs.Count; j++)
+                {
+                    var dx = mx - candidatePointsAbs[j].X;
+                    var dy = my - candidatePointsAbs[j].Y;
+                    var dist = dx * dx + dy * dy;
+                    if (dist < best) best = dist;
+                }
+                d2[i] = best;
+            }
+            Array.Sort(d2);
+            var keep = Math.Max(6, (int)Math.Round(n * trimRatio));
+            double sum = 0;
+            for (var i = 0; i < keep; i++) sum += d2[i];
+            return Math.Sqrt(sum / keep);
+        }
+
+        private static IReadOnlyList<HoleAssignment> DeduplicateAssignments(IReadOnlyList<HoleAssignment> source)
+        {
+            if (source.Count <= 1)
+            {
+                return source;
+            }
+
+            var result = new List<HoleAssignment>();
+            foreach (var row in source.OrderBy(r => r.MoldId).ThenBy(r => r.Hole.Centroid.Y).ThenBy(r => r.Hole.Centroid.X))
+            {
+                var sizeRef = Math.Max(Math.Min(row.Hole.Width, row.Hole.Height), 1.0);
+                var tol = Math.Max(sizeRef * 0.35, 3.0);
+
+                var dup = result.Any(existing =>
+                {
+                    if (existing.MoldId != row.MoldId)
+                    {
+                        return false;
+                    }
+                    var dx = existing.Hole.Centroid.X - row.Hole.Centroid.X;
+                    var dy = existing.Hole.Centroid.Y - row.Hole.Centroid.Y;
+                    return Math.Sqrt(dx * dx + dy * dy) <= tol;
+                });
+
+                if (!dup)
+                {
+                    result.Add(row);
+                }
+            }
+            return result;
         }
 
         private static bool IsInCornerMissingZone(HoleFeature hole, RectBounds rect, RectCorner corner)
@@ -1796,63 +2662,4 @@ namespace CADRecognition
         }
     }
 
-    public sealed record ProjectProfile(RectBounds OuterRectangle, IReadOnlyList<HoleFeature> Holes);
-    public sealed record MoldProfile(int MoldId, string FilePath, HoleFeature Feature, IReadOnlyList<(double X, double Y)> OutlinePoints);
-    public sealed record MatchResult(IReadOnlyList<HoleAssignment> HoleAssignments);
-    public sealed record HoleAssignment(
-        HoleFeature Hole,
-        int MoldId,
-        string PositionRelation,
-        bool IsCornerCandidate,
-        bool IsEdgeHole,
-        string TopCandidates,
-        double RotationDeg = 0,
-        bool IsMirrored = false);
-    public sealed record HoleFeature(string HoleType, (double X, double Y) Centroid, double Width, double Height, double Area, double Perimeter, double Rotation, double[] Signature);
-
-    public sealed record RawBounds(double MinX, double MinY, double MaxX, double MaxY)
-    {
-        public double Width => MaxX - MinX;
-        public double Height => MaxY - MinY;
-    }
-
-    public sealed record RectBounds(double MinX, double MinY, double MaxX, double MaxY)
-    {
-        public double Width => MaxX - MinX;
-        public double Height => MaxY - MinY;
-        public double Area => Width * Height;
-        public IReadOnlyList<RectCorner> Corners => new[]
-        {
-            new RectCorner("左下", MinX, MinY),
-            new RectCorner("左上", MinX, MaxY),
-            new RectCorner("右下", MaxX, MinY),
-            new RectCorner("右上", MaxX, MaxY)
-        };
-    }
-
-    public sealed record RectCorner(string Name, double X, double Y);
-
-    public sealed class MoldRow
-    {
-        public ImageSource? MoldPreview { get; set; }
-        public string MoldCode { get; set; } = string.Empty;
-        public string MoldName { get; set; } = string.Empty;
-        public int UsedCount { get; set; }
-        public string MatchType { get; set; } = string.Empty;
-        public string Remark { get; set; } = string.Empty;
-    }
-
-    public sealed class PositionRow
-    {
-        public int Index { get; set; }
-        public string HoleType { get; set; } = string.Empty;
-        public int MoldId { get; set; }
-        public string MoldCode { get; set; } = string.Empty;
-        public double PosX { get; set; }
-        public double PosY { get; set; }
-        public string PositionRelation { get; set; } = string.Empty;
-        public string IsCornerCandidate { get; set; } = string.Empty;
-        public string IsEdgeHole { get; set; } = string.Empty;
-        public string TopCandidates { get; set; } = string.Empty;
-    }
 }
