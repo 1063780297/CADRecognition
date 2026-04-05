@@ -1863,6 +1863,37 @@ namespace CADRecognition
                     CreatePolylineSignature(pts, SignatureSamples)));
             }
 
+            // 混合闭环（线段+圆弧）：把可闭合的 line/arc 组装成轮廓，识别“圆弧+线段孔”。
+            foreach (var loop in ExtractMixedClosedLoops(doc))
+            {
+                if (loop.Count < 3)
+                {
+                    continue;
+                }
+
+                var area = Math.Abs(PolygonArea(loop));
+                if (area < 1e-6)
+                {
+                    continue;
+                }
+
+                var minX = loop.Min(p => p.X);
+                var maxX = loop.Max(p => p.X);
+                var minY = loop.Min(p => p.Y);
+                var maxY = loop.Max(p => p.Y);
+                var perimeter = PolylineLength(loop);
+
+                holes.Add(new HoleFeature(
+                    "MixedArcLine",
+                    (loop.Average(p => p.X), loop.Average(p => p.Y)),
+                    maxX - minX,
+                    maxY - minY,
+                    area,
+                    perimeter,
+                    0,
+                    CreatePolylineSignature(loop, SignatureSamples)));
+            }
+
             if (includeOpenPolylines)
             {
                 foreach (var pl in doc.Entities.Polylines2D.Where(p => !IsPolylineClosedLike(p) && p.Vertexes.Count >= 3))
@@ -1918,6 +1949,118 @@ namespace CADRecognition
                 pts.Add((arc.Center.X + arc.Radius * Math.Cos(rad), arc.Center.Y + arc.Radius * Math.Sin(rad)));
             }
             return pts;
+        }
+
+        private static List<List<(double X, double Y)>> ExtractMixedClosedLoops(DxfDocument doc)
+        {
+            var segments = new List<(double X, double Y)[]>();
+
+            foreach (var l in doc.Entities.Lines)
+            {
+                segments.Add([(l.StartPoint.X, l.StartPoint.Y), (l.EndPoint.X, l.EndPoint.Y)]);
+            }
+
+            foreach (var a in doc.Entities.Arcs)
+            {
+                var sweep = NormalizeArcSweep(a.StartAngle, a.EndAngle);
+                if (sweep < 5.0 || sweep > 355.0)
+                {
+                    continue;
+                }
+                var pts = SampleArc(a, 24).ToArray();
+                if (pts.Length >= 2)
+                {
+                    segments.Add(pts);
+                }
+            }
+
+            var tol = 1.0;
+            (double X, double Y) Snap((double X, double Y) p)
+                => (Math.Round(p.X / tol) * tol, Math.Round(p.Y / tol) * tol);
+
+            var edgeMap = new Dictionary<(double X, double Y), List<int>>();
+            for (var i = 0; i < segments.Count; i++)
+            {
+                var s0 = Snap(segments[i][0]);
+                var s1 = Snap(segments[i][^1]);
+
+                if (!edgeMap.TryGetValue(s0, out var l0))
+                {
+                    l0 = [];
+                    edgeMap[s0] = l0;
+                }
+                l0.Add(i);
+
+                if (!edgeMap.TryGetValue(s1, out var l1))
+                {
+                    l1 = [];
+                    edgeMap[s1] = l1;
+                }
+                l1.Add(i);
+            }
+
+            var used = new bool[segments.Count];
+            var loops = new List<List<(double X, double Y)>>();
+
+            for (var i = 0; i < segments.Count; i++)
+            {
+                if (used[i])
+                {
+                    continue;
+                }
+
+                var chain = new List<(double X, double Y)>(segments[i]);
+                used[i] = true;
+
+                var advanced = true;
+                while (advanced)
+                {
+                    advanced = false;
+                    var end = Snap(chain[^1]);
+                    if (!edgeMap.TryGetValue(end, out var cands))
+                    {
+                        break;
+                    }
+
+                    foreach (var idx in cands)
+                    {
+                        if (used[idx])
+                        {
+                            continue;
+                        }
+
+                        var seg = segments[idx];
+                        var s0 = Snap(seg[0]);
+                        var s1 = Snap(seg[^1]);
+                        if (s0.Equals(end))
+                        {
+                            chain.AddRange(seg.Skip(1));
+                            used[idx] = true;
+                            advanced = true;
+                            break;
+                        }
+                        if (s1.Equals(end))
+                        {
+                            chain.AddRange(seg.Reverse().Skip(1));
+                            used[idx] = true;
+                            advanced = true;
+                            break;
+                        }
+                    }
+                }
+
+                if (chain.Count >= 4)
+                {
+                    var start = Snap(chain[0]);
+                    var end = Snap(chain[^1]);
+                    if (start.Equals(end))
+                    {
+                        loops.Add(chain);
+                    }
+                }
+            }
+
+            return loops;
         }
 
         public static IReadOnlyList<(double X, double Y)> ExpandPolyline2D(Polyline2D polyline, int bulgeSamplesPerSegment)
@@ -2540,65 +2683,92 @@ namespace CADRecognition
                     $"A={pick.AreaRatio:F3},P={pick.PerimRatio:F3}"));
             }
 
-            // Edge partial stamping: translation-only, trimmed chamfer to allow partial imprint
-            var addedEdge = new List<HoleFeature>();
-            foreach (var cand in project.EdgeCandidates)
+            // Edge partial stamping：每条边最多保留一个“最佳局部冲压”，避免同一孔被重复打两次。
+            foreach (var sideGroup in project.EdgeCandidates.GroupBy(c => c.Side))
             {
-                // If this edge candidate overlaps a real hole, skip it to avoid "one hole, two molds".
-                var overlapThreshold = Math.Max(Math.Min(cand.Width, cand.Height) * 0.6, 25.0);
-                var overlapsRealHole = holePool.Any(h =>
-                {
-                    var dx = h.Centroid.X - cand.Centroid.X;
-                    var dy = h.Centroid.Y - cand.Centroid.Y;
-                    return Math.Sqrt(dx * dx + dy * dy) <= overlapThreshold;
-                });
-                if (overlapsRealHole)
-                {
-                    continue;
-                }
-
-                var best = nonCornerMolds
-                    .Select(m =>
+                var sideBest = sideGroup
+                    .Select(cand =>
                     {
-                        var score = TrimmedChamferScore(m.OutlinePoints, cand.Points, out var placement);
-                        return new { m.MoldId, Score = score, Placement = placement };
+                        var overlapThreshold = Math.Max(Math.Min(cand.Width, cand.Height) * 0.6, 25.0);
+                        var overlapsRealHole = holePool.Any(h =>
+                        {
+                            var dx = h.Centroid.X - cand.Centroid.X;
+                            var dy = h.Centroid.Y - cand.Centroid.Y;
+                            return Math.Sqrt(dx * dx + dy * dy) <= overlapThreshold;
+                        });
+                        if (overlapsRealHole)
+                        {
+                            return null;
+                        }
+
+                        var best = nonCornerMolds
+                            .Select(m =>
+                            {
+                                var chamfer = TrimmedChamferScore(m.OutlinePoints, cand.Points, out var placement);
+                                if (double.IsInfinity(chamfer))
+                                {
+                                    return null;
+                                }
+
+                                // 边缘局部冲压优先“同类形状 + 足够尺寸”的模具，避免误选小圆模(M16)。
+                                var candHoleType = cand.Points.Count >= 10 ? "Polyline" : "OpenPolyline";
+                                var pseudoCand = new HoleFeature(
+                                    candHoleType,
+                                    cand.Centroid,
+                                    cand.Width,
+                                    cand.Height,
+                                    Math.Max(cand.Width * cand.Height * 0.45, 1.0),
+                                    Math.Max(cand.Perimeter, 1.0),
+                                    0,
+                                    cand.Signature);
+                                var typeMatch = IsSameShapeType(pseudoCand, m.Feature) ? 0.0 : 0.5;
+                                var sig = SignatureDistance(cand.Signature, m.Feature.Signature);
+                                var wRatio = cand.Width / Math.Max(m.Feature.Width, 1e-6);
+                                var hRatio = cand.Height / Math.Max(m.Feature.Height, 1e-6);
+                                var sizePenalty = (wRatio > 1.05 || hRatio > 1.05) ? 1.2 : 0.0;
+                                var smallMoldPenalty = (m.Feature.Width < cand.Width * 0.75 || m.Feature.Height < cand.Height * 0.75) ? 1.5 : 0.0;
+
+                                var score = chamfer + sig * 0.9 + typeMatch + sizePenalty + smallMoldPenalty;
+                                return new { m.MoldId, Score = score, Placement = placement };
+                            })
+                            .Where(x => x is not null)
+                            .Select(x => x!)
+                            .OrderBy(x => x.Score)
+                            .FirstOrDefault();
+                        if (best is null || double.IsInfinity(best.Score))
+                        {
+                            return null;
+                        }
+
+                        var placementHole = new HoleFeature(
+                            $"EdgePartial:{cand.Side}",
+                            best.Placement,
+                            cand.Width,
+                            cand.Height,
+                            Math.Max(cand.Width * cand.Height * 0.45, 1.0),
+                            Math.Max(cand.Perimeter, 1.0),
+                            0,
+                            cand.Signature);
+
+                        return new { Hole = placementHole, best.MoldId, best.Score };
                     })
+                    .Where(x => x is not null)
+                    .Select(x => x!)
                     .OrderBy(x => x.Score)
                     .FirstOrDefault();
-                if (best is null || double.IsInfinity(best.Score))
+
+                if (sideBest is null)
                 {
                     continue;
                 }
 
-                var placementHole = new HoleFeature(
-                    $"EdgePartial:{cand.Side}",
-                    best.Placement,
-                    cand.Width,
-                    cand.Height,
-                    Math.Max(cand.Width * cand.Height * 0.45, 1.0),
-                    Math.Max(cand.Perimeter, 1.0),
-                    0,
-                    cand.Signature);
-
-                // De-duplicate edge partials near each other (one notch -> one mold).
-                var dup = addedEdge.Any(h =>
-                {
-                    var dx = h.Centroid.X - placementHole.Centroid.X;
-                    var dy = h.Centroid.Y - placementHole.Centroid.Y;
-                    return Math.Sqrt(dx * dx + dy * dy) <= overlapThreshold;
-                });
-                if (dup)
-                {
-                    continue;
-                }
-                addedEdge.Add(placementHole);
                 rows.Add(new HoleAssignment(
-                    placementHole,
-                    best.MoldId,
+                    sideBest.Hole,
+                    sideBest.MoldId,
                     "边缘局部冲压",
                     false,
                     true,
-                    BuildTopCandidates(placementHole, nonCornerMolds, project.OuterRectangle, 3)));
+                    BuildTopCandidates(sideBest.Hole, nonCornerMolds, project.OuterRectangle, 3)));
             }
 
             var cleaned = DeduplicateAssignments(rows);
