@@ -14,7 +14,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("CADRecognition")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+6c19bc5eef44a6795c51007bced67c63d05fb8eb")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+deeaaea6012a619ee940a0021bd25aaffd6447fa")]
 [assembly: System.Reflection.AssemblyProductAttribute("CADRecognition")]
 [assembly: System.Reflection.AssemblyTitleAttribute("CADRecognition")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

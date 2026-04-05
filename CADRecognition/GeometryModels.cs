@@ -7,10 +7,13 @@ namespace CADRecognition
         IReadOnlyList<HoleFeature> Holes,
         IReadOnlyList<HoleFeature> CornerCandidates,
         IReadOnlyList<EdgeCandidate> EdgeCandidates,
-        IReadOnlyList<CornerStepPath> CornerStepPaths);
+        IReadOnlyList<CornerStepPath> CornerStepPaths,
+        IReadOnlyList<CornerStepPath> ContourPaths);
 
     public sealed record MoldProfile(int MoldId, string FilePath, HoleFeature Feature, IReadOnlyList<(double X, double Y)> OutlinePoints);
-    public sealed record MatchResult(IReadOnlyList<HoleAssignment> HoleAssignments);
+    public sealed record MatchResult(
+        IReadOnlyList<HoleAssignment> HoleAssignments,
+        IReadOnlyList<CornerStepPath>? GuidePaths = null);
 
     public sealed record HoleAssignment(
         HoleFeature Hole,
