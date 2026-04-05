@@ -10,7 +10,12 @@ namespace CADRecognition
         IReadOnlyList<CornerStepPath> CornerStepPaths,
         IReadOnlyList<CornerStepPath> ContourPaths);
 
-    public sealed record MoldProfile(int MoldId, string FilePath, HoleFeature Feature, IReadOnlyList<(double X, double Y)> OutlinePoints);
+    public sealed record MoldProfile(
+        int MoldId,
+        string FilePath,
+        HoleFeature Feature,
+        IReadOnlyList<(double X, double Y)> OutlinePoints,
+        IReadOnlyList<HoleFeature>? CandidateFeatures = null);
     public sealed record MatchResult(
         IReadOnlyList<HoleAssignment> HoleAssignments,
         IReadOnlyList<CornerStepPath>? GuidePaths = null);
@@ -22,6 +27,8 @@ namespace CADRecognition
         bool IsCornerCandidate,
         bool IsEdgeHole,
         string TopCandidates,
+        string AreaRatioInfo = "",
+        string FailureReason = "",
         double RotationDeg = 0,
         bool IsMirrored = false);
 
@@ -82,5 +89,7 @@ namespace CADRecognition
         public string IsCornerCandidate { get; set; } = string.Empty;
         public string IsEdgeHole { get; set; } = string.Empty;
         public string TopCandidates { get; set; } = string.Empty;
+        public string AreaRatio { get; set; } = string.Empty;
+        public string FailureReason { get; set; } = string.Empty;
     }
 }

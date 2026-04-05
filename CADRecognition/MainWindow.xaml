@@ -111,7 +111,9 @@
                             <dxg:GridColumn FieldName="IsCornerCandidate" Header="角候选" Width="64"/>
                             <dxg:GridColumn FieldName="IsEdgeHole" Header="边缘孔" Width="64"/>
                             <dxg:GridColumn FieldName="PositionRelation" Header="位置关系" Width="120"/>
-                            <dxg:GridColumn FieldName="TopCandidates" Header="Top3候选" Width="260"/>
+                            <dxg:GridColumn FieldName="TopCandidates" Header="Top3候选(面积比)" Width="260"/>
+                            <dxg:GridColumn FieldName="AreaRatio" Header="选中面积比" Width="96"/>
+                            <dxg:GridColumn FieldName="FailureReason" Header="失败原因" Width="320"/>
                         </dxg:GridControl.Columns>
                     </dxg:GridControl>
                 </DockPanel>

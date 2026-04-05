@@ -167,13 +167,15 @@ namespace CADRecognition
                     Index = i++,
                     HoleType = row.Hole.HoleType,
                     MoldId = row.MoldId,
-                    MoldCode = $"M{row.MoldId:D2}",
+                    MoldCode = row.MoldId > 0 ? $"M{row.MoldId:D2}" : "未匹配",
                     PosX = Math.Round(row.Hole.Centroid.X, 3),
                     PosY = Math.Round(row.Hole.Centroid.Y, 3),
                     PositionRelation = row.PositionRelation,
                     IsCornerCandidate = row.IsCornerCandidate ? "是" : "否",
                     IsEdgeHole = row.IsEdgeHole ? "是" : "否",
-                    TopCandidates = row.TopCandidates
+                    TopCandidates = row.TopCandidates,
+                    AreaRatio = row.AreaRatioInfo,
+                    FailureReason = row.FailureReason
                 });
             }
         }
@@ -1078,26 +1080,37 @@ namespace CADRecognition
         public static MoldProfile ExtractMold(int moldId, string path)
         {
             var doc = DxfDocument.Load(path);
-            var holes = ExtractHoles(doc);
+            // 模具特征只取“可闭合几何”，避免 OpenPolyline 的伪面积干扰面积比匹配。
+            var holes = ExtractHoles(doc, includeOpenPolylines: false);
             var outer = DetectOuterRectangle(doc);
-            var feature = holes
+            var candidates = holes
                 .Where(h => h.Area <= Math.Max(outer.Area * 0.75, 10.0))
                 .OrderByDescending(h => h.Area)
-                .FirstOrDefault();
+                .ToList();
 
+            var feature = candidates.FirstOrDefault();
             if (feature is null)
             {
                 feature = BuildFeatureFromEntities(doc);
+                if (feature is not null)
+                {
+                    candidates.Add(feature);
+                }
             }
 
             feature ??= new HoleFeature("Unknown", (0, 0), 1, 1, 1, 1, 0, CreateCircleSignature(1, SignatureSamples));
+            if (candidates.Count == 0)
+            {
+                candidates.Add(feature);
+            }
+
             var outline = ExtractMoldOutline(doc, feature.Centroid);
-            return new MoldProfile(moldId, path, feature, outline);
+            return new MoldProfile(moldId, path, feature, outline, candidates);
         }
 
         public static ProjectProfile ExtractProject(DxfDocument doc)
         {
-            var holes = ExtractHoles(doc);
+            var holes = ExtractHoles(doc, includeOpenPolylines: false);
             var outer = DetectOuterRectangle(doc);
             var edgeCandidates = ExtractEdgePartialCandidates(doc, outer);
             var cornerCandidates = ExtractCornerMissingFeatures(doc, outer);
@@ -1774,7 +1787,7 @@ namespace CADRecognition
             return allRect;
         }
 
-        private static List<HoleFeature> ExtractHoles(DxfDocument doc)
+        private static List<HoleFeature> ExtractHoles(DxfDocument doc, bool includeOpenPolylines)
         {
             var holes = new List<HoleFeature>();
             var allBounds = GetRawBounds(doc);
@@ -1850,36 +1863,39 @@ namespace CADRecognition
                     CreatePolylineSignature(pts, SignatureSamples)));
             }
 
-            foreach (var pl in doc.Entities.Polylines2D.Where(p => !IsPolylineClosedLike(p) && p.Vertexes.Count >= 3))
+            if (includeOpenPolylines)
             {
-                var pts = ExpandPolyline2D(pl, 24).ToList();
-                if (pts.Count < 3)
+                foreach (var pl in doc.Entities.Polylines2D.Where(p => !IsPolylineClosedLike(p) && p.Vertexes.Count >= 3))
                 {
-                    continue;
-                }
-                var minX = pts.Min(p => p.X);
-                var maxX = pts.Max(p => p.X);
-                var minY = pts.Min(p => p.Y);
-                var maxY = pts.Max(p => p.Y);
-                var width = maxX - minX;
-                var height = maxY - minY;
-                var bboxArea = Math.Max(width * height, 0);
-                if (bboxArea < 1e-6 || bboxArea > allArea * 0.03)
-                {
-                    continue;
-                }
+                    var pts = ExpandPolyline2D(pl, 24).ToList();
+                    if (pts.Count < 3)
+                    {
+                        continue;
+                    }
+                    var minX = pts.Min(p => p.X);
+                    var maxX = pts.Max(p => p.X);
+                    var minY = pts.Min(p => p.Y);
+                    var maxY = pts.Max(p => p.Y);
+                    var width = maxX - minX;
+                    var height = maxY - minY;
+                    var bboxArea = Math.Max(width * height, 0);
+                    if (bboxArea < 1e-6 || bboxArea > allArea * 0.03)
+                    {
+                        continue;
+                    }
 
-                var perimeter = PolylineLength(pts);
-                var pseudoArea = bboxArea * 0.6;
-                holes.Add(new HoleFeature(
-                    "OpenPolyline",
-                    (pts.Average(p => p.X), pts.Average(p => p.Y)),
-                    width,
-                    height,
-                    pseudoArea,
-                    perimeter,
-                    pl.Elevation,
-                    CreatePolylineSignature(pts, SignatureSamples)));
+                    var perimeter = PolylineLength(pts);
+                    var pseudoArea = bboxArea * 0.6;
+                    holes.Add(new HoleFeature(
+                        "OpenPolyline",
+                        (pts.Average(p => p.X), pts.Average(p => p.Y)),
+                        width,
+                        height,
+                        pseudoArea,
+                        perimeter,
+                        pl.Elevation,
+                        CreatePolylineSignature(pts, SignatureSamples)));
+                }
             }
 
             return DeduplicateHoles(holes);
@@ -2392,6 +2408,10 @@ namespace CADRecognition
         private const double EdgePartialDistanceRatio = 0.06;
         private const int CornerPathMaxPointsPerCorner = 24;
 
+        // 内孔严格匹配阈值（保留严格性，但允许CAD提取误差）
+        private const double StrictAreaRatioMin = 0.95;
+        private const double StrictAreaRatioMax = 1.05;
+
         public MatchResult Match(ProjectProfile project, IReadOnlyList<MoldProfile> molds)
         {
             var rows = new List<HoleAssignment>();
@@ -2403,8 +2423,14 @@ namespace CADRecognition
 
             var corners = project.OuterRectangle.Corners;
             var holePool = project.Holes.ToList();
-            var mold1 = molds.FirstOrDefault(m => m.MoldId == 1) ?? molds[0];
-            var nonCornerMolds = molds.Where(m => m.MoldId != mold1.MoldId).ToList();
+            var validMolds = molds.Where(m => m.MoldId > 0 && m.MoldId < 999).ToList();
+            if (validMolds.Count == 0)
+            {
+                validMolds = molds.ToList();
+            }
+
+            var mold1 = validMolds.FirstOrDefault(m => m.MoldId == 1) ?? validMolds[0];
+            var nonCornerMolds = validMolds.Where(m => m.MoldId != mold1.MoldId).ToList();
             if (nonCornerMolds.Count == 0)
             {
                 nonCornerMolds.Add(mold1);
@@ -2429,21 +2455,89 @@ namespace CADRecognition
 
             foreach (var hole in holePool)
             {
-                var best = nonCornerMolds
-                    .Select(m => new
+                // 严格匹配：遍历模具库全部候选特征，必须满足同类+几何一致。
+                var ranked = nonCornerMolds
+                    .SelectMany(m =>
                     {
-                        MoldId = m.MoldId,
-                        Score = ScoreForHoleAgainstMold(hole, m.Feature, project.OuterRectangle)
+                        var features = (m.CandidateFeatures is { Count: > 0 } ? m.CandidateFeatures : [m.Feature]);
+                        return features.Select(f =>
+                        {
+                            var areaRatio = hole.Area / Math.Max(f.Area, 1e-6);
+                            var perimRatio = hole.Perimeter / Math.Max(f.Perimeter, 1e-6);
+                            var signature = SignatureDistance(hole.Signature, f.Signature);
+                            var typeMatch = IsSameShapeType(hole, f);
+
+                            // 宽高顺序无关：用长边/短边比。
+                            var hLong = Math.Max(hole.Width, hole.Height);
+                            var hShort = Math.Max(Math.Min(hole.Width, hole.Height), 1e-6);
+                            var fLong = Math.Max(f.Width, f.Height);
+                            var fShort = Math.Max(Math.Min(f.Width, f.Height), 1e-6);
+                            var longRatio = hLong / Math.Max(fLong, 1e-6);
+                            var shortRatio = hShort / Math.Max(fShort, 1e-6);
+
+                            var strict = typeMatch
+                                && areaRatio >= 0.94 && areaRatio <= 1.06
+                                && perimRatio >= 0.94 && perimRatio <= 1.06
+                                && longRatio >= 0.94 && longRatio <= 1.06
+                                && shortRatio >= 0.94 && shortRatio <= 1.06
+                                && signature <= 0.22;
+
+                            var score = Math.Abs(areaRatio - 1.0)
+                                        + Math.Abs(perimRatio - 1.0)
+                                        + Math.Abs(longRatio - 1.0)
+                                        + Math.Abs(shortRatio - 1.0)
+                                        + signature * 0.5;
+
+                            return new
+                            {
+                                MoldId = m.MoldId,
+                                AreaRatio = areaRatio,
+                                PerimRatio = perimRatio,
+                                LongRatio = longRatio,
+                                ShortRatio = shortRatio,
+                                Signature = signature,
+                                TypeMatch = typeMatch,
+                                Strict = strict,
+                                Score = score
+                            };
+                        });
                     })
                     .OrderBy(x => x.Score)
-                    .First();
+                    .ToList();
+
+                var strictPass = ranked.Where(x => x.Strict).OrderBy(x => x.Score).ToList();
+                if (strictPass.Count == 0)
+                {
+                    // 兜底：不允许出现 M00。优先同类，再按几何综合分数最小选一个。
+                    var fallback = ranked
+                        .Where(x => x.TypeMatch)
+                        .OrderBy(x => x.Score)
+                        .FirstOrDefault() ?? ranked.OrderBy(x => x.Score).First();
+
+                    var debugTop = string.Join(" | ", ranked.Take(3).Select(r =>
+                        $"M{r.MoldId:D2}:A={r.AreaRatio:F3},P={r.PerimRatio:F3},L={r.LongRatio:F3},S={r.ShortRatio:F3},Sig={r.Signature:F3},T={r.TypeMatch}"));
+
+                    rows.Add(new HoleAssignment(
+                        hole,
+                        fallback.MoldId,
+                        "单次冲压(兜底匹配)",
+                        IsAnyCornerZone(hole, project.OuterRectangle),
+                        IsNearOuterEdge(hole, project.OuterRectangle),
+                        debugTop,
+                        $"A={fallback.AreaRatio:F3},P={fallback.PerimRatio:F3}",
+                        "严格条件未通过，已使用兜底最近模具"));
+                    continue;
+                }
+
+                var pick = strictPass[0];
                 rows.Add(new HoleAssignment(
                     hole,
-                    best.MoldId,
+                    pick.MoldId,
                     "单次冲压",
                     IsAnyCornerZone(hole, project.OuterRectangle),
                     IsNearOuterEdge(hole, project.OuterRectangle),
-                    BuildTopCandidates(hole, nonCornerMolds, project.OuterRectangle, 3)));
+                    string.Join(" | ", strictPass.Take(3).Select(r => $"M{r.MoldId:D2}:{r.Score:F3}")),
+                    $"A={pick.AreaRatio:F3},P={pick.PerimRatio:F3}"));
             }
 
             // Edge partial stamping: translation-only, trimmed chamfer to allow partial imprint
@@ -3061,6 +3155,45 @@ namespace CADRecognition
                 .Take(topN)
                 .Select(x => $"M{x.MoldId:D2}:{x.Score:F3}");
             return string.Join(" | ", tops);
+        }
+
+        private static string BuildTopCandidatesByAreaRatio(HoleFeature hole, IEnumerable<MoldProfile> molds, int topN)
+        {
+            var tops = molds
+                .SelectMany(m =>
+                {
+                    var features = (m.CandidateFeatures is { Count: > 0 } ? m.CandidateFeatures : [m.Feature]);
+                    return features.Select(f => new
+                    {
+                        m.MoldId,
+                        AreaRatio = hole.Area / Math.Max(f.Area, 1e-6),
+                        Signature = SignatureDistance(hole.Signature, f.Signature)
+                    });
+                })
+                .OrderBy(x => Math.Abs(x.AreaRatio - 1.0))
+                .ThenBy(x => x.Signature)
+                .Take(topN)
+                .Select(x => $"M{x.MoldId:D2}:{x.AreaRatio:F3}");
+            return string.Join(" | ", tops);
+        }
+
+        private static bool IsSameShapeType(HoleFeature hole, HoleFeature mold)
+        {
+            var hCircle = hole.HoleType.Contains("Circle", StringComparison.OrdinalIgnoreCase);
+            var mCircle = mold.HoleType.Contains("Circle", StringComparison.OrdinalIgnoreCase);
+            if (hCircle || mCircle)
+            {
+                return hCircle == mCircle;
+            }
+
+            var hPoly = hole.HoleType.Contains("Polyline", StringComparison.OrdinalIgnoreCase) || hole.HoleType.Contains("EntityComposite", StringComparison.OrdinalIgnoreCase);
+            var mPoly = mold.HoleType.Contains("Polyline", StringComparison.OrdinalIgnoreCase) || mold.HoleType.Contains("EntityComposite", StringComparison.OrdinalIgnoreCase);
+            if (hPoly || mPoly)
+            {
+                return hPoly == mPoly;
+            }
+
+            return true;
         }
 
         private static double SimilarityScore(HoleFeature h, HoleFeature m)
