@@ -38,6 +38,7 @@ namespace CADRecognition
 
         private string? _projectFile;
         private DxfDocument? _projectDoc;
+        private bool _compactAnnotation = true;
 
         public MainWindow()
         {
@@ -46,6 +47,7 @@ namespace CADRecognition
             MoldCountText.Text = "0";
             ProjectFileText.Text = "未加载";
             PreviewHost.Content = _viewer;
+            _viewer.SetCompactMode(_compactAnnotation);
             FileTreeView.Items.Clear();
         }
 
@@ -57,6 +59,17 @@ namespace CADRecognition
         private void OnPropertyChanged([CallerMemberName] string? name = null)
         {
             PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+        }
+
+        private void CompactAnnoCheckBox_Checked(object sender, RoutedEventArgs e)
+        {
+            _compactAnnotation = CompactAnnoCheckBox.IsChecked != false;
+            _viewer.SetCompactMode(_compactAnnotation);
+
+            if (_projectDoc is not null)
+            {
+                RenderPreview(_projectDoc, _projectFile, withAnnotation: _lastMatchResult is not null);
+            }
         }
 
         private void ImportProjectDxf_Click(object sender, RoutedEventArgs e)
@@ -209,7 +222,7 @@ namespace CADRecognition
                 {
                     Text = $"M{mold.MoldId:D2}",
                     Foreground = WpfBrushes.White,
-                    FontSize = 11,
+                    FontSize = 9,
                     VerticalAlignment = VerticalAlignment.Center
                 });
                 chip.Child = panel;
@@ -505,6 +518,8 @@ namespace CADRecognition
 
     public sealed class InteractiveDxfPreview : Border
     {
+        private bool _compactMode = true;
+
         private static readonly WpfColor[] Palette =
         [
             WpfColor.FromRgb(255, 87, 34), WpfColor.FromRgb(76, 175, 80), WpfColor.FromRgb(33, 150, 243),
@@ -592,29 +607,32 @@ namespace CADRecognition
                 var color = GetMoldColor(ass.MoldId);
                 var brush = new SolidColorBrush(color);
 
-                // Draw a tiny cross at the reported centroid for coordinate verification.
-                var cross = new Polyline
+                if (!_compactMode)
                 {
-                    Stroke = WpfBrushes.White,
-                    StrokeThickness = 1,
-                    Points = new PointCollection
+                    // Draw a tiny cross at the reported centroid for coordinate verification.
+                    var cross = new Polyline
                     {
-                        new System.Windows.Point(p.X - 4, p.Y),
-                        new System.Windows.Point(p.X + 4, p.Y),
-                    }
-                };
-                _markCanvas.Children.Add(cross);
-                var cross2 = new Polyline
-                {
-                    Stroke = WpfBrushes.White,
-                    StrokeThickness = 1,
-                    Points = new PointCollection
+                        Stroke = WpfBrushes.White,
+                        StrokeThickness = 0.7,
+                        Points = new PointCollection
+                        {
+                            new System.Windows.Point(p.X - 4, p.Y),
+                            new System.Windows.Point(p.X + 4, p.Y),
+                        }
+                    };
+                    _markCanvas.Children.Add(cross);
+                    var cross2 = new Polyline
                     {
-                        new System.Windows.Point(p.X, p.Y - 4),
-                        new System.Windows.Point(p.X, p.Y + 4),
-                    }
-                };
-                _markCanvas.Children.Add(cross2);
+                        Stroke = WpfBrushes.White,
+                        StrokeThickness = 0.7,
+                        Points = new PointCollection
+                        {
+                            new System.Windows.Point(p.X, p.Y - 4),
+                            new System.Windows.Point(p.X, p.Y + 4),
+                        }
+                    };
+                    _markCanvas.Children.Add(cross2);
+                }
 
                 if (moldMap.TryGetValue(ass.MoldId, out var mold) && mold.OutlinePoints.Count >= 2)
                 {
@@ -632,7 +650,7 @@ namespace CADRecognition
                     {
                         Points = outline,
                         Stroke = brush,
-                        StrokeThickness = 1.6
+                        StrokeThickness = 0.95
                     };
                     _markCanvas.Children.Add(poly);
                 }
@@ -644,23 +662,31 @@ namespace CADRecognition
                         Height = 12,
                         Fill = brush,
                         Stroke = WpfBrushes.White,
-                        StrokeThickness = 1
+                        StrokeThickness = 0.7
                     };
                     Canvas.SetLeft(mark, p.X - 6);
                     Canvas.SetTop(mark, p.Y - 6);
                     _markCanvas.Children.Add(mark);
                 }
 
-                var text = new TextBlock
+                var shouldShowLabel = !_compactMode ||
+                                      ass.Hole.HoleType.StartsWith("Edge", StringComparison.Ordinal) ||
+                                      ass.Hole.HoleType.StartsWith("Circle", StringComparison.Ordinal) ||
+                                      ass.Hole.HoleType.StartsWith("Polyline", StringComparison.Ordinal);
+
+                if (shouldShowLabel)
                 {
-                    Text = $"M{ass.MoldId:D2}",
-                    Foreground = brush,
-                    FontWeight = FontWeights.Bold,
-                    FontSize = 11
-                };
-                Canvas.SetLeft(text, p.X + 8);
-                Canvas.SetTop(text, p.Y - 8);
-                _markCanvas.Children.Add(text);
+                    var text = new TextBlock
+                    {
+                        Text = $"M{ass.MoldId:D2}",
+                        Foreground = brush,
+                        FontWeight = FontWeights.Bold,
+                        FontSize = _compactMode ? 8 : 9
+                    };
+                    Canvas.SetLeft(text, p.X + 8);
+                    Canvas.SetTop(text, p.Y - 8);
+                    _markCanvas.Children.Add(text);
+                }
             }
         }
 
@@ -684,7 +710,7 @@ namespace CADRecognition
                 Width = Math.Abs(r2.X - r1.X),
                 Height = Math.Abs(r2.Y - r1.Y),
                 Stroke = new SolidColorBrush(WpfColor.FromArgb(240, 255, 235, 59)),
-                StrokeThickness = 1.8,
+                StrokeThickness = 1.0,
                 StrokeDashArray = new DoubleCollection([4, 3]),
                 Fill = WpfBrushes.Transparent
             };
@@ -698,7 +724,7 @@ namespace CADRecognition
                 var polyAll = new Polyline
                 {
                     Stroke = new SolidColorBrush(WpfColor.FromArgb(245, 255, 82, 82)),
-                    StrokeThickness = 1.8,
+                    StrokeThickness = 1.0,
                     StrokeLineJoin = PenLineJoin.Round,
                     StrokeStartLineCap = PenLineCap.Round,
                     StrokeEndLineCap = PenLineCap.Round
@@ -849,7 +875,7 @@ namespace CADRecognition
                 var cyanPoly = new Polyline
                 {
                     Stroke = new SolidColorBrush(WpfColor.FromArgb(245, 0, 255, 255)),
-                    StrokeThickness = 2.4,
+                    StrokeThickness = 1.1,
                     StrokeLineJoin = PenLineJoin.Round,
                     StrokeStartLineCap = PenLineCap.Round,
                     StrokeEndLineCap = PenLineCap.Round
@@ -875,7 +901,7 @@ namespace CADRecognition
                     var guide = new Polyline
                     {
                         Stroke = new SolidColorBrush(WpfColor.FromArgb(235, 186, 104, 200)),
-                        StrokeThickness = 2.0,
+                        StrokeThickness = 1.0,
                         StrokeLineJoin = PenLineJoin.Round,
                         StrokeStartLineCap = PenLineCap.Round,
                         StrokeEndLineCap = PenLineCap.Round,
@@ -901,7 +927,7 @@ namespace CADRecognition
                     X2 = p2.X,
                     Y2 = p2.Y,
                     Stroke = new SolidColorBrush(WpfColor.FromArgb(235, 255, 152, 0)),
-                    StrokeThickness = 2.0,
+                    StrokeThickness = 0.9,
                     StrokeDashArray = new DoubleCollection([2, 2])
                 };
                 _zoneCanvas.Children.Add(dbg);
@@ -913,7 +939,7 @@ namespace CADRecognition
             {
                 Text = "待冲轮廓",
                 Foreground = new SolidColorBrush(WpfColor.FromArgb(245, 0, 255, 255)),
-                FontSize = 11,
+                FontSize = 9,
                 FontWeight = FontWeights.Bold,
                 Background = new SolidColorBrush(WpfColor.FromArgb(120, 0, 0, 0))
             };
@@ -929,6 +955,11 @@ namespace CADRecognition
                 return Palette[0];
             }
             return Palette[(moldId - 1) % Palette.Length];
+        }
+
+        public void SetCompactMode(bool compact)
+        {
+            _compactMode = compact;
         }
 
         public void FocusHole(double modelX, double modelY, int moldId, double? targetZoom = null)
@@ -1583,9 +1614,9 @@ namespace CADRecognition
             // Edge band (exclude corner zones)
             var cornerX = outer.Width * 0.22;
             var cornerY = outer.Height * 0.22;
-            var band = Math.Max(Math.Min(outer.Width, outer.Height) * 0.06, 15.0);
-            var depth = Math.Max(Math.Min(outer.Width, outer.Height) * 0.02, 5.0);
-            var gap = Math.Max(Math.Min(outer.Width, outer.Height) * 0.03, 25.0);
+            var band = Math.Max(Math.Min(outer.Width, outer.Height) * 0.06, 12.0);
+            var depth = Math.Max(Math.Min(outer.Width, outer.Height) * 0.015, 3.0);
+            var gap = Math.Max(Math.Min(outer.Width, outer.Height) * 0.018, 12.0);
 
             IEnumerable<(double X, double Y)> top = pts.Where(p =>
                 p.Y <= outer.MaxY - depth && p.Y >= outer.MaxY - band &&
@@ -1603,7 +1634,7 @@ namespace CADRecognition
             void AddGroups(IEnumerable<(double X, double Y)> bandPts, bool sortByX, string side)
             {
                 var sorted = (sortByX ? bandPts.OrderBy(p => p.X) : bandPts.OrderBy(p => p.Y)).ToList();
-                if (sorted.Count < 8)
+                if (sorted.Count < 5)
                 {
                     return;
                 }
@@ -1624,14 +1655,14 @@ namespace CADRecognition
                     }
                     else
                     {
-                        if (current.Count >= 12)
+                        if (current.Count >= 6)
                         {
                             result.Add(BuildEdgeCandidate(side, current));
                         }
                         current = [sorted[i]];
                     }
                 }
-                if (current.Count >= 12)
+                if (current.Count >= 6)
                 {
                     result.Add(BuildEdgeCandidate(side, current));
                 }
@@ -2172,16 +2203,42 @@ namespace CADRecognition
 
         private static List<HoleFeature> DeduplicateHoles(IEnumerable<HoleFeature> source)
         {
-            var result = new List<HoleFeature>();
-            foreach (var h in source.OrderBy(x => x.Area))
+            static int TypePriority(string t)
             {
-                var tolPos = Math.Max(Math.Min(h.Width, h.Height) * 0.15, 2.0);
-                var tolSize = Math.Max(Math.Min(h.Width, h.Height) * 0.12, 2.0);
+                if (t.StartsWith("Circle", StringComparison.OrdinalIgnoreCase) || t.StartsWith("ArcCircle", StringComparison.OrdinalIgnoreCase)) return 5;
+                if (t.StartsWith("Polyline", StringComparison.OrdinalIgnoreCase)) return 4;
+                if (t.StartsWith("MixedArcLine", StringComparison.OrdinalIgnoreCase)) return 3;
+                if (t.StartsWith("EntityComposite", StringComparison.OrdinalIgnoreCase)) return 2;
+                if (t.StartsWith("OpenPolyline", StringComparison.OrdinalIgnoreCase)) return 1;
+                return 0;
+            }
+
+            var ordered = source
+                .OrderByDescending(h => TypePriority(h.HoleType))
+                .ThenByDescending(h => h.Area)
+                .ToList();
+
+            var result = new List<HoleFeature>();
+            foreach (var h in ordered)
+            {
+                var tolPos = Math.Max(Math.Min(h.Width, h.Height) * 0.12, 1.5);
+                var tolSize = Math.Max(Math.Min(h.Width, h.Height) * 0.10, 1.2);
                 var exists = result.Any(r =>
-                    Math.Abs(r.Centroid.X - h.Centroid.X) <= tolPos &&
-                    Math.Abs(r.Centroid.Y - h.Centroid.Y) <= tolPos &&
-                    Math.Abs(r.Width - h.Width) <= tolSize &&
-                    Math.Abs(r.Height - h.Height) <= tolSize);
+                {
+                    var dx = r.Centroid.X - h.Centroid.X;
+                    var dy = r.Centroid.Y - h.Centroid.Y;
+                    var near = Math.Sqrt(dx * dx + dy * dy) <= tolPos;
+                    if (!near)
+                    {
+                        return false;
+                    }
+
+                    var sizeNear = Math.Abs(r.Width - h.Width) <= tolSize &&
+                                   Math.Abs(r.Height - h.Height) <= tolSize;
+                    var areaNear = Math.Abs(r.Area - h.Area) <= Math.Max(Math.Min(r.Area, h.Area) * 0.15, 8.0);
+                    return sizeNear || areaNear;
+                });
+
                 if (!exists)
                 {
                     result.Add(h);
@@ -2603,7 +2660,9 @@ namespace CADRecognition
                     .SelectMany(m =>
                     {
                         var features = (m.CandidateFeatures is { Count: > 0 } ? m.CandidateFeatures : [m.Feature]);
-                        return features.Select(f =>
+                        return features
+                            .Where(f => IsShapeFamilyCompatible(hole, f))
+                            .Select(f =>
                         {
                             var areaRatio = hole.Area / Math.Max(f.Area, 1e-6);
                             var perimRatio = hole.Perimeter / Math.Max(f.Perimeter, 1e-6);
@@ -2648,10 +2707,15 @@ namespace CADRecognition
                     .OrderBy(x => x.Score)
                     .ToList();
 
+                if (ranked.Count == 0)
+                {
+                    continue;
+                }
+
                 var strictPass = ranked.Where(x => x.Strict).OrderBy(x => x.Score).ToList();
                 if (strictPass.Count == 0)
                 {
-                    // 兜底：不允许出现 M00。优先同类，再按几何综合分数最小选一个。
+                    // 兜底：不允许出现 M00。仅在同类族内按几何综合分数最小选一个。
                     var fallback = ranked
                         .Where(x => x.TypeMatch)
                         .OrderBy(x => x.Score)
@@ -2882,9 +2946,30 @@ namespace CADRecognition
                 // 输出辅助线：用于界面可视化核对。
                 guidePaths.Add(new CornerStepPath(contourPath.CornerName, offsetChain));
 
-                var sampled = SampleAlongPolyline(offsetChain, moldStep);
+                // 规则：当某段长度小于模具边长时，该段不做连续冲压，仅保留拐点命中。
+                var moldEdge = Math.Max(mold1.Feature.Width, mold1.Feature.Height);
+                var sampled = SampleAlongPolylineWithMinSegmentLength(offsetChain, moldStep, minSegmentLength: moldEdge);
+                var cornerProtectRadius = Math.Max(moldEdge * 0.35, 0.8);
                 foreach (var s in sampled)
                 {
+                    // 角点附近允许保留，但避免与角点几乎重合的重复点。
+                    var tooCloseToCorner = false;
+                    for (var ci = 1; ci < offsetChain.Count - 1; ci++)
+                    {
+                        var cpt = offsetChain[ci];
+                        var dx = s.X - cpt.X;
+                        var dy = s.Y - cpt.Y;
+                        if (Math.Sqrt(dx * dx + dy * dy) <= cornerProtectRadius)
+                        {
+                            tooCloseToCorner = true;
+                            break;
+                        }
+                    }
+                    if (tooCloseToCorner)
+                    {
+                        continue;
+                    }
+
                     points.Add(new HoleFeature(
                         $"ContourPath:{contourPath.CornerName}",
                         (s.X, s.Y),
@@ -2897,6 +2982,8 @@ namespace CADRecognition
                 }
 
                 // 内拐点必须命中：偏移线每个折点都强制补一个冲压中心。
+                // 同时在每个角点沿前后段方向各补一个“夹角内侧点”，确保凹入短边冲到位。
+                var flankStep = Math.Max(moldEdge * 0.45, 1.2);
                 for (var vi = 1; vi < offsetChain.Count - 1; vi++)
                 {
                     var v = offsetChain[vi];
@@ -2909,6 +2996,47 @@ namespace CADRecognition
                         Math.Max(mold1.Feature.Perimeter, 1.0),
                         0,
                         mold1.Feature.Signature));
+
+                    var prev = offsetChain[vi - 1];
+                    var next = offsetChain[vi + 1];
+
+                    var d1x = prev.X - v.X;
+                    var d1y = prev.Y - v.Y;
+                    var l1 = Math.Sqrt(d1x * d1x + d1y * d1y);
+                    if (l1 > 1e-9)
+                    {
+                        var ux = d1x / l1;
+                        var uy = d1y / l1;
+                        var s1 = Math.Min(flankStep, l1 * 0.45);
+                        points.Add(new HoleFeature(
+                            $"ContourCornerFlank:{contourPath.CornerName}",
+                            (v.X + ux * s1, v.Y + uy * s1),
+                            mold1.Feature.Width,
+                            mold1.Feature.Height,
+                            Math.Max(mold1.Feature.Area, 1.0),
+                            Math.Max(mold1.Feature.Perimeter, 1.0),
+                            0,
+                            mold1.Feature.Signature));
+                    }
+
+                    var d2x = next.X - v.X;
+                    var d2y = next.Y - v.Y;
+                    var l2 = Math.Sqrt(d2x * d2x + d2y * d2y);
+                    if (l2 > 1e-9)
+                    {
+                        var ux = d2x / l2;
+                        var uy = d2y / l2;
+                        var s2 = Math.Min(flankStep, l2 * 0.45);
+                        points.Add(new HoleFeature(
+                            $"ContourCornerFlank:{contourPath.CornerName}",
+                            (v.X + ux * s2, v.Y + uy * s2),
+                            mold1.Feature.Width,
+                            mold1.Feature.Height,
+                            Math.Max(mold1.Feature.Area, 1.0),
+                            Math.Max(mold1.Feature.Perimeter, 1.0),
+                            0,
+                            mold1.Feature.Signature));
+                    }
                 }
             }
 
@@ -2990,6 +3118,33 @@ namespace CADRecognition
 
             var center = ((outer.MinX + outer.MaxX) * 0.5, (outer.MinY + outer.MaxY) * 0.5);
 
+            // CAD Offset 风格：整条路径使用统一“外侧方向”，避免短边处法线翻转。
+            var sideSign = 1.0; // +1: 左法线，-1: 右法线
+            for (var i = 1; i < chain.Count; i++)
+            {
+                var dx0 = chain[i].X - chain[i - 1].X;
+                var dy0 = chain[i].Y - chain[i - 1].Y;
+                var len0 = Math.Sqrt(dx0 * dx0 + dy0 * dy0);
+                if (len0 <= 1e-9)
+                {
+                    continue;
+                }
+
+                var tx0 = dx0 / len0;
+                var ty0 = dy0 / len0;
+                var left = (-ty0, tx0);
+                var right = (ty0, -tx0);
+                var mid = ((chain[i - 1].X + chain[i].X) * 0.5, (chain[i - 1].Y + chain[i].Y) * 0.5);
+
+                var dl = (mid.Item1 + left.Item1 * offset - center.Item1) * (mid.Item1 + left.Item1 * offset - center.Item1)
+                       + (mid.Item2 + left.Item2 * offset - center.Item2) * (mid.Item2 + left.Item2 * offset - center.Item2);
+                var dr = (mid.Item1 + right.Item1 * offset - center.Item1) * (mid.Item1 + right.Item1 * offset - center.Item1)
+                       + (mid.Item2 + right.Item2 * offset - center.Item2) * (mid.Item2 + right.Item2 * offset - center.Item2);
+
+                sideSign = dl >= dr ? 1.0 : -1.0;
+                break;
+            }
+
             (double NX, double NY) OutwardNormal((double X, double Y) a, (double X, double Y) b)
             {
                 var dx = b.X - a.X;
@@ -3002,13 +3157,8 @@ namespace CADRecognition
 
                 var tx = dx / len;
                 var ty = dy / len;
-                var n1 = (-ty, tx);
-                var n2 = (ty, -tx);
-                var mid = ((a.X + b.X) * 0.5, (a.Y + b.Y) * 0.5);
-                var toCenter = (center.Item1 - mid.Item1, center.Item2 - mid.Item2);
-                var dot = n1.Item1 * toCenter.Item1 + n1.Item2 * toCenter.Item2;
-                var inward = dot >= 0 ? n1 : n2;
-                return (-inward.Item1, -inward.Item2);
+                var left = (-ty, tx);
+                return (left.Item1 * sideSign, left.Item2 * sideSign);
             }
 
             (double X, double Y)? LineIntersection(
@@ -3033,46 +3183,58 @@ namespace CADRecognition
                 result.Add((chain[0].X + n.NX * offset, chain[0].Y + n.NY * offset));
             }
 
-            // 中间点：相邻两条偏移线求交
+            // 中间点：先算每个角点偏移位置，再按顺序连接（Corner-Join）。
             for (var i = 1; i < chain.Count - 1; i++)
             {
-                var a0 = chain[i - 1];
-                var a1 = chain[i];
-                var b0 = chain[i];
-                var b1 = chain[i + 1];
+                var prev = chain[i - 1];
+                var curr = chain[i];
+                var next = chain[i + 1];
 
-                var na = OutwardNormal(a0, a1);
-                var nb = OutwardNormal(b0, b1);
+                var v1x = curr.X - prev.X;
+                var v1y = curr.Y - prev.Y;
+                var v2x = next.X - curr.X;
+                var v2y = next.Y - curr.Y;
 
-                (double X, double Y) pa = (a0.X + na.NX * offset, a0.Y + na.NY * offset);
-                (double X, double Y) qa = (a1.X + na.NX * offset, a1.Y + na.NY * offset);
-                (double X, double Y) pb = (b0.X + nb.NX * offset, b0.Y + nb.NY * offset);
-                (double X, double Y) qb = (b1.X + nb.NX * offset, b1.Y + nb.NY * offset);
-
-                (double X, double Y) ra = (qa.X - pa.X, qa.Y - pa.Y);
-                (double X, double Y) rb = (qb.X - pb.X, qb.Y - pb.Y);
-                var cross = LineIntersection(pa, ra, pb, rb);
-
-                if (cross.HasValue)
+                var l1 = Math.Sqrt(v1x * v1x + v1y * v1y);
+                var l2 = Math.Sqrt(v2x * v2x + v2y * v2y);
+                if (l1 <= 1e-9 || l2 <= 1e-9)
                 {
-                    result.Add(cross.Value);
+                    var n = OutwardNormal(prev, next);
+                    result.Add((curr.X + n.NX * offset, curr.Y + n.NY * offset));
+                    continue;
                 }
-                else
+
+                var t1x = v1x / l1;
+                var t1y = v1y / l1;
+                var t2x = v2x / l2;
+                var t2y = v2y / l2;
+
+                var n1 = OutwardNormal(prev, curr);
+                var n2 = OutwardNormal(curr, next);
+
+                // 角平分线方向（外侧）
+                var bx = n1.NX + n2.NX;
+                var by = n1.NY + n2.NY;
+                var bl = Math.Sqrt(bx * bx + by * by);
+
+                if (bl <= 1e-9)
                 {
-                    // 平行或数值不稳定时退化为点法线偏移。
-                    var nx = na.NX + nb.NX;
-                    var ny = na.NY + nb.NY;
-                    var nl = Math.Sqrt(nx * nx + ny * ny);
-                    if (nl <= 1e-9)
-                    {
-                        nx = na.NX;
-                        ny = na.NY;
-                        nl = Math.Sqrt(nx * nx + ny * ny);
-                    }
-                    nx /= nl;
-                    ny /= nl;
-                    result.Add((chain[i].X + nx * offset, chain[i].Y + ny * offset));
+                    // 近180°拐角，退化到单法线偏移
+                    result.Add((curr.X + n1.NX * offset, curr.Y + n1.NY * offset));
+                    continue;
                 }
+
+                bx /= bl;
+                by /= bl;
+
+                // miter 长度：offset / sin(theta/2)，并限幅避免尖角爆炸
+                var cosTheta = Math.Clamp(t1x * t2x + t1y * t2y, -0.999999, 0.999999);
+                var sinHalf = Math.Sqrt((1.0 - cosTheta) * 0.5);
+                var miterLen = offset / Math.Max(sinHalf, 0.1);
+                var miterCap = Math.Max(offset * 2.5, 1.0);
+                var useLen = Math.Min(miterLen, miterCap);
+
+                result.Add((curr.X + bx * useLen, curr.Y + by * useLen));
             }
 
             // 终点
@@ -3104,6 +3266,14 @@ namespace CADRecognition
 
         private static List<PathSample> SampleAlongPolyline(IReadOnlyList<(double X, double Y)> polyline, double step)
         {
+            return SampleAlongPolylineWithMinSegmentLength(polyline, step, minSegmentLength: 0.0);
+        }
+
+        private static List<PathSample> SampleAlongPolylineWithMinSegmentLength(
+            IReadOnlyList<(double X, double Y)> polyline,
+            double step,
+            double minSegmentLength)
+        {
             var result = new List<PathSample>();
             if (polyline.Count < 2)
             {
@@ -3113,7 +3283,7 @@ namespace CADRecognition
             var firstDx = polyline[1].X - polyline[0].X;
             var firstDy = polyline[1].Y - polyline[0].Y;
             var firstLen = Math.Sqrt(firstDx * firstDx + firstDy * firstDy);
-            if (firstLen > 1e-9)
+            if (firstLen > Math.Max(1e-9, minSegmentLength))
             {
                 result.Add(new PathSample(polyline[0].X, polyline[0].Y, firstDx / firstLen, firstDy / firstLen));
             }
@@ -3129,6 +3299,12 @@ namespace CADRecognition
                 var segLen = Math.Sqrt(dx * dx + dy * dy);
                 if (segLen <= 1e-9)
                 {
+                    continue;
+                }
+
+                if (segLen < minSegmentLength)
+                {
+                    // 小于模具边长的短边：不做连续点采样，仅由拐点命中兜底。
                     continue;
                 }
 
@@ -3170,7 +3346,7 @@ namespace CADRecognition
                 {
                     result.Add(new PathSample(tail.X, tail.Y, last.TX, last.TY));
                 }
-                else
+                else if (len >= minSegmentLength)
                 {
                     result.Add(new PathSample(tail.X, tail.Y, dx / len, dy / len));
                 }
@@ -3217,19 +3393,22 @@ namespace CADRecognition
 
             foreach (var row in source
                          .Where(r => !r.Hole.HoleType.StartsWith("ContourCornerHit", StringComparison.Ordinal))
-                         .OrderBy(r => r.MoldId)
-                         .ThenBy(r => r.Hole.Centroid.Y)
-                         .ThenBy(r => r.Hole.Centroid.X))
+                         .OrderBy(r => r.Hole.Centroid.Y)
+                         .ThenBy(r => r.Hole.Centroid.X)
+                         .ThenBy(r => r.PositionRelation.Contains("兜底", StringComparison.Ordinal) ? 1 : 0)
+                         .ThenBy(r => r.MoldId))
             {
                 var sizeRef = Math.Max(Math.Min(row.Hole.Width, row.Hole.Height), 1.0);
-                var tol = Math.Max(sizeRef * 0.35, 3.0);
+                var tol = Math.Max(sizeRef * 0.22, 2.0);
 
                 var dup = result.Any(existing =>
                 {
-                    if (existing.MoldId != row.MoldId)
+                    if (existing.Hole.HoleType.StartsWith("ContourCornerHit", StringComparison.Ordinal) ||
+                        row.Hole.HoleType.StartsWith("ContourCornerHit", StringComparison.Ordinal))
                     {
                         return false;
                     }
+
                     var dx = existing.Hole.Centroid.X - row.Hole.Centroid.X;
                     var dy = existing.Hole.Centroid.Y - row.Hole.Centroid.Y;
                     return Math.Sqrt(dx * dx + dy * dy) <= tol;
@@ -3349,21 +3528,68 @@ namespace CADRecognition
 
         private static bool IsSameShapeType(HoleFeature hole, HoleFeature mold)
         {
-            var hCircle = hole.HoleType.Contains("Circle", StringComparison.OrdinalIgnoreCase);
-            var mCircle = mold.HoleType.Contains("Circle", StringComparison.OrdinalIgnoreCase);
+            var hCircle = IsCircleLike(hole);
+            var mCircle = IsCircleLike(mold);
             if (hCircle || mCircle)
             {
                 return hCircle == mCircle;
             }
 
-            var hPoly = hole.HoleType.Contains("Polyline", StringComparison.OrdinalIgnoreCase) || hole.HoleType.Contains("EntityComposite", StringComparison.OrdinalIgnoreCase);
-            var mPoly = mold.HoleType.Contains("Polyline", StringComparison.OrdinalIgnoreCase) || mold.HoleType.Contains("EntityComposite", StringComparison.OrdinalIgnoreCase);
+            var hPoly = hole.HoleType.Contains("Polyline", StringComparison.OrdinalIgnoreCase) ||
+                        hole.HoleType.Contains("EntityComposite", StringComparison.OrdinalIgnoreCase) ||
+                        hole.HoleType.Contains("MixedArcLine", StringComparison.OrdinalIgnoreCase);
+            var mPoly = mold.HoleType.Contains("Polyline", StringComparison.OrdinalIgnoreCase) ||
+                        mold.HoleType.Contains("EntityComposite", StringComparison.OrdinalIgnoreCase) ||
+                        mold.HoleType.Contains("MixedArcLine", StringComparison.OrdinalIgnoreCase);
             if (hPoly || mPoly)
             {
                 return hPoly == mPoly;
             }
 
             return true;
+        }
+
+        private static bool IsShapeFamilyCompatible(HoleFeature hole, HoleFeature mold)
+        {
+            var hCircle = IsCircleLike(hole);
+            var mCircle = IsCircleLike(mold);
+            if (hCircle || mCircle)
+            {
+                // 圆孔只允许圆族模具；但允许“圆形EntityComposite”进入圆族，避免圆孔全丢。
+                return hCircle && mCircle;
+            }
+
+            var hPolyFamily = hole.HoleType.Contains("Polyline", StringComparison.OrdinalIgnoreCase)
+                              || hole.HoleType.Contains("EntityComposite", StringComparison.OrdinalIgnoreCase)
+                              || hole.HoleType.Contains("MixedArcLine", StringComparison.OrdinalIgnoreCase);
+            var mPolyFamily = mold.HoleType.Contains("Polyline", StringComparison.OrdinalIgnoreCase)
+                              || mold.HoleType.Contains("EntityComposite", StringComparison.OrdinalIgnoreCase)
+                              || mold.HoleType.Contains("MixedArcLine", StringComparison.OrdinalIgnoreCase);
+            if (hPolyFamily || mPolyFamily)
+            {
+                return hPolyFamily && mPolyFamily;
+            }
+
+            return true;
+        }
+
+        private static bool IsCircleLike(HoleFeature f)
+        {
+            if (f.HoleType.Contains("Circle", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            // 对 EntityComposite / 其他类型做几何判定：宽高近似相等 + 圆度指标接近 1
+            var maxWh = Math.Max(Math.Max(f.Width, f.Height), 1e-6);
+            var whRatio = Math.Abs(f.Width - f.Height) / maxWh;
+            if (whRatio > 0.10)
+            {
+                return false;
+            }
+
+            var circularity = 4.0 * Math.PI * f.Area / Math.Max(f.Perimeter * f.Perimeter, 1e-6);
+            return circularity >= 0.75;
         }
 
         private static double SimilarityScore(HoleFeature h, HoleFeature m)

@@ -27,7 +27,15 @@
             <StackPanel Orientation="Horizontal">
                 <Button Content="导入工程 DXF(2010)" Click="ImportProjectDxf_Click" Margin="0,0,6,0" />
                 <Button Content="导入模具 DXF(可多选)" Click="ImportMoldsDxf_Click" Margin="0,0,6,0" />
-                <Button Content="一键识别匹配" Click="Recognize_Click" Margin="0,0,20,0" />
+                <Button Content="一键识别匹配" Click="Recognize_Click" Margin="0,0,12,0" />
+                <CheckBox x:Name="CompactAnnoCheckBox"
+                          Content="简洁标注"
+                          IsChecked="True"
+                          Checked="CompactAnnoCheckBox_Checked"
+                          Unchecked="CompactAnnoCheckBox_Checked"
+                          Foreground="#DDDDDD"
+                          VerticalAlignment="Center"
+                          Margin="0,0,20,0"/>
                 <TextBlock Text="已加载工程：" Foreground="#DDDDDD" VerticalAlignment="Center" />
                 <TextBlock x:Name="ProjectFileText" Foreground="#9CDCFE" VerticalAlignment="Center" Margin="4,0,20,0" />
                 <TextBlock Text="模具数量：" Foreground="#DDDDDD" VerticalAlignment="Center" />
