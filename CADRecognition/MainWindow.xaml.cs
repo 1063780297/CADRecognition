@@ -602,8 +602,8 @@ namespace CADRecognition
 
             foreach (var ass in assignments)
             {
-                // 需求：M01 模具先不绘制（仅保留其他模具标注）
-                if (ass.MoldId == 1)
+                // 调试视图：只显示 M01 连续冲压（Contour）中心点，避免其他匹配结果干扰判断。
+                if (!_compactMode && !ass.Hole.HoleType.StartsWith("Contour", StringComparison.Ordinal))
                 {
                     continue;
                 }
@@ -619,7 +619,7 @@ namespace CADRecognition
                     var cross = new Polyline
                     {
                         Stroke = WpfBrushes.White,
-                        StrokeThickness = 0.45,
+                        StrokeThickness = 0.1,
                         Points = new PointCollection
                         {
                             new System.Windows.Point(p.X - 4, p.Y),
@@ -630,7 +630,7 @@ namespace CADRecognition
                     var cross2 = new Polyline
                     {
                         Stroke = WpfBrushes.White,
-                        StrokeThickness = 0.55,
+                        StrokeThickness = 0.1,
                         Points = new PointCollection
                         {
                             new System.Windows.Point(p.X, p.Y - 4),
@@ -656,7 +656,7 @@ namespace CADRecognition
                     {
                         Points = outline,
                         Stroke = brush,
-                        StrokeThickness = 0.55
+                        StrokeThickness = 0.7
                     };
                     _markCanvas.Children.Add(poly);
                 }
@@ -675,7 +675,8 @@ namespace CADRecognition
                     _markCanvas.Children.Add(mark);
                 }
 
-                var shouldShowLabel = !_compactMode;
+                // 调试：隐藏 M01 文本，便于观察中心点分布
+                var shouldShowLabel = !_compactMode && ass.MoldId != 1;
 
                 if (shouldShowLabel)
                 {
@@ -713,7 +714,7 @@ namespace CADRecognition
                 Width = Math.Abs(r2.X - r1.X),
                 Height = Math.Abs(r2.Y - r1.Y),
                 Stroke = new SolidColorBrush(WpfColor.FromArgb(240, 255, 235, 59)),
-                StrokeThickness = 0.6,
+                StrokeThickness = 0.5,
                 StrokeDashArray = new DoubleCollection([4, 3]),
                 Fill = WpfBrushes.Transparent
             };
@@ -727,7 +728,7 @@ namespace CADRecognition
                 var polyAll = new Polyline
                 {
                     Stroke = new SolidColorBrush(WpfColor.FromArgb(245, 255, 82, 82)),
-                    StrokeThickness = 0.8,
+                    StrokeThickness = 0.1,
                     StrokeLineJoin = PenLineJoin.Round,
                     StrokeStartLineCap = PenLineCap.Round,
                     StrokeEndLineCap = PenLineCap.Round
@@ -745,7 +746,7 @@ namespace CADRecognition
                 return;
             }
 
-            var edgeTol = Math.Clamp(Math.Min(rect.Width, rect.Height) * 0.0004, 0.05, 0.35);
+            var edgeTol = Math.Clamp(Math.Min(rect.Width, rect.Height) * 0.0004, 0.05, 0.1);
             bool IsSegmentOnRectEdge((double X, double Y) a, (double X, double Y) b)
             {
                 var horizontal = Math.Abs(a.Y - b.Y) <= edgeTol;
@@ -823,7 +824,7 @@ namespace CADRecognition
                 var minEdgeDistB = Math.Min(
                     Math.Min(Math.Abs(b.X - rect.MinX), Math.Abs(rect.MaxX - b.X)),
                     Math.Min(Math.Abs(b.Y - rect.MinY), Math.Abs(rect.MaxY - b.Y)));
-                var innerSafe = Math.Max(edgeTol * 1.6, 0.35);
+                var innerSafe = Math.Max(edgeTol * 1.6, 0.1);
                 if (minEdgeDistA > innerSafe && minEdgeDistB > innerSafe)
                 {
                     keepSeg = true;
@@ -878,7 +879,7 @@ namespace CADRecognition
                 var cyanPoly = new Polyline
                 {
                     Stroke = new SolidColorBrush(WpfColor.FromArgb(245, 0, 255, 255)),
-                    StrokeThickness = 0.7,
+                    StrokeThickness = 0.1,
                     StrokeLineJoin = PenLineJoin.Round,
                     StrokeStartLineCap = PenLineCap.Round,
                     StrokeEndLineCap = PenLineCap.Round
@@ -903,96 +904,22 @@ namespace CADRecognition
                             continue;
                         }
 
-                        // 调试：仅取“端点+转折点”，并且紫线也只按这些点连线。
-                        // 这样可避免中间采样点导致的错误折返视觉。
-                        var debugPts = new List<(double X, double Y)>();
-                        if (gp.Points.Count > 0)
-                        {
-                            debugPts.Add(gp.Points[0]);
-                            for (var i = 1; i < gp.Points.Count - 1; i++)
-                            {
-                                var a = gp.Points[i - 1];
-                                var b = gp.Points[i];
-                                var c = gp.Points[i + 1];
-
-                                var abx = b.X - a.X;
-                                var aby = b.Y - a.Y;
-                                var bcx = c.X - b.X;
-                                var bcy = c.Y - b.Y;
-                                var lab = Math.Sqrt(abx * abx + aby * aby);
-                                var lbc = Math.Sqrt(bcx * bcx + bcy * bcy);
-                                if (lab <= 1e-9 || lbc <= 1e-9)
-                                {
-                                    continue;
-                                }
-
-                                var cross = Math.Abs(abx * bcy - aby * bcx) / (lab * lbc);
-                                if (cross > 0.02)
-                                {
-                                    debugPts.Add(b);
-                                }
-                            }
-                            if (gp.Points.Count > 1)
-                            {
-                                debugPts.Add(gp.Points[^1]);
-                            }
-                        }
-
-                        var dedupDebugPts = new List<(double X, double Y)>();
-                        foreach (var p in debugPts)
-                        {
-                            var exists = dedupDebugPts.Any(q =>
-                                Math.Sqrt((q.X - p.X) * (q.X - p.X) + (q.Y - p.Y) * (q.Y - p.Y)) <= 1e-6);
-                            if (!exists)
-                            {
-                                dedupDebugPts.Add(p);
-                            }
-                        }
-
-                        // 紫色线：只连关键点
+                        // 紫色线：显示完整 offset 路径（不做端点/拐点压缩），便于核对几何本身。
                         var guide = new Polyline
                         {
                             Stroke = new SolidColorBrush(WpfColor.FromArgb(235, 186, 104, 200)),
-                            StrokeThickness = 0.55,
+                            StrokeThickness = 0.7,
                             StrokeLineJoin = PenLineJoin.Round,
                             StrokeStartLineCap = PenLineCap.Round,
                             StrokeEndLineCap = PenLineCap.Round,
                             StrokeDashArray = new DoubleCollection([5, 3])
                         };
-                        foreach (var p in dedupDebugPts)
+                        foreach (var p in gp.Points)
                         {
                             guide.Points.Add(ModelToCanvas(p.X, p.Y));
                         }
                         _zoneCanvas.Children.Add(guide);
 
-                        for (var i = 0; i < dedupDebugPts.Count; i++)
-                        {
-                            var cp = ModelToCanvas(dedupDebugPts[i].X, dedupDebugPts[i].Y);
-
-                            var cornerDot = new WpfEllipse
-                            {
-                                Width = 6,
-                                Height = 6,
-                                Fill = new SolidColorBrush(WpfColor.FromArgb(245, 255, 64, 129)),
-                                Stroke = WpfBrushes.White,
-                                StrokeThickness = 0.7
-                            };
-                            Canvas.SetLeft(cornerDot, cp.X - 3);
-                            Canvas.SetTop(cornerDot, cp.Y - 3);
-                            _zoneCanvas.Children.Add(cornerDot);
-
-                            var idxText = new TextBlock
-                            {
-                                Text = $"{i}",
-                                Foreground = new SolidColorBrush(WpfColor.FromArgb(245, 255, 64, 129)),
-                                FontSize = 8,
-                                FontWeight = FontWeights.Bold,
-                                Background = new SolidColorBrush(WpfColor.FromArgb(120, 0, 0, 0))
-                            };
-                            Canvas.SetLeft(idxText, cp.X + 4);
-                            Canvas.SetTop(idxText, cp.Y - 10);
-                            _zoneCanvas.Children.Add(idxText);
-                        }
                     }
                 }
 
@@ -1010,7 +937,7 @@ namespace CADRecognition
                             X2 = p2.X,
                             Y2 = p2.Y,
                             Stroke = new SolidColorBrush(WpfColor.FromArgb(235, 255, 152, 0)),
-                            StrokeThickness = 0.55,
+                            StrokeThickness = 0.4,
                             StrokeDashArray = new DoubleCollection([2, 2])
                         };
                         _zoneCanvas.Children.Add(dbg);
@@ -1310,7 +1237,7 @@ namespace CADRecognition
                 return [];
             }
 
-            var edgeTol = Math.Clamp(Math.Min(rect.Width, rect.Height) * 0.0004, 0.05, 0.35);
+            var edgeTol = Math.Clamp(Math.Min(rect.Width, rect.Height) * 0.0004, 0.05, 0.1);
             bool IsSegmentOnRectEdge((double X, double Y) a, (double X, double Y) b)
             {
                 var horizontal = Math.Abs(a.Y - b.Y) <= edgeTol;
@@ -2546,9 +2473,20 @@ namespace CADRecognition
             {
                 return [];
             }
+
+            // 关键修复：轮廓坐标要以“模具自身几何中心”为原点。
+            // 之前用特征中心(referenceCenter)会在特征不居中时导致整块 M01 偏移。
+            var minX = pts.Min(p => p.X);
+            var maxX = pts.Max(p => p.X);
+            var minY = pts.Min(p => p.Y);
+            var maxY = pts.Max(p => p.Y);
+            var centerX = (minX + maxX) * 0.5;
+            var centerY = (minY + maxY) * 0.5;
+
             var ordered = pts
-                .Select(p => (X: p.X - referenceCenter.X, Y: p.Y - referenceCenter.Y))
+                .Select(p => (X: p.X - centerX, Y: p.Y - centerY))
                 .OrderBy(p => Math.Atan2(p.Y, p.X))
+                .ThenByDescending(p => Math.Sqrt(p.X * p.X + p.Y * p.Y))
                 .ToList();
 
             var step = Math.Max(1, ordered.Count / 80);
@@ -2557,16 +2495,7 @@ namespace CADRecognition
             {
                 outline.Add((ordered[i].X, ordered[i].Y));
             }
-            // Recenter again after downsampling to remove any residual bias.
-            if (outline.Count > 2)
-            {
-                var ox = outline.Average(p => p.X);
-                var oy = outline.Average(p => p.Y);
-                for (var i = 0; i < outline.Count; i++)
-                {
-                    outline[i] = (outline[i].X - ox, outline[i].Y - oy);
-                }
-            }
+
             if (outline.Count > 0)
             {
                 outline.Add(outline[0]);
@@ -3000,9 +2929,19 @@ namespace CADRecognition
                 return [];
             }
 
-            // CAD 偏移量：向外偏移 M01 模具“边长”的一半（取包围盒长边）。
-            var moldEdgeLength = Math.Max(mold1.Feature.Width, mold1.Feature.Height);
-            var offsetDist = Math.Max(moldEdgeLength * 0.5, 0.8);
+            // 用 M01 轮廓外包尺寸，而不是 Feature 尺寸（Feature 是识别特征，不一定等于模具本体）。
+            var minOx = outline.Min(p => p.X);
+            var maxOx = outline.Max(p => p.X);
+            var minOy = outline.Min(p => p.Y);
+            var maxOy = outline.Max(p => p.Y);
+            var moldOutlineWidth = Math.Max(maxOx - minOx, 1.0);
+            var moldOutlineHeight = Math.Max(maxOy - minOy, 1.0);
+            var moldEdgeLength = Math.Max(moldOutlineWidth, moldOutlineHeight);
+            var moldToolWidth = Math.Min(moldOutlineWidth, moldOutlineHeight);
+
+            // CAD 偏移量：按“刀宽/模具宽度”的半径取值，更接近实际重合关系
+            // （之前用长边会导致偏移过大）
+            var offsetDist = Math.Max(moldToolWidth * 0.5, 0.8);
             var moldStep = Math.Max(EstimateOutlineStep(outline) * 0.55, 2.5);
             var points = new List<HoleFeature>();
 
@@ -3029,29 +2968,47 @@ namespace CADRecognition
                     continue;
                 }
 
-                // 端点增强：青色线首尾沿各自直线方向再外延 0.8 * M01 边长，
-                // 让类似“6号位”这种末端区域覆盖更完整。
-                var endpointExtend = Math.Max(moldEdgeLength * 0.8, 0.8);
-                var enhancedChain = ExtendPolylineEndpoints(offsetChain, endpointExtend, project.OuterRectangle);
-                if (enhancedChain.Count < 2)
+                // 端点按要求外延：青色线的起点/终点向外偏移 0.5 * M01 边长。
+                var endpointExtend = Math.Max(moldEdgeLength * 0.5, 0.8);
+                var centerChain = ExtendPolylineEndpoints(offsetChain, endpointExtend, project.OuterRectangle);
+                if (centerChain.Count < 2)
                 {
                     continue;
                 }
 
-                // 输出辅助线：用于界面可视化核对。
-                guidePaths.Add(new CornerStepPath(contourPath.CornerName, enhancedChain));
+                // 紫线显示采用外延后的路径，便于与冲压中心一致核对。
+                guidePaths.Add(new CornerStepPath(contourPath.CornerName, centerChain));
 
-                // 先命中紫线内拐点，再补缺失段。
-                var moldEdge = Math.Max(mold1.Feature.Width, mold1.Feature.Height);
-                var sampled = SampleAlongPolylineWithMinSegmentLength(enhancedChain, moldStep, minSegmentLength: 0.0);
+                var moldStepLength = Math.Max(moldEdgeLength, 1.0);
 
-                var seeded = new List<(double X, double Y)>();
-
-                // Pass-1: 内拐点强制命中（优先）
-                for (var vi = 1; vi < enhancedChain.Count - 1; vi++)
+                // 第一步：命中紫线所有端点、拐点。
+                var keyPoints = new List<(double X, double Y)> { centerChain[0] };
+                for (var i = 1; i < centerChain.Count - 1; i++)
                 {
-                    var v = enhancedChain[vi];
-                    seeded.Add(v);
+                    var a = centerChain[i - 1];
+                    var b = centerChain[i];
+                    var c = centerChain[i + 1];
+                    var abx = b.X - a.X;
+                    var aby = b.Y - a.Y;
+                    var bcx = c.X - b.X;
+                    var bcy = c.Y - b.Y;
+                    var lab = Math.Sqrt(abx * abx + aby * aby);
+                    var lbc = Math.Sqrt(bcx * bcx + bcy * bcy);
+                    if (lab <= 1e-9 || lbc <= 1e-9)
+                    {
+                        continue;
+                    }
+
+                    var cross = Math.Abs(abx * bcy - aby * bcx) / (lab * lbc);
+                    if (cross > 0.02)
+                    {
+                        keyPoints.Add(b);
+                    }
+                }
+                keyPoints.Add(centerChain[^1]);
+
+                foreach (var v in keyPoints)
+                {
                     points.Add(new HoleFeature(
                         $"ContourCornerHit:{contourPath.CornerName}",
                         v,
@@ -3063,68 +3020,19 @@ namespace CADRecognition
                         mold1.Feature.Signature));
                 }
 
-                // Pass-2: 若还有缺失（离已命中点过远）再补连续点。
-                var fillRadius = Math.Max(moldEdge * 0.9, 2.0);
-                foreach (var s in sampled)
-                {
-                    var covered = seeded.Any(k =>
-                    {
-                        var dx = s.X - k.X;
-                        var dy = s.Y - k.Y;
-                        return Math.Sqrt(dx * dx + dy * dy) <= fillRadius;
-                    });
-                    if (covered)
-                    {
-                        continue;
-                    }
-
-                    seeded.Add((s.X, s.Y));
-                    points.Add(new HoleFeature(
-                        $"ContourPath:{contourPath.CornerName}",
-                        (s.X, s.Y),
-                        mold1.Feature.Width,
-                        mold1.Feature.Height,
-                        Math.Max(mold1.Feature.Area, 1.0),
-                        Math.Max(mold1.Feature.Perimeter, 1.0),
-                        0,
-                        mold1.Feature.Signature));
-                }
+                // 第二步（临时关闭）：不做任何插值。
+                // 当前仅保留“端点 + 拐点”命中，便于逐步排查。
             }
 
-            // 去重：先保留“内拐点强制命中”点，再并入普通连续点。
+            // 仅做精确去重（避免重复添加同一点），不做额外过滤逻辑。
             var dedup = new List<HoleFeature>();
-
-            var mandatoryHits = points
-                .Where(p => p.HoleType.StartsWith("ContourCornerHit", StringComparison.Ordinal))
-                .OrderBy(p => p.Centroid.Y)
-                .ThenBy(p => p.Centroid.X)
-                .ToList();
-
-            foreach (var p in mandatoryHits)
+            foreach (var p in points)
             {
-                var tol = Math.Max(Math.Min(p.Width, p.Height) * 0.12, 0.6);
                 var exists = dedup.Any(d =>
                 {
                     var dx = d.Centroid.X - p.Centroid.X;
                     var dy = d.Centroid.Y - p.Centroid.Y;
-                    return Math.Sqrt(dx * dx + dy * dy) <= tol;
-                });
-                if (!exists)
-                {
-                    dedup.Add(p);
-                }
-            }
-
-            foreach (var p in points.Where(p => !p.HoleType.StartsWith("ContourCornerHit", StringComparison.Ordinal))
-                                    .OrderBy(p => p.Centroid.Y)
-                                    .ThenBy(p => p.Centroid.X))
-            {
-                var tol = Math.Max(Math.Min(p.Width, p.Height) * 0.25, 1.2);
-                var exists = dedup.Any(d =>
-                {
-                    var dx = d.Centroid.X - p.Centroid.X;
-                    var dy = d.Centroid.Y - p.Centroid.Y;
-                    return Math.Sqrt(dx * dx + dy * dy) <= tol;
+                    return Math.Sqrt(dx * dx + dy * dy) <= 1e-6;
                 });
                 if (!exists)
                 {
@@ -3658,26 +3566,18 @@ namespace CADRecognition
             }
 
             var result = new List<HoleAssignment>();
-
-            // 先保留“内拐点强制命中”点，避免后续去重把它们消掉。
-            var cornerHits = source
-                .Where(r => r.Hole.HoleType.StartsWith("ContourCornerHit", StringComparison.Ordinal))
-                .OrderBy(r => r.MoldId)
-                .ThenBy(r => r.Hole.Centroid.Y)
-                .ThenBy(r => r.Hole.Centroid.X);
-
-            foreach (var row in cornerHits)
+            foreach (var row in source)
             {
-                var tol = Math.Max(Math.Min(row.Hole.Width, row.Hole.Height) * 0.08, 0.35);
                 var dup = result.Any(existing =>
                 {
                     if (existing.MoldId != row.MoldId)
                     {
                         return false;
                     }
+
                     var dx = existing.Hole.Centroid.X - row.Hole.Centroid.X;
                     var dy = existing.Hole.Centroid.Y - row.Hole.Centroid.Y;
-                    return Math.Sqrt(dx * dx + dy * dy) <= tol;
+                    return Math.Sqrt(dx * dx + dy * dy) <= 1e-6;
                 });
 
                 if (!dup)
@@ -3686,34 +3586,6 @@ namespace CADRecognition
                 }
             }
 
-            foreach (var row in source
-                         .Where(r => !r.Hole.HoleType.StartsWith("ContourCornerHit", StringComparison.Ordinal))
-                         .OrderBy(r => r.Hole.Centroid.Y)
-                         .ThenBy(r => r.Hole.Centroid.X)
-                         .ThenBy(r => r.PositionRelation.Contains("兜底", StringComparison.Ordinal) ? 1 : 0)
-                         .ThenBy(r => r.MoldId))
-            {
-                var sizeRef = Math.Max(Math.Min(row.Hole.Width, row.Hole.Height), 1.0);
-                var tol = Math.Max(sizeRef * 0.22, 2.0);
-
-                var dup = result.Any(existing =>
-                {
-                    if (existing.Hole.HoleType.StartsWith("ContourCornerHit", StringComparison.Ordinal) ||
-                        row.Hole.HoleType.StartsWith("ContourCornerHit", StringComparison.Ordinal))
-                    {
-                        return false;
-                    }
-
-                    var dx = existing.Hole.Centroid.X - row.Hole.Centroid.X;
-                    var dy = existing.Hole.Centroid.Y - row.Hole.Centroid.Y;
-                    return Math.Sqrt(dx * dx + dy * dy) <= tol;
-                });
-
-                if (!dup)
-                {
-                    result.Add(row);
-                }
-            }
             return result;
         }
 
@@ -3784,7 +3656,7 @@ namespace CADRecognition
             var dp = Math.Abs(1.0 - Math.Min(pRatio, 1.0));
             var dr = Math.Abs((hole.Width / Math.Max(hole.Height, 1e-6)) - (mold.Width / Math.Max(mold.Height, 1e-6)));
             var ds = SignatureDistance(hole.Signature, mold.Signature);
-            return 0.12 * dw + 0.12 * dh + 0.16 * da + 0.1 * dp + 0.15 * dr + 0.35 * ds;
+            return 0.12 * dw + 0.12 * dh + 0.16 * da + 0.1 * dp + 0.15 * dr + 0.1 * ds;
         }
 
         private static string BuildTopCandidates(HoleFeature hole, IEnumerable<MoldProfile> molds, RectBounds rect, int topN)
