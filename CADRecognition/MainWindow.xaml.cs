@@ -3020,8 +3020,35 @@ namespace CADRecognition
                         mold1.Feature.Signature));
                 }
 
-                // 第二步（临时关闭）：不做任何插值。
-                // 当前仅保留“端点 + 拐点”命中，便于逐步排查。
+                // 第二步：若紫色线段长度 > M01边长，则按边长步进插值。
+                for (var i = 1; i < centerChain.Count; i++)
+                {
+                    var a = centerChain[i - 1];
+                    var b = centerChain[i];
+                    var dx = b.X - a.X;
+                    var dy = b.Y - a.Y;
+                    var segLen = Math.Sqrt(dx * dx + dy * dy);
+                    if (segLen <= moldStepLength + 1e-9)
+                    {
+                        continue;
+                    }
+
+                    var ux = dx / segLen;
+                    var uy = dy / segLen;
+                    for (var traveled = moldStepLength; traveled < segLen - 1e-9; traveled += moldStepLength)
+                    {
+                        var p = (a.X + ux * traveled, a.Y + uy * traveled);
+                        points.Add(new HoleFeature(
+                            $"ContourPath:{contourPath.CornerName}",
+                            p,
+                            mold1.Feature.Width,
+                            mold1.Feature.Height,
+                            Math.Max(mold1.Feature.Area, 1.0),
+                            Math.Max(mold1.Feature.Perimeter, 1.0),
+                            0,
+                            mold1.Feature.Signature));
+                    }
+                }
             }
 
             // 仅做精确去重（避免重复添加同一点），不做额外过滤逻辑。
