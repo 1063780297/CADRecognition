@@ -602,6 +602,12 @@ namespace CADRecognition
 
             foreach (var ass in assignments)
             {
+                // 需求：M01 模具先不绘制（仅保留其他模具标注）
+                if (ass.MoldId == 1)
+                {
+                    continue;
+                }
+
                 var c = ass.Hole.Centroid;
                 var p = ModelToCanvas(c.X, c.Y);
                 var color = GetMoldColor(ass.MoldId);
@@ -613,7 +619,7 @@ namespace CADRecognition
                     var cross = new Polyline
                     {
                         Stroke = WpfBrushes.White,
-                        StrokeThickness = 0.7,
+                        StrokeThickness = 0.45,
                         Points = new PointCollection
                         {
                             new System.Windows.Point(p.X - 4, p.Y),
@@ -624,7 +630,7 @@ namespace CADRecognition
                     var cross2 = new Polyline
                     {
                         Stroke = WpfBrushes.White,
-                        StrokeThickness = 0.7,
+                        StrokeThickness = 0.55,
                         Points = new PointCollection
                         {
                             new System.Windows.Point(p.X, p.Y - 4),
@@ -650,7 +656,7 @@ namespace CADRecognition
                     {
                         Points = outline,
                         Stroke = brush,
-                        StrokeThickness = 0.95
+                        StrokeThickness = 0.55
                     };
                     _markCanvas.Children.Add(poly);
                 }
@@ -669,10 +675,7 @@ namespace CADRecognition
                     _markCanvas.Children.Add(mark);
                 }
 
-                var shouldShowLabel = !_compactMode ||
-                                      ass.Hole.HoleType.StartsWith("Edge", StringComparison.Ordinal) ||
-                                      ass.Hole.HoleType.StartsWith("Circle", StringComparison.Ordinal) ||
-                                      ass.Hole.HoleType.StartsWith("Polyline", StringComparison.Ordinal);
+                var shouldShowLabel = !_compactMode;
 
                 if (shouldShowLabel)
                 {
@@ -710,7 +713,7 @@ namespace CADRecognition
                 Width = Math.Abs(r2.X - r1.X),
                 Height = Math.Abs(r2.Y - r1.Y),
                 Stroke = new SolidColorBrush(WpfColor.FromArgb(240, 255, 235, 59)),
-                StrokeThickness = 1.0,
+                StrokeThickness = 0.6,
                 StrokeDashArray = new DoubleCollection([4, 3]),
                 Fill = WpfBrushes.Transparent
             };
@@ -724,7 +727,7 @@ namespace CADRecognition
                 var polyAll = new Polyline
                 {
                     Stroke = new SolidColorBrush(WpfColor.FromArgb(245, 255, 82, 82)),
-                    StrokeThickness = 1.0,
+                    StrokeThickness = 0.8,
                     StrokeLineJoin = PenLineJoin.Round,
                     StrokeStartLineCap = PenLineCap.Round,
                     StrokeEndLineCap = PenLineCap.Round
@@ -875,7 +878,7 @@ namespace CADRecognition
                 var cyanPoly = new Polyline
                 {
                     Stroke = new SolidColorBrush(WpfColor.FromArgb(245, 0, 255, 255)),
-                    StrokeThickness = 1.1,
+                    StrokeThickness = 0.7,
                     StrokeLineJoin = PenLineJoin.Round,
                     StrokeStartLineCap = PenLineCap.Round,
                     StrokeEndLineCap = PenLineCap.Round
@@ -888,64 +891,146 @@ namespace CADRecognition
                 _zoneCanvas.Children.Add(cyanPoly);
             }
 
-            // 辅助线（紫色）：M01 连续冲压使用的外偏移路径。
-            if (cornerPaths is not null)
+            if (!_compactMode)
             {
-                foreach (var gp in cornerPaths)
+                // 辅助线（紫色）：M01 连续冲压使用的外偏移路径。
+                if (cornerPaths is not null)
                 {
-                    if (gp.Points is null || gp.Points.Count < 2)
+                    foreach (var gp in cornerPaths)
                     {
-                        continue;
+                        if (gp.Points is null || gp.Points.Count < 2)
+                        {
+                            continue;
+                        }
+
+                        // 调试：仅取“端点+转折点”，并且紫线也只按这些点连线。
+                        // 这样可避免中间采样点导致的错误折返视觉。
+                        var debugPts = new List<(double X, double Y)>();
+                        if (gp.Points.Count > 0)
+                        {
+                            debugPts.Add(gp.Points[0]);
+                            for (var i = 1; i < gp.Points.Count - 1; i++)
+                            {
+                                var a = gp.Points[i - 1];
+                                var b = gp.Points[i];
+                                var c = gp.Points[i + 1];
+
+                                var abx = b.X - a.X;
+                                var aby = b.Y - a.Y;
+                                var bcx = c.X - b.X;
+                                var bcy = c.Y - b.Y;
+                                var lab = Math.Sqrt(abx * abx + aby * aby);
+                                var lbc = Math.Sqrt(bcx * bcx + bcy * bcy);
+                                if (lab <= 1e-9 || lbc <= 1e-9)
+                                {
+                                    continue;
+                                }
+
+                                var cross = Math.Abs(abx * bcy - aby * bcx) / (lab * lbc);
+                                if (cross > 0.02)
+                                {
+                                    debugPts.Add(b);
+                                }
+                            }
+                            if (gp.Points.Count > 1)
+                            {
+                                debugPts.Add(gp.Points[^1]);
+                            }
+                        }
+
+                        var dedupDebugPts = new List<(double X, double Y)>();
+                        foreach (var p in debugPts)
+                        {
+                            var exists = dedupDebugPts.Any(q =>
+                                Math.Sqrt((q.X - p.X) * (q.X - p.X) + (q.Y - p.Y) * (q.Y - p.Y)) <= 1e-6);
+                            if (!exists)
+                            {
+                                dedupDebugPts.Add(p);
+                            }
+                        }
+
+                        // 紫色线：只连关键点
+                        var guide = new Polyline
+                        {
+                            Stroke = new SolidColorBrush(WpfColor.FromArgb(235, 186, 104, 200)),
+                            StrokeThickness = 0.55,
+                            StrokeLineJoin = PenLineJoin.Round,
+                            StrokeStartLineCap = PenLineCap.Round,
+                            StrokeEndLineCap = PenLineCap.Round,
+                            StrokeDashArray = new DoubleCollection([5, 3])
+                        };
+                        foreach (var p in dedupDebugPts)
+                        {
+                            guide.Points.Add(ModelToCanvas(p.X, p.Y));
+                        }
+                        _zoneCanvas.Children.Add(guide);
+
+                        for (var i = 0; i < dedupDebugPts.Count; i++)
+                        {
+                            var cp = ModelToCanvas(dedupDebugPts[i].X, dedupDebugPts[i].Y);
+
+                            var cornerDot = new WpfEllipse
+                            {
+                                Width = 6,
+                                Height = 6,
+                                Fill = new SolidColorBrush(WpfColor.FromArgb(245, 255, 64, 129)),
+                                Stroke = WpfBrushes.White,
+                                StrokeThickness = 0.7
+                            };
+                            Canvas.SetLeft(cornerDot, cp.X - 3);
+                            Canvas.SetTop(cornerDot, cp.Y - 3);
+                            _zoneCanvas.Children.Add(cornerDot);
+
+                            var idxText = new TextBlock
+                            {
+                                Text = $"{i}",
+                                Foreground = new SolidColorBrush(WpfColor.FromArgb(245, 255, 64, 129)),
+                                FontSize = 8,
+                                FontWeight = FontWeights.Bold,
+                                Background = new SolidColorBrush(WpfColor.FromArgb(120, 0, 0, 0))
+                            };
+                            Canvas.SetLeft(idxText, cp.X + 4);
+                            Canvas.SetTop(idxText, cp.Y - 10);
+                            _zoneCanvas.Children.Add(idxText);
+                        }
+                    }
+                }
+
+                if (!_compactMode)
+                {
+                    // 调试层：被判定为“矩形边而删除”的线段（橙色）
+                    foreach (var seg in removedSegments)
+                    {
+                        var p1 = ModelToCanvas(seg.A.X, seg.A.Y);
+                        var p2 = ModelToCanvas(seg.B.X, seg.B.Y);
+                        var dbg = new WpfLine
+                        {
+                            X1 = p1.X,
+                            Y1 = p1.Y,
+                            X2 = p2.X,
+                            Y2 = p2.Y,
+                            Stroke = new SolidColorBrush(WpfColor.FromArgb(235, 255, 152, 0)),
+                            StrokeThickness = 0.55,
+                            StrokeDashArray = new DoubleCollection([2, 2])
+                        };
+                        _zoneCanvas.Children.Add(dbg);
                     }
 
-                    var guide = new Polyline
+                    var firstRun = runs[0];
+                    var labelAnchor = ModelToCanvas(firstRun[0].X, firstRun[0].Y);
+                    var label = new TextBlock
                     {
-                        Stroke = new SolidColorBrush(WpfColor.FromArgb(235, 186, 104, 200)),
-                        StrokeThickness = 1.0,
-                        StrokeLineJoin = PenLineJoin.Round,
-                        StrokeStartLineCap = PenLineCap.Round,
-                        StrokeEndLineCap = PenLineCap.Round,
-                        StrokeDashArray = new DoubleCollection([5, 3])
+                        Text = "待冲轮廓",
+                        Foreground = new SolidColorBrush(WpfColor.FromArgb(245, 0, 255, 255)),
+                        FontSize = 8,
+                        FontWeight = FontWeights.Bold,
+                        Background = new SolidColorBrush(WpfColor.FromArgb(120, 0, 0, 0))
                     };
-                    foreach (var p in gp.Points)
-                    {
-                        guide.Points.Add(ModelToCanvas(p.X, p.Y));
-                    }
-                    _zoneCanvas.Children.Add(guide);
+                    Canvas.SetLeft(label, labelAnchor.X + 6);
+                    Canvas.SetTop(label, labelAnchor.Y - 18);
+                    _zoneCanvas.Children.Add(label);
                 }
             }
-
-            // 调试层：被判定为“矩形边而删除”的线段（橙色）
-            foreach (var seg in removedSegments)
-            {
-                var p1 = ModelToCanvas(seg.A.X, seg.A.Y);
-                var p2 = ModelToCanvas(seg.B.X, seg.B.Y);
-                var dbg = new WpfLine
-                {
-                    X1 = p1.X,
-                    Y1 = p1.Y,
-                    X2 = p2.X,
-                    Y2 = p2.Y,
-                    Stroke = new SolidColorBrush(WpfColor.FromArgb(235, 255, 152, 0)),
-                    StrokeThickness = 0.9,
-                    StrokeDashArray = new DoubleCollection([2, 2])
-                };
-                _zoneCanvas.Children.Add(dbg);
-            }
-
-            var firstRun = runs[0];
-            var labelAnchor = ModelToCanvas(firstRun[0].X, firstRun[0].Y);
-            var label = new TextBlock
-            {
-                Text = "待冲轮廓",
-                Foreground = new SolidColorBrush(WpfColor.FromArgb(245, 0, 255, 255)),
-                FontSize = 9,
-                FontWeight = FontWeights.Bold,
-                Background = new SolidColorBrush(WpfColor.FromArgb(120, 0, 0, 0))
-            };
-            Canvas.SetLeft(label, labelAnchor.X + 6);
-            Canvas.SetTop(label, labelAnchor.Y - 18);
-            _zoneCanvas.Children.Add(label);
         }
 
         public static WpfColor GetMoldColor(int moldId)
@@ -2915,8 +3000,9 @@ namespace CADRecognition
                 return [];
             }
 
-            // CAD 偏移量：向外偏移半个模具宽度。
-            var offsetDist = Math.Max(Math.Min(mold1.Feature.Width, mold1.Feature.Height) * 0.5, 0.8);
+            // CAD 偏移量：向外偏移 M01 模具“边长”的一半（取包围盒长边）。
+            var moldEdgeLength = Math.Max(mold1.Feature.Width, mold1.Feature.Height);
+            var offsetDist = Math.Max(moldEdgeLength * 0.5, 0.8);
             var moldStep = Math.Max(EstimateOutlineStep(outline) * 0.55, 2.5);
             var points = new List<HoleFeature>();
 
@@ -2943,50 +3029,29 @@ namespace CADRecognition
                     continue;
                 }
 
-                // 输出辅助线：用于界面可视化核对。
-                guidePaths.Add(new CornerStepPath(contourPath.CornerName, offsetChain));
-
-                // 规则：当某段长度小于模具边长时，该段不做连续冲压，仅保留拐点命中。
-                var moldEdge = Math.Max(mold1.Feature.Width, mold1.Feature.Height);
-                var sampled = SampleAlongPolylineWithMinSegmentLength(offsetChain, moldStep, minSegmentLength: moldEdge);
-                var cornerProtectRadius = Math.Max(moldEdge * 0.35, 0.8);
-                foreach (var s in sampled)
+                // 端点增强：青色线首尾沿各自直线方向再外延 0.8 * M01 边长，
+                // 让类似“6号位”这种末端区域覆盖更完整。
+                var endpointExtend = Math.Max(moldEdgeLength * 0.8, 0.8);
+                var enhancedChain = ExtendPolylineEndpoints(offsetChain, endpointExtend, project.OuterRectangle);
+                if (enhancedChain.Count < 2)
                 {
-                    // 角点附近允许保留，但避免与角点几乎重合的重复点。
-                    var tooCloseToCorner = false;
-                    for (var ci = 1; ci < offsetChain.Count - 1; ci++)
-                    {
-                        var cpt = offsetChain[ci];
-                        var dx = s.X - cpt.X;
-                        var dy = s.Y - cpt.Y;
-                        if (Math.Sqrt(dx * dx + dy * dy) <= cornerProtectRadius)
-                        {
-                            tooCloseToCorner = true;
-                            break;
-                        }
-                    }
-                    if (tooCloseToCorner)
-                    {
-                        continue;
-                    }
-
-                    points.Add(new HoleFeature(
-                        $"ContourPath:{contourPath.CornerName}",
-                        (s.X, s.Y),
-                        mold1.Feature.Width,
-                        mold1.Feature.Height,
-                        Math.Max(mold1.Feature.Area, 1.0),
-                        Math.Max(mold1.Feature.Perimeter, 1.0),
-                        0,
-                        mold1.Feature.Signature));
+                    continue;
                 }
 
-                // 内拐点必须命中：偏移线每个折点都强制补一个冲压中心。
-                // 同时在每个角点沿前后段方向各补一个“夹角内侧点”，确保凹入短边冲到位。
-                var flankStep = Math.Max(moldEdge * 0.45, 1.2);
-                for (var vi = 1; vi < offsetChain.Count - 1; vi++)
+                // 输出辅助线：用于界面可视化核对。
+                guidePaths.Add(new CornerStepPath(contourPath.CornerName, enhancedChain));
+
+                // 先命中紫线内拐点，再补缺失段。
+                var moldEdge = Math.Max(mold1.Feature.Width, mold1.Feature.Height);
+                var sampled = SampleAlongPolylineWithMinSegmentLength(enhancedChain, moldStep, minSegmentLength: 0.0);
+
+                var seeded = new List<(double X, double Y)>();
+
+                // Pass-1: 内拐点强制命中（优先）
+                for (var vi = 1; vi < enhancedChain.Count - 1; vi++)
                 {
-                    var v = offsetChain[vi];
+                    var v = enhancedChain[vi];
+                    seeded.Add(v);
                     points.Add(new HoleFeature(
                         $"ContourCornerHit:{contourPath.CornerName}",
                         v,
@@ -2996,47 +3061,33 @@ namespace CADRecognition
                         Math.Max(mold1.Feature.Perimeter, 1.0),
                         0,
                         mold1.Feature.Signature));
+                }
 
-                    var prev = offsetChain[vi - 1];
-                    var next = offsetChain[vi + 1];
-
-                    var d1x = prev.X - v.X;
-                    var d1y = prev.Y - v.Y;
-                    var l1 = Math.Sqrt(d1x * d1x + d1y * d1y);
-                    if (l1 > 1e-9)
+                // Pass-2: 若还有缺失（离已命中点过远）再补连续点。
+                var fillRadius = Math.Max(moldEdge * 0.9, 2.0);
+                foreach (var s in sampled)
+                {
+                    var covered = seeded.Any(k =>
                     {
-                        var ux = d1x / l1;
-                        var uy = d1y / l1;
-                        var s1 = Math.Min(flankStep, l1 * 0.45);
-                        points.Add(new HoleFeature(
-                            $"ContourCornerFlank:{contourPath.CornerName}",
-                            (v.X + ux * s1, v.Y + uy * s1),
-                            mold1.Feature.Width,
-                            mold1.Feature.Height,
-                            Math.Max(mold1.Feature.Area, 1.0),
-                            Math.Max(mold1.Feature.Perimeter, 1.0),
-                            0,
-                            mold1.Feature.Signature));
+                        var dx = s.X - k.X;
+                        var dy = s.Y - k.Y;
+                        return Math.Sqrt(dx * dx + dy * dy) <= fillRadius;
+                    });
+                    if (covered)
+                    {
+                        continue;
                     }
 
-                    var d2x = next.X - v.X;
-                    var d2y = next.Y - v.Y;
-                    var l2 = Math.Sqrt(d2x * d2x + d2y * d2y);
-                    if (l2 > 1e-9)
-                    {
-                        var ux = d2x / l2;
-                        var uy = d2y / l2;
-                        var s2 = Math.Min(flankStep, l2 * 0.45);
-                        points.Add(new HoleFeature(
-                            $"ContourCornerFlank:{contourPath.CornerName}",
-                            (v.X + ux * s2, v.Y + uy * s2),
-                            mold1.Feature.Width,
-                            mold1.Feature.Height,
-                            Math.Max(mold1.Feature.Area, 1.0),
-                            Math.Max(mold1.Feature.Perimeter, 1.0),
-                            0,
-                            mold1.Feature.Signature));
-                    }
+                    seeded.Add((s.X, s.Y));
+                    points.Add(new HoleFeature(
+                        $"ContourPath:{contourPath.CornerName}",
+                        (s.X, s.Y),
+                        mold1.Feature.Width,
+                        mold1.Feature.Height,
+                        Math.Max(mold1.Feature.Area, 1.0),
+                        Math.Max(mold1.Feature.Perimeter, 1.0),
+                        0,
+                        mold1.Feature.Signature));
                 }
             }
 
@@ -3086,23 +3137,117 @@ namespace CADRecognition
 
         private static double EstimateOutlineStep(IReadOnlyList<(double X, double Y)> outline)
         {
-            var lengths = new List<double>();
-            for (var i = 1; i < outline.Count; i++)
-            {
-                var dx = outline[i].X - outline[i - 1].X;
-                var dy = outline[i].Y - outline[i - 1].Y;
-                var len = Math.Sqrt(dx * dx + dy * dy);
-                if (len > 1e-6)
-                {
-                    lengths.Add(len);
-                }
-            }
-            if (lengths.Count == 0)
+            // 目标：给连续冲压采样一个“像 CAD Offset 后沿轮廓走刀”的稳定步距。
+            // 思路：
+            // 1) 去掉重复点与极短噪声边，避免步距被噪点拉小；
+            // 2) 优先统计主方向（水平/垂直）边长；
+            // 3) 用稳健分位值（Q40）并做 IQR 去极值，减少异常短边/长边影响。
+            if (outline is null || outline.Count < 2)
             {
                 return 10.0;
             }
-            lengths.Sort();
-            return lengths[Math.Max(0, lengths.Count / 4)];
+
+            var eps = 1e-6;
+            var clean = new List<(double X, double Y)>();
+            foreach (var p in outline)
+            {
+                if (clean.Count == 0)
+                {
+                    clean.Add(p);
+                    continue;
+                }
+
+                var prev = clean[^1];
+                var d = Math.Sqrt((p.X - prev.X) * (p.X - prev.X) + (p.Y - prev.Y) * (p.Y - prev.Y));
+                if (d > eps)
+                {
+                    clean.Add(p);
+                }
+            }
+
+            if (clean.Count >= 2)
+            {
+                var first = clean[0];
+                var last = clean[^1];
+                var close = Math.Sqrt((first.X - last.X) * (first.X - last.X) + (first.Y - last.Y) * (first.Y - last.Y));
+                if (close <= eps)
+                {
+                    clean.RemoveAt(clean.Count - 1);
+                }
+            }
+
+            if (clean.Count < 2)
+            {
+                return 10.0;
+            }
+
+            var allLens = new List<double>();
+            var axisLens = new List<double>();
+
+            for (var i = 1; i < clean.Count; i++)
+            {
+                var dx = clean[i].X - clean[i - 1].X;
+                var dy = clean[i].Y - clean[i - 1].Y;
+                var len = Math.Sqrt(dx * dx + dy * dy);
+                if (len <= eps)
+                {
+                    continue;
+                }
+
+                allLens.Add(len);
+
+                // 主方向边（近似水平/垂直）优先，符合冲压路径多为正交折线的实际。
+                var minComp = Math.Min(Math.Abs(dx), Math.Abs(dy));
+                var maxComp = Math.Max(Math.Abs(dx), Math.Abs(dy));
+                if (maxComp > eps && minComp / maxComp <= 0.08)
+                {
+                    axisLens.Add(len);
+                }
+            }
+
+            var baseLens = axisLens.Count >= 3 ? axisLens : allLens;
+            if (baseLens.Count == 0)
+            {
+                return 10.0;
+            }
+
+            baseLens.Sort();
+
+            // IQR 去极值（稳健）
+            double PickQuantile(List<double> arr, double q)
+            {
+                if (arr.Count == 1)
+                {
+                    return arr[0];
+                }
+
+                var pos = (arr.Count - 1) * q;
+                var i0 = (int)Math.Floor(pos);
+                var i1 = Math.Min(i0 + 1, arr.Count - 1);
+                var t = pos - i0;
+                return arr[i0] * (1 - t) + arr[i1] * t;
+            }
+
+            var q1 = PickQuantile(baseLens, 0.25);
+            var q3 = PickQuantile(baseLens, 0.75);
+            var iqr = Math.Max(q3 - q1, eps);
+            var lo = Math.Max(q1 - 1.5 * iqr, eps);
+            var hi = q3 + 1.5 * iqr;
+
+            var trimmed = baseLens.Where(v => v >= lo && v <= hi).ToList();
+            if (trimmed.Count == 0)
+            {
+                trimmed = baseLens;
+            }
+            trimmed.Sort();
+
+            // Q40：比中位数略偏小，既能覆盖拐角短段，又不会被极短段主导。
+            var step = PickQuantile(trimmed, 0.40);
+
+            // 限幅，避免异常数据导致采样过密/过疏。
+            var maxLen = trimmed[^1];
+            step = Math.Clamp(step, 2.0, Math.Max(2.0, maxLen * 0.85));
+            return step;
         }
 
         private static List<(double X, double Y)> OffsetPolylineOutward(
@@ -3117,32 +3262,92 @@ namespace CADRecognition
             }
 
             var center = ((outer.MinX + outer.MaxX) * 0.5, (outer.MinY + outer.MaxY) * 0.5);
+            const double eps = 1e-9;
 
-            // CAD Offset 风格：整条路径使用统一“外侧方向”，避免短边处法线翻转。
-            var sideSign = 1.0; // +1: 左法线，-1: 右法线
-            for (var i = 1; i < chain.Count; i++)
+            // 先清理重复点，避免零长度段造成角点错位。
+            var clean = new List<(double X, double Y)>();
+            foreach (var p in chain)
             {
-                var dx0 = chain[i].X - chain[i - 1].X;
-                var dy0 = chain[i].Y - chain[i - 1].Y;
-                var len0 = Math.Sqrt(dx0 * dx0 + dy0 * dy0);
-                if (len0 <= 1e-9)
+                if (clean.Count == 0)
+                {
+                    clean.Add(p);
+                    continue;
+                }
+
+                var last = clean[^1];
+                if (Math.Sqrt((p.X - last.X) * (p.X - last.X) + (p.Y - last.Y) * (p.Y - last.Y)) > eps)
+                {
+                    clean.Add(p);
+                }
+            }
+
+            if (clean.Count < 2)
+            {
+                return result;
+            }
+
+            // 关键：偏移前先净化路径，去掉“极短边 + 近共线伪拐点”，避免产生额外角点。
+            // 这能消除图中 2~6 一带那种由微小抖动引入的多余折线。
+            var axisMergeTol = Math.Max(Math.Min(outer.Width, outer.Height) * 0.002, 0.6);
+            bool changed;
+            do
+            {
+                changed = false;
+
+                // 1) 删除极短边中间点
+                for (var i = 1; i < clean.Count - 1; i++)
+                {
+                    var a = clean[i - 1];
+                    var b = clean[i];
+                    var c = clean[i + 1];
+                    var ab = Math.Sqrt((b.X - a.X) * (b.X - a.X) + (b.Y - a.Y) * (b.Y - a.Y));
+                    var bc = Math.Sqrt((c.X - b.X) * (c.X - b.X) + (c.Y - b.Y) * (c.Y - b.Y));
+                    if (ab <= axisMergeTol || bc <= axisMergeTol)
+                    {
+                        clean.RemoveAt(i);
+                        changed = true;
+                        break;
+                    }
+                }
+                if (changed)
                 {
                     continue;
                 }
 
-                var tx0 = dx0 / len0;
-                var ty0 = dy0 / len0;
-                var left = (-ty0, tx0);
-                var right = (ty0, -tx0);
-                var mid = ((chain[i - 1].X + chain[i].X) * 0.5, (chain[i - 1].Y + chain[i].Y) * 0.5);
+                // 2) 删除近共线点（水平/竖直折线场景）
+                for (var i = 1; i < clean.Count - 1; i++)
+                {
+                    var a = clean[i - 1];
+                    var b = clean[i];
+                    var c = clean[i + 1];
 
-                var dl = (mid.Item1 + left.Item1 * offset - center.Item1) * (mid.Item1 + left.Item1 * offset - center.Item1)
-                       + (mid.Item2 + left.Item2 * offset - center.Item2) * (mid.Item2 + left.Item2 * offset - center.Item2);
-                var dr = (mid.Item1 + right.Item1 * offset - center.Item1) * (mid.Item1 + right.Item1 * offset - center.Item1)
-                       + (mid.Item2 + right.Item2 * offset - center.Item2) * (mid.Item2 + right.Item2 * offset - center.Item2);
+                    var abx = b.X - a.X;
+                    var aby = b.Y - a.Y;
+                    var bcx = c.X - b.X;
+                    var bcy = c.Y - b.Y;
 
-                sideSign = dl >= dr ? 1.0 : -1.0;
-                break;
+                    var lab = Math.Sqrt(abx * abx + aby * aby);
+                    var lbc = Math.Sqrt(bcx * bcx + bcy * bcy);
+                    if (lab <= eps || lbc <= eps)
+                    {
+                        clean.RemoveAt(i);
+                        changed = true;
+                        break;
+                    }
+
+                    var cross = Math.Abs(abx * bcy - aby * bcx) / (lab * lbc);
+                    if (cross <= 0.01)
+                    {
+                        clean.RemoveAt(i);
+                        changed = true;
+                        break;
+                    }
+                }
+            } while (changed && clean.Count >= 3);
+
+            if (clean.Count < 2)
+            {
+                return result;
             }
 
             (double NX, double NY) OutwardNormal((double X, double Y) a, (double X, double Y) b)
@@ -3150,7 +3355,7 @@ namespace CADRecognition
                 var dx = b.X - a.X;
                 var dy = b.Y - a.Y;
                 var len = Math.Sqrt(dx * dx + dy * dy);
-                if (len <= 1e-9)
+                if (len <= eps)
                 {
                     return (0, 0);
                 }
@@ -3158,7 +3363,41 @@ namespace CADRecognition
                 var tx = dx / len;
                 var ty = dy / len;
                 var left = (-ty, tx);
-                return (left.Item1 * sideSign, left.Item2 * sideSign);
+                var right = (ty, -tx);
+                var mid = ((a.X + b.X) * 0.5, (a.Y + b.Y) * 0.5);
+
+                // 正交轮廓优先：按“更靠近哪条外框边”确定外侧方向，避免中心距离法在拐角处翻转。
+                var axisTol = 1e-4;
+                var isHorizontal = Math.Abs(dy) <= axisTol;
+                var isVertical = Math.Abs(dx) <= axisTol;
+
+                if (isHorizontal)
+                {
+                    var distTop = Math.Abs(outer.MaxY - mid.Item2);
+                    var distBottom = Math.Abs(mid.Item2 - outer.MinY);
+                    // 靠上边 -> 外侧朝 +Y；靠下边 -> 外侧朝 -Y
+                    var ny = distTop <= distBottom ? 1.0 : -1.0;
+                    return (0.0, ny);
+                }
+
+                if (isVertical)
+                {
+                    var distLeft = Math.Abs(mid.Item1 - outer.MinX);
+                    var distRight = Math.Abs(outer.MaxX - mid.Item1);
+                    // 靠左边 -> 外侧朝 -X；靠右边 -> 外侧朝 +X
+                    var nx = distLeft <= distRight ? -1.0 : 1.0;
+                    return (nx, 0.0);
+                }
+
+                // 非正交段回退到中心距离判定
+                var ldx = mid.Item1 + left.Item1 * offset - center.Item1;
+                var ldy = mid.Item2 + left.Item2 * offset - center.Item2;
+                var rdx = mid.Item1 + right.Item1 * offset - center.Item1;
+                var rdy = mid.Item2 + right.Item2 * offset - center.Item2;
+                var dl = ldx * ldx + ldy * ldy;
+                var dr = rdx * rdx + rdy * rdy;
+
+                return dl >= dr ? left : right;
             }
 
             (double X, double Y)? LineIntersection(
@@ -3168,80 +3407,78 @@ namespace CADRecognition
                 (double X, double Y) s)
             {
                 var rxs = r.X * s.Y - r.Y * s.X;
-                if (Math.Abs(rxs) <= 1e-9)
+                if (Math.Abs(rxs) <= eps)
                 {
                     return null;
                 }
+
                 var qmp = (q.X - p.X, q.Y - p.Y);
                 var t = (qmp.Item1 * s.Y - qmp.Item2 * s.X) / rxs;
                 return (p.X + t * r.X, p.Y + t * r.Y);
             }
 
-            // 起点
+            var segNormals = new List<(double NX, double NY)>();
+            for (var i = 1; i < clean.Count; i++)
             {
-                var n = OutwardNormal(chain[0], chain[1]);
-                result.Add((chain[0].X + n.NX * offset, chain[0].Y + n.NY * offset));
+                segNormals.Add(OutwardNormal(clean[i - 1], clean[i]));
             }
 
-            // 中间点：先算每个角点偏移位置，再按顺序连接（Corner-Join）。
-            for (var i = 1; i < chain.Count - 1; i++)
+            // 起点 = 首段起点偏移
+            result.Add((
+                clean[0].X + segNormals[0].NX * offset,
+                clean[0].Y + segNormals[0].NY * offset));
+
+            // 中间角点：相邻偏移线求交；失败时走“正交桥接点”，避免斜线短接。
+            for (var i = 1; i < clean.Count - 1; i++)
             {
-                var prev = chain[i - 1];
-                var curr = chain[i];
-                var next = chain[i + 1];
+                var prev = clean[i - 1];
+                var curr = clean[i];
+                var next = clean[i + 1];
 
-                var v1x = curr.X - prev.X;
-                var v1y = curr.Y - prev.Y;
-                var v2x = next.X - curr.X;
-                var v2y = next.Y - curr.Y;
+                var n1 = segNormals[i - 1];
+                var n2 = segNormals[i];
 
-                var l1 = Math.Sqrt(v1x * v1x + v1y * v1y);
-                var l2 = Math.Sqrt(v2x * v2x + v2y * v2y);
-                if (l1 <= 1e-9 || l2 <= 1e-9)
+                var p1 = (prev.X + n1.NX * offset, prev.Y + n1.NY * offset);
+                var p2 = (curr.X + n1.NX * offset, curr.Y + n1.NY * offset);
+                var r = (p2.Item1 - p1.Item1, p2.Item2 - p1.Item2);
+
+                var p3 = (curr.X + n2.NX * offset, curr.Y + n2.NY * offset);
+                var p4 = (next.X + n2.NX * offset, next.Y + n2.NY * offset);
+                var s = (p4.Item1 - p3.Item1, p4.Item2 - p3.Item2);
+
+                var cross = LineIntersection((p1.Item1, p1.Item2), (r.Item1, r.Item2), (p3.Item1, p3.Item2), (s.Item1, s.Item2));
+                if (cross.HasValue)
                 {
-                    var n = OutwardNormal(prev, next);
-                    result.Add((curr.X + n.NX * offset, curr.Y + n.NY * offset));
-                    continue;
+                    // miter 限幅，防止尖角飞点。
+                    var dx = cross.Value.X - curr.X;
+                    var dy = cross.Value.Y - curr.Y;
+                    var dist = Math.Sqrt(dx * dx + dy * dy);
+                    if (dist <= Math.Max(offset * 5.0, 1.0))
+                    {
+                        result.Add(cross.Value);
+                        continue;
+                    }
                 }
 
-                var t1x = v1x / l1;
-                var t1y = v1y / l1;
-                var t2x = v2x / l2;
-                var t2y = v2y / l2;
+                // 退化：只保留“当前拐点对应的一个角点”，然后按角点顺序连线。
+                // 不再插入 p2/p3，避免产生额外折返段。
+                var b1 = (p2.Item1, p3.Item2);
+                var b2 = (p3.Item1, p2.Item2);
 
-                var n1 = OutwardNormal(prev, curr);
-                var n2 = OutwardNormal(curr, next);
+                var d1x = b1.Item1 - center.Item1;
+                var d1y = b1.Item2 - center.Item2;
+                var d2x = b2.Item1 - center.Item1;
+                var d2y = b2.Item2 - center.Item2;
+                var bridge = (d1x * d1x + d1y * d1y) >= (d2x * d2x + d2y * d2y) ? b1 : b2;
 
-                // 角平分线方向（外侧）
-                var bx = n1.NX + n2.NX;
-                var by = n1.NY + n2.NY;
-                var bl = Math.Sqrt(bx * bx + by * by);
-
-                if (bl <= 1e-9)
-                {
-                    // 近180°拐角，退化到单法线偏移
-                    result.Add((curr.X + n1.NX * offset, curr.Y + n1.NY * offset));
-                    continue;
-                }
-
-                bx /= bl;
-                by /= bl;
-
-                // miter 长度：offset / sin(theta/2)，并限幅避免尖角爆炸
-                var cosTheta = Math.Clamp(t1x * t2x + t1y * t2y, -0.999999, 0.999999);
-                var sinHalf = Math.Sqrt((1.0 - cosTheta) * 0.5);
-                var miterLen = offset / Math.Max(sinHalf, 0.1);
-                var miterCap = Math.Max(offset * 2.5, 1.0);
-                var useLen = Math.Min(miterLen, miterCap);
-
-                result.Add((curr.X + bx * useLen, curr.Y + by * useLen));
+                result.Add(bridge);
             }
 
-            // 终点
-            {
-                var n = OutwardNormal(chain[^2], chain[^1]);
-                result.Add((chain[^1].X + n.NX * offset, chain[^1].Y + n.NY * offset));
-            }
+            // 终点 = 尾段终点偏移
+            var lastNormal = segNormals[^1];
+            result.Add((
+                clean[^1].X + lastNormal.NX * offset,
+                clean[^1].Y + lastNormal.NY * offset));
 
             // 去除相邻重复点
             var cleaned = new List<(double X, double Y)>();
@@ -3252,6 +3489,7 @@ namespace CADRecognition
                     cleaned.Add(p);
                     continue;
                 }
+
                 var last = cleaned[^1];
                 if (Math.Sqrt((p.X - last.X) * (p.X - last.X) + (p.Y - last.Y) * (p.Y - last.Y)) > 1e-6)
                 {
@@ -3260,6 +3498,63 @@ namespace CADRecognition
             }
 
             return cleaned;
+        }
+
+        private static List<(double X, double Y)> ExtendPolylineEndpoints(
+            IReadOnlyList<(double X, double Y)> polyline,
+            double extendDistance,
+            RectBounds outer)
+        {
+            var result = polyline.ToList();
+            if (result.Count < 2 || extendDistance <= 1e-9)
+            {
+                return result;
+            }
+
+            var eps = 1e-9;
+
+            (double X, double Y) ExtendByOutward((double X, double Y) anchor, (double X, double Y) neighbor, bool isStart)
+            {
+                var dx = neighbor.X - anchor.X;
+                var dy = neighbor.Y - anchor.Y;
+                var len = Math.Sqrt(dx * dx + dy * dy);
+                if (len <= eps)
+                {
+                    return anchor;
+                }
+
+                var ux = dx / len;
+                var uy = dy / len;
+
+                // 两个候选：沿线方向 / 反方向，选“更外侧”的那个
+                var c1 = isStart
+                    ? (anchor.X - ux * extendDistance, anchor.Y - uy * extendDistance)
+                    : (anchor.X + ux * extendDistance, anchor.Y + uy * extendDistance);
+                var c2 = isStart
+                    ? (anchor.X + ux * extendDistance, anchor.Y + uy * extendDistance)
+                    : (anchor.X - ux * extendDistance, anchor.Y - uy * extendDistance);
+
+                var d1 = DistanceToRectCenter(c1, outer);
+                var d2 = DistanceToRectCenter(c2, outer);
+                return d1 >= d2 ? c1 : c2;
+            }
+
+            // 首端：自动判外侧，修复“0点反向”
+            result[0] = ExtendByOutward(result[0], result[1], isStart: true);
+
+            // 末端：自动判外侧
+            result[^1] = ExtendByOutward(result[^1], result[^2], isStart: false);
+
+            return result;
+        }
+
+        private static double DistanceToRectCenter((double X, double Y) p, RectBounds rect)
+        {
+            var cx = (rect.MinX + rect.MaxX) * 0.5;
+            var cy = (rect.MinY + rect.MaxY) * 0.5;
+            var dx = p.X - cx;
+            var dy = p.Y - cy;
+            return Math.Sqrt(dx * dx + dy * dy);
         }
 
         private sealed record PathSample(double X, double Y, double TX, double TY);

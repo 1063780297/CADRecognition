@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "dgSpecHash": "/BMzc/arfzM=",
+  "dgSpecHash": "d85Zp1o8bcI=",
   "success": true,
   "projectFilePath": "G:\\工作\\冲压机CAD识别\\CADRecognition\\CADRecognition\\CADRecognition.csproj",
   "expectedPackageFiles": [
@@ -49,5 +49,15 @@
     "C:\\Users\\Administrator\\.nuget\\packages\\system.servicemodel.nettcp\\8.1.2\\system.servicemodel.nettcp.8.1.2.nupkg.sha512",
     "C:\\Users\\Administrator\\.nuget\\packages\\system.servicemodel.primitives\\8.1.2\\system.servicemodel.primitives.8.1.2.nupkg.sha512"
   ],
-  "logs": []
+  "logs": [
+    {
+      "code": "NU1900",
+      "level": "Warning",
+      "message": "获取包漏洞数据时出错: 无法加载源 https://api.nuget.org/v3/index.json 的服务索引。",
+      "projectPath": "G:\\工作\\冲压机CAD识别\\CADRecognition\\CADRecognition\\CADRecognition.csproj",
+      "warningLevel": 1,
+      "filePath": "G:\\工作\\冲压机CAD识别\\CADRecognition\\CADRecognition\\CADRecognition.csproj",
+      "targetGraphs": []
+    }
+  ]
 }
