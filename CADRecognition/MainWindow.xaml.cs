@@ -31,6 +31,7 @@ namespace CADRecognition
         private readonly ObservableCollection<MoldRow> _moldRows = [];
         private readonly ObservableCollection<PositionRow> _positionRows = [];
         private readonly List<string> _moldFiles = [];
+        private string? _selectedM01File;
         private MatchResult? _lastMatchResult;
         private ProjectProfile? _lastProjectProfile;
         private List<MoldProfile> _lastMolds = [];
@@ -87,9 +88,18 @@ namespace CADRecognition
             _projectFile = dialog.FileName;
             _projectDoc = DxfDocument.Load(_projectFile);
             _documentCache[_projectFile] = _projectDoc;
+
+            // 导入新工程时清空上一张图纸的识别/标注展示状态。
+            _lastMatchResult = null;
+            _lastProjectProfile = null;
+            _lastOuterContourPoints = [];
+            _moldRows.Clear();
+            _positionRows.Clear();
+            LegendPanel.Children.Clear();
+
             ProjectFileText.Text = System.IO.Path.GetFileName(_projectFile);
             RefreshFileList();
-            RenderPreview(_projectDoc, _projectFile, withAnnotation: _lastMatchResult is not null);
+            RenderPreview(_projectDoc, _projectFile, withAnnotation: false);
             StatusText.Text = "工程 DXF 已加载。";
         }
 
@@ -111,9 +121,34 @@ namespace CADRecognition
             {
                 _documentCache[file] = DxfDocument.Load(file);
             }
+
+            M01MoldComboBox.ItemsSource = _moldFiles.Select(System.IO.Path.GetFileName).ToList();
+            _selectedM01File = _moldFiles.FirstOrDefault();
+            M01MoldComboBox.SelectedIndex = _selectedM01File is null ? -1 : 0;
+
             MoldCountText.Text = _moldFiles.Count.ToString(CultureInfo.InvariantCulture);
             RefreshFileList();
             StatusText.Text = $"已导入 {_moldFiles.Count} 张模具 DXF。";
+        }
+
+        private string? ResolveSelectedM01File()
+        {
+            if (_moldFiles.Count == 0)
+            {
+                return null;
+            }
+
+            if (M01MoldComboBox.SelectedItem is string selectedName)
+            {
+                var matched = _moldFiles.FirstOrDefault(f =>
+                    string.Equals(System.IO.Path.GetFileName(f), selectedName, StringComparison.OrdinalIgnoreCase));
+                if (!string.IsNullOrWhiteSpace(matched))
+                {
+                    return matched;
+                }
+            }
+
+            return _moldFiles.First();
         }
 
         private void Recognize_Click(object sender, RoutedEventArgs e)
@@ -132,7 +167,14 @@ namespace CADRecognition
             var project = DxfAnalyzer.ExtractProject(_projectDoc);
             _lastProjectProfile = project;
             _lastOuterContourPoints = DxfAnalyzer.ExtractOuterContourForDebug(_projectDoc);
-            var molds = _moldFiles
+
+            _selectedM01File = ResolveSelectedM01File();
+            var orderedFiles = _moldFiles
+                .OrderBy(f => string.Equals(f, _selectedM01File, StringComparison.OrdinalIgnoreCase) ? 0 : 1)
+                .ThenBy(f => f, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            var molds = orderedFiles
                 .Select((f, idx) => DxfAnalyzer.ExtractMold(idx + 1, f))
                 .ToList();
             _lastMolds = molds;
@@ -451,6 +493,8 @@ namespace CADRecognition
                 ClipToBounds = true
             };
 
+            var unifiedStroke = new SolidColorBrush(WpfColor.FromRgb(144, 238, 144));
+
             foreach (var line in document.Entities.Lines)
             {
                 canvas.Children.Add(new WpfLine
@@ -459,7 +503,7 @@ namespace CADRecognition
                     Y1 = viewHeight - ((line.StartPoint.Y - bounds.MinY) * scale + margin),
                     X2 = (line.EndPoint.X - bounds.MinX) * scale + margin,
                     Y2 = viewHeight - ((line.EndPoint.Y - bounds.MinY) * scale + margin),
-                    Stroke = WpfBrushes.LimeGreen,
+                    Stroke = unifiedStroke,
                     StrokeThickness = 1
                 });
             }
@@ -473,7 +517,7 @@ namespace CADRecognition
                 {
                     Width = r * 2,
                     Height = r * 2,
-                    Stroke = WpfBrushes.Gold,
+                    Stroke = unifiedStroke,
                     StrokeThickness = 1
                 };
                 Canvas.SetLeft(el, x);
@@ -491,7 +535,7 @@ namespace CADRecognition
                 canvas.Children.Add(new Polygon
                 {
                     Points = points,
-                    Stroke = WpfBrushes.DeepSkyBlue,
+                    Stroke = unifiedStroke,
                     StrokeThickness = 1,
                     Fill = WpfBrushes.Transparent
                 });
@@ -507,8 +551,8 @@ namespace CADRecognition
                 canvas.Children.Add(new Polyline
                 {
                     Points = points,
-                    Stroke = WpfBrushes.Orange,
-                    StrokeThickness = 1.2
+                    Stroke = unifiedStroke,
+                    StrokeThickness = 1
                 });
             }
 
@@ -602,12 +646,6 @@ namespace CADRecognition
 
             foreach (var ass in assignments)
             {
-                // 调试视图：只显示 M01 连续冲压（Contour）中心点，避免其他匹配结果干扰判断。
-                if (!_compactMode && !ass.Hole.HoleType.StartsWith("Contour", StringComparison.Ordinal))
-                {
-                    continue;
-                }
-
                 var c = ass.Hole.Centroid;
                 var p = ModelToCanvas(c.X, c.Y);
                 var color = GetMoldColor(ass.MoldId);
@@ -675,7 +713,6 @@ namespace CADRecognition
                     _markCanvas.Children.Add(mark);
                 }
 
-                // 调试：隐藏 M01 文本，便于观察中心点分布
                 var shouldShowLabel = !_compactMode && ass.MoldId != 1;
 
                 if (shouldShowLabel)
@@ -684,8 +721,8 @@ namespace CADRecognition
                     {
                         Text = $"M{ass.MoldId:D2}",
                         Foreground = brush,
-                        FontWeight = FontWeights.Bold,
-                        FontSize = _compactMode ? 8 : 9
+                        FontWeight = FontWeights.SemiBold,
+                        FontSize = 7
                     };
                     Canvas.SetLeft(text, p.X + 8);
                     Canvas.SetTop(text, p.Y - 8);

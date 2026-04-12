@@ -10,6 +10,26 @@
         MinHeight="640"
         MinWidth="1100"
         Background="#1E1E1E">
+    <Window.Resources>
+        <Style x:Key="HighContrastDataGridHeaderStyle" TargetType="DataGridColumnHeader">
+            <Setter Property="Background" Value="#2C4666"/>
+            <Setter Property="Foreground" Value="#FFFFFF"/>
+            <Setter Property="FontWeight" Value="Bold"/>
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="BorderBrush" Value="#6F88A6"/>
+            <Setter Property="BorderThickness" Value="0,0,0,1"/>
+            <Setter Property="Padding" Value="6,4"/>
+        </Style>
+
+        <Style x:Key="HighContrastTreeViewItemStyle" TargetType="TreeViewItem">
+            <Setter Property="Foreground" Value="#FFFFFF"/>
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Background" Value="#1C2F46"/>
+            <Setter Property="Padding" Value="2"/>
+        </Style>
+    </Window.Resources>
+
     <Grid Margin="10">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
@@ -32,7 +52,7 @@
                           IsChecked="True"
                           Checked="CompactAnnoCheckBox_Checked"
                           Unchecked="CompactAnnoCheckBox_Checked"
-                          Foreground="#DDDDDD"
+                          Foreground="#FFFFFF"
                           VerticalAlignment="Center"
                           Margin="0,0,20,0"/>
                 <TextBlock Text="已加载工程：" Foreground="#DDDDDD" VerticalAlignment="Center" />
@@ -46,9 +66,10 @@
             <DockPanel>
                 <TextBlock DockPanel.Dock="Top" Text="工程/模具文件" FontWeight="SemiBold" Foreground="#FFFFFF" Margin="0,0,0,6" />
                 <TreeView x:Name="FileTreeView"
-                          Background="#1F1F1F"
-                          Foreground="#DDDDDD"
-                          BorderBrush="#3D3D3D"
+                          Background="#162235"
+                          Foreground="#FFFFFF"
+                          BorderBrush="#7C97B8"
+                          ItemContainerStyle="{StaticResource HighContrastTreeViewItemStyle}"
                           MouseDoubleClick="FileTreeView_MouseDoubleClick"/>
             </DockPanel>
         </Border>
@@ -74,6 +95,10 @@
             <Border Grid.Row="0" Background="#252525" CornerRadius="4" Padding="8" Margin="0,0,0,8">
                 <DockPanel>
                     <TextBlock DockPanel.Dock="Top" Text="模具清单" FontWeight="SemiBold" Foreground="#FFFFFF" Margin="0,0,0,6" />
+                    <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,8">
+                        <TextBlock Text="M01模具：" Foreground="#FFFFFF" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                        <ComboBox x:Name="M01MoldComboBox" Width="220" Height="24"/>
+                    </StackPanel>
                     <WrapPanel x:Name="LegendPanel" DockPanel.Dock="Top" Margin="0,0,0,8"/>
                     <DataGrid x:Name="MoldGrid"
                               ItemsSource="{Binding MoldRows}"
@@ -82,9 +107,14 @@
                               IsReadOnly="True"
                               HeadersVisibility="Column"
                               GridLinesVisibility="Horizontal"
-                              Background="#1F1F1F"
-                              Foreground="#DDDDDD"
-                              BorderBrush="#3D3D3D">
+                              RowBackground="#0F1722"
+                              AlternatingRowBackground="#152131"
+                              Background="#0B1220"
+                              Foreground="#FFFFFF"
+                              HorizontalGridLinesBrush="#2E415A"
+                              VerticalGridLinesBrush="#2E415A"
+                              BorderBrush="#4B5E78"
+                              ColumnHeaderStyle="{StaticResource HighContrastDataGridHeaderStyle}">
                         <DataGrid.Columns>
                             <DataGridTemplateColumn Header="预览" Width="92">
                                 <DataGridTemplateColumn.CellTemplate>
@@ -117,21 +147,26 @@
                               IsReadOnly="True"
                               HeadersVisibility="Column"
                               GridLinesVisibility="Horizontal"
-                              Background="#1F1F1F"
-                              Foreground="#DDDDDD"
-                              BorderBrush="#3D3D3D">
+                              RowBackground="#0F1722"
+                              AlternatingRowBackground="#152131"
+                              Background="#0B1220"
+                              Foreground="#FFFFFF"
+                              HorizontalGridLinesBrush="#2E415A"
+                              VerticalGridLinesBrush="#2E415A"
+                              BorderBrush="#4B5E78"
+                              ColumnHeaderStyle="{StaticResource HighContrastDataGridHeaderStyle}">
                         <DataGrid.Columns>
                             <DataGridTextColumn Binding="{Binding Index}" Header="序号" Width="52"/>
                             <DataGridTextColumn Binding="{Binding HoleType}" Header="孔型" Width="96"/>
                             <DataGridTextColumn Binding="{Binding MoldCode}" Header="匹配模具" Width="78"/>
                             <DataGridTextColumn Binding="{Binding PosX}" Header="X" Width="82"/>
                             <DataGridTextColumn Binding="{Binding PosY}" Header="Y" Width="82"/>
-                            <DataGridTextColumn Binding="{Binding IsCornerCandidate}" Header="角候选" Width="64"/>
-                            <DataGridTextColumn Binding="{Binding IsEdgeHole}" Header="边缘孔" Width="64"/>
-                            <DataGridTextColumn Binding="{Binding PositionRelation}" Header="位置关系" Width="120"/>
-                            <DataGridTextColumn Binding="{Binding TopCandidates}" Header="Top3候选(面积比)" Width="260"/>
-                            <DataGridTextColumn Binding="{Binding AreaRatio}" Header="选中面积比" Width="96"/>
-                            <DataGridTextColumn Binding="{Binding FailureReason}" Header="失败原因" Width="320"/>
+                            <DataGridTextColumn Binding="{Binding IsCornerCandidate}" Header="角候选" Width="64" Visibility="Hidden"/>
+                            <DataGridTextColumn Binding="{Binding IsEdgeHole}" Header="边缘孔" Width="64" Visibility="Hidden"/>
+                            <DataGridTextColumn Binding="{Binding PositionRelation}" Header="位置关系" Width="120" Visibility="Hidden"/>
+                            <DataGridTextColumn Binding="{Binding TopCandidates}" Header="Top3候选(面积比)" Width="260" Visibility="Hidden"/>
+                            <DataGridTextColumn Binding="{Binding AreaRatio}" Header="选中面积比" Width="96" Visibility="Hidden"/>
+                            <DataGridTextColumn Binding="{Binding FailureReason}" Header="失败原因" Width="320" Visibility="Hidden"/>
                         </DataGrid.Columns>
                     </DataGrid>
                 </DockPanel>
