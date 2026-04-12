@@ -13,6 +13,7 @@ using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Shapes;
 using System.Windows.Threading;
+using Line = netDxf.Entities.Line;
 using WinOpenFileDialog = Microsoft.Win32.OpenFileDialog;
 using WpfBrushes = System.Windows.Media.Brushes;
 using WpfColor = System.Windows.Media.Color;
@@ -87,6 +88,7 @@ namespace CADRecognition
 
             _projectFile = dialog.FileName;
             _projectDoc = DxfDocument.Load(_projectFile);
+            var removedProjectLines = RemoveDuplicateLines(_projectDoc);
             _documentCache[_projectFile] = _projectDoc;
 
             // 导入新工程时清空上一张图纸的识别/标注展示状态。
@@ -100,7 +102,9 @@ namespace CADRecognition
             ProjectFileText.Text = System.IO.Path.GetFileName(_projectFile);
             RefreshFileList();
             RenderPreview(_projectDoc, _projectFile, withAnnotation: false);
-            StatusText.Text = "工程 DXF 已加载。";
+            StatusText.Text = removedProjectLines > 0
+                ? $"工程 DXF 已加载，已去重重叠线段 {removedProjectLines} 条。"
+                : "工程 DXF 已加载。";
         }
 
         private void ImportMoldsDxf_Click(object sender, RoutedEventArgs e)
@@ -119,7 +123,9 @@ namespace CADRecognition
             _moldFiles.AddRange(dialog.FileNames);
             foreach (var file in _moldFiles)
             {
-                _documentCache[file] = DxfDocument.Load(file);
+                var moldDoc = DxfDocument.Load(file);
+                RemoveDuplicateLines(moldDoc);
+                _documentCache[file] = moldDoc;
             }
 
             M01MoldComboBox.ItemsSource = _moldFiles.Select(System.IO.Path.GetFileName).ToList();
@@ -129,6 +135,46 @@ namespace CADRecognition
             MoldCountText.Text = _moldFiles.Count.ToString(CultureInfo.InvariantCulture);
             RefreshFileList();
             StatusText.Text = $"已导入 {_moldFiles.Count} 张模具 DXF。";
+        }
+
+        private static int RemoveDuplicateLines(DxfDocument doc)
+        {
+            if (doc.Entities.Lines.Count() <= 1)
+            {
+                return 0;
+            }
+
+            const double tol = 1e-4;
+            (double X, double Y) Snap((double X, double Y) p)
+                => (Math.Round(p.X / tol) * tol, Math.Round(p.Y / tol) * tol);
+
+            string Key((double X, double Y) a, (double X, double Y) b)
+            {
+                var sa = Snap(a);
+                var sb = Snap(b);
+                var k1 = $"{sa.X:F4},{sa.Y:F4}";
+                var k2 = $"{sb.X:F4},{sb.Y:F4}";
+                return string.CompareOrdinal(k1, k2) <= 0 ? $"{k1}|{k2}" : $"{k2}|{k1}";
+            }
+
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            var dup = new List<Line>();
+
+            foreach (var l in doc.Entities.Lines)
+            {
+                var key = Key((l.StartPoint.X, l.StartPoint.Y), (l.EndPoint.X, l.EndPoint.Y));
+                if (!seen.Add(key))
+                {
+                    dup.Add(l);
+                }
+            }
+
+            foreach (var d in dup)
+            {
+                doc.Entities.Remove(d);
+            }
+
+            return dup.Count;
         }
 
         private string? ResolveSelectedM01File()
