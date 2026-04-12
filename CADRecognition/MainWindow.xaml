@@ -3,7 +3,6 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
-        xmlns:dxg="http://schemas.devexpress.com/winfx/2008/xaml/grid"
         mc:Ignorable="d"
         Title="模具拼接识别工作台"
         Height="780"
@@ -76,54 +75,65 @@
                 <DockPanel>
                     <TextBlock DockPanel.Dock="Top" Text="模具清单" FontWeight="SemiBold" Foreground="#FFFFFF" Margin="0,0,0,6" />
                     <WrapPanel x:Name="LegendPanel" DockPanel.Dock="Top" Margin="0,0,0,8"/>
-                    <dxg:GridControl x:Name="MoldGrid" ItemsSource="{Binding MoldRows}">
-                        <dxg:GridControl.View>
-                            <dxg:TableView ShowGroupPanel="False" AutoWidth="True" AllowEditing="False"/>
-                        </dxg:GridControl.View>
-                        <dxg:GridControl.Columns>
-                            <dxg:GridColumn FieldName="MoldPreview" Header="预览" Width="92">
-                                <dxg:GridColumn.CellTemplate>
+                    <DataGrid x:Name="MoldGrid"
+                              ItemsSource="{Binding MoldRows}"
+                              AutoGenerateColumns="False"
+                              CanUserAddRows="False"
+                              IsReadOnly="True"
+                              HeadersVisibility="Column"
+                              GridLinesVisibility="Horizontal"
+                              Background="#1F1F1F"
+                              Foreground="#DDDDDD"
+                              BorderBrush="#3D3D3D">
+                        <DataGrid.Columns>
+                            <DataGridTemplateColumn Header="预览" Width="92">
+                                <DataGridTemplateColumn.CellTemplate>
                                     <DataTemplate>
                                         <Border Width="80" Height="52" Background="#111111" BorderBrush="#3D3D3D" BorderThickness="1" CornerRadius="2" Padding="1">
-                                            <Image Source="{Binding RowData.Row.MoldPreview}" Stretch="Uniform"/>
+                                            <Image Source="{Binding MoldPreview}" Stretch="Uniform"/>
                                         </Border>
                                     </DataTemplate>
-                                </dxg:GridColumn.CellTemplate>
-                            </dxg:GridColumn>
-                            <dxg:GridColumn FieldName="MoldCode" Header="模具编号"/>
-                            <dxg:GridColumn FieldName="MoldName" Header="模具名称"/>
-                            <dxg:GridColumn FieldName="UsedCount" Header="使用次数"/>
-                            <dxg:GridColumn FieldName="MatchType" Header="匹配类型"/>
-                            <dxg:GridColumn FieldName="Remark" Header="备注"/>
-                        </dxg:GridControl.Columns>
-                    </dxg:GridControl>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+                            <DataGridTextColumn Binding="{Binding MoldCode}" Header="模具编号" Width="*"/>
+                            <DataGridTextColumn Binding="{Binding MoldName}" Header="模具名称" Width="*"/>
+                            <DataGridTextColumn Binding="{Binding UsedCount}" Header="使用次数" Width="80"/>
+                            <DataGridTextColumn Binding="{Binding MatchType}" Header="匹配类型" Width="*"/>
+                            <DataGridTextColumn Binding="{Binding Remark}" Header="备注" Width="*"/>
+                        </DataGrid.Columns>
+                    </DataGrid>
                 </DockPanel>
             </Border>
 
             <Border Grid.Row="1" Background="#252525" CornerRadius="4" Padding="8">
                 <DockPanel>
                     <TextBlock DockPanel.Dock="Top" Text="孔位匹配明细" FontWeight="SemiBold" Foreground="#FFFFFF" Margin="0,0,0,6" />
-                    <dxg:GridControl x:Name="PositionGrid"
-                                     ItemsSource="{Binding PositionRows}"
-                                     MouseLeftButtonUp="PositionGrid_MouseLeftButtonUp"
-                                     MouseDoubleClick="PositionGrid_MouseDoubleClick">
-                        <dxg:GridControl.View>
-                            <dxg:TableView ShowGroupPanel="False" AutoWidth="False" AllowEditing="False"/>
-                        </dxg:GridControl.View>
-                        <dxg:GridControl.Columns>
-                            <dxg:GridColumn FieldName="Index" Header="序号" Width="52"/>
-                            <dxg:GridColumn FieldName="HoleType" Header="孔型" Width="96"/>
-                            <dxg:GridColumn FieldName="MoldCode" Header="匹配模具" Width="78"/>
-                            <dxg:GridColumn FieldName="PosX" Header="X" Width="82"/>
-                            <dxg:GridColumn FieldName="PosY" Header="Y" Width="82"/>
-                            <dxg:GridColumn FieldName="IsCornerCandidate" Header="角候选" Width="64"/>
-                            <dxg:GridColumn FieldName="IsEdgeHole" Header="边缘孔" Width="64"/>
-                            <dxg:GridColumn FieldName="PositionRelation" Header="位置关系" Width="120"/>
-                            <dxg:GridColumn FieldName="TopCandidates" Header="Top3候选(面积比)" Width="260"/>
-                            <dxg:GridColumn FieldName="AreaRatio" Header="选中面积比" Width="96"/>
-                            <dxg:GridColumn FieldName="FailureReason" Header="失败原因" Width="320"/>
-                        </dxg:GridControl.Columns>
-                    </dxg:GridControl>
+                    <DataGrid x:Name="PositionGrid"
+                              ItemsSource="{Binding PositionRows}"
+                              MouseLeftButtonUp="PositionGrid_MouseLeftButtonUp"
+                              MouseDoubleClick="PositionGrid_MouseDoubleClick"
+                              AutoGenerateColumns="False"
+                              CanUserAddRows="False"
+                              IsReadOnly="True"
+                              HeadersVisibility="Column"
+                              GridLinesVisibility="Horizontal"
+                              Background="#1F1F1F"
+                              Foreground="#DDDDDD"
+                              BorderBrush="#3D3D3D">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Binding="{Binding Index}" Header="序号" Width="52"/>
+                            <DataGridTextColumn Binding="{Binding HoleType}" Header="孔型" Width="96"/>
+                            <DataGridTextColumn Binding="{Binding MoldCode}" Header="匹配模具" Width="78"/>
+                            <DataGridTextColumn Binding="{Binding PosX}" Header="X" Width="82"/>
+                            <DataGridTextColumn Binding="{Binding PosY}" Header="Y" Width="82"/>
+                            <DataGridTextColumn Binding="{Binding IsCornerCandidate}" Header="角候选" Width="64"/>
+                            <DataGridTextColumn Binding="{Binding IsEdgeHole}" Header="边缘孔" Width="64"/>
+                            <DataGridTextColumn Binding="{Binding PositionRelation}" Header="位置关系" Width="120"/>
+                            <DataGridTextColumn Binding="{Binding TopCandidates}" Header="Top3候选(面积比)" Width="260"/>
+                            <DataGridTextColumn Binding="{Binding AreaRatio}" Header="选中面积比" Width="96"/>
+                            <DataGridTextColumn Binding="{Binding FailureReason}" Header="失败原因" Width="320"/>
+                        </DataGrid.Columns>
+                    </DataGrid>
                 </DockPanel>
             </Border>
         </Grid>

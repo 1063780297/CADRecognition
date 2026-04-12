@@ -746,7 +746,7 @@ namespace CADRecognition
                 return;
             }
 
-            var edgeTol = Math.Clamp(Math.Min(rect.Width, rect.Height) * 0.0004, 0.05, 0.1);
+            var edgeTol = Compat.Clamp(Math.Min(rect.Width, rect.Height) * 0.0004, 0.05, 0.1);
             bool IsSegmentOnRectEdge((double X, double Y) a, (double X, double Y) b)
             {
                 var horizontal = Math.Abs(a.Y - b.Y) <= edgeTol;
@@ -996,7 +996,7 @@ namespace CADRecognition
 
             if (targetZoom.HasValue)
             {
-                var z = Math.Clamp(targetZoom.Value, 0.2, 30);
+                var z = Compat.Clamp(targetZoom.Value, 0.2, 30);
                 _scale.ScaleX = z;
                 _scale.ScaleY = z;
             }
@@ -1049,7 +1049,7 @@ namespace CADRecognition
         {
             var factor = e.Delta > 0 ? 1.12 : 0.89;
             var old = _scale.ScaleX;
-            var target = Math.Clamp(old * factor, 0.2, 30);
+            var target = Compat.Clamp(old * factor, 0.2, 30);
             factor = target / old;
             var center = e.GetPosition(this);
             _translate.X = center.X - factor * (center.X - _translate.X);
@@ -1237,7 +1237,7 @@ namespace CADRecognition
                 return [];
             }
 
-            var edgeTol = Math.Clamp(Math.Min(rect.Width, rect.Height) * 0.0004, 0.05, 0.1);
+            var edgeTol = Compat.Clamp(Math.Min(rect.Width, rect.Height) * 0.0004, 0.05, 0.1);
             bool IsSegmentOnRectEdge((double X, double Y) a, (double X, double Y) b)
             {
                 var horizontal = Math.Abs(a.Y - b.Y) <= edgeTol;
@@ -1349,7 +1349,7 @@ namespace CADRecognition
             }
 
             var diag = Math.Sqrt(outer.Width * outer.Width + outer.Height * outer.Height);
-            var tol = Math.Clamp(diag * 0.0005, 1e-4, 0.2);
+            var tol = Compat.Clamp(diag * 0.0005, 1e-4, 0.2);
 
             (double X, double Y) Snap((double X, double Y) p)
             {
@@ -3181,7 +3181,7 @@ namespace CADRecognition
 
             // 限幅，避免异常数据导致采样过密/过疏。
             var maxLen = trimmed[^1];
-            step = Math.Clamp(step, 2.0, Math.Max(2.0, maxLen * 0.85));
+            step = Compat.Clamp(step, 2.0, Math.Max(2.0, maxLen * 0.85));
             return step;
         }
 
@@ -3729,12 +3729,12 @@ namespace CADRecognition
                 return hCircle == mCircle;
             }
 
-            var hPoly = hole.HoleType.Contains("Polyline", StringComparison.OrdinalIgnoreCase) ||
-                        hole.HoleType.Contains("EntityComposite", StringComparison.OrdinalIgnoreCase) ||
-                        hole.HoleType.Contains("MixedArcLine", StringComparison.OrdinalIgnoreCase);
-            var mPoly = mold.HoleType.Contains("Polyline", StringComparison.OrdinalIgnoreCase) ||
-                        mold.HoleType.Contains("EntityComposite", StringComparison.OrdinalIgnoreCase) ||
-                        mold.HoleType.Contains("MixedArcLine", StringComparison.OrdinalIgnoreCase);
+            var hPoly = hole.HoleType.ContainsIgnoreCase("Polyline") ||
+                        hole.HoleType.ContainsIgnoreCase("EntityComposite") ||
+                        hole.HoleType.ContainsIgnoreCase("MixedArcLine");
+            var mPoly = mold.HoleType.ContainsIgnoreCase("Polyline") ||
+                        mold.HoleType.ContainsIgnoreCase("EntityComposite") ||
+                        mold.HoleType.ContainsIgnoreCase("MixedArcLine");
             if (hPoly || mPoly)
             {
                 return hPoly == mPoly;
@@ -3753,12 +3753,12 @@ namespace CADRecognition
                 return hCircle && mCircle;
             }
 
-            var hPolyFamily = hole.HoleType.Contains("Polyline", StringComparison.OrdinalIgnoreCase)
-                              || hole.HoleType.Contains("EntityComposite", StringComparison.OrdinalIgnoreCase)
-                              || hole.HoleType.Contains("MixedArcLine", StringComparison.OrdinalIgnoreCase);
-            var mPolyFamily = mold.HoleType.Contains("Polyline", StringComparison.OrdinalIgnoreCase)
-                              || mold.HoleType.Contains("EntityComposite", StringComparison.OrdinalIgnoreCase)
-                              || mold.HoleType.Contains("MixedArcLine", StringComparison.OrdinalIgnoreCase);
+            var hPolyFamily = hole.HoleType.ContainsIgnoreCase("Polyline")
+                              || hole.HoleType.ContainsIgnoreCase("EntityComposite")
+                              || hole.HoleType.ContainsIgnoreCase("MixedArcLine");
+            var mPolyFamily = mold.HoleType.ContainsIgnoreCase("Polyline")
+                              || mold.HoleType.ContainsIgnoreCase("EntityComposite")
+                              || mold.HoleType.ContainsIgnoreCase("MixedArcLine");
             if (hPolyFamily || mPolyFamily)
             {
                 return hPolyFamily && mPolyFamily;
@@ -3769,7 +3769,7 @@ namespace CADRecognition
 
         private static bool IsCircleLike(HoleFeature f)
         {
-            if (f.HoleType.Contains("Circle", StringComparison.OrdinalIgnoreCase))
+            if (f.HoleType.ContainsIgnoreCase("Circle"))
             {
                 return true;
             }

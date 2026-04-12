@@ -2,16 +2,14 @@
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <TargetFramework>net10.0-windows</TargetFramework>
-    <Nullable>enable</Nullable>
+    <TargetFramework>net48</TargetFramework>
+    <LangVersion>latest</LangVersion>
     <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>disable</Nullable>
     <UseWPF>true</UseWPF>
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="DevExpress.Images" Version="25.2.3" />
-    <PackageReference Include="DevExpress.Wpf.Core" Version="25.2.3" />
-    <PackageReference Include="DevExpress.Wpf.Grid" Version="25.2.3" />
     <PackageReference Include="netDxf" Version="2023.11.10" />
   </ItemGroup>
 
