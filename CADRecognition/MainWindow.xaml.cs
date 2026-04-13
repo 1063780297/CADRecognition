@@ -4,6 +4,7 @@ using netDxf.Entities;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Globalization;
+using System.IO;
 using System.Runtime.CompilerServices;
 using System.Windows;
 using System.Windows.Controls;
@@ -20,9 +21,87 @@ using WpfColor = System.Windows.Media.Color;
 using WpfEllipse = System.Windows.Shapes.Ellipse;
 using WpfLine = System.Windows.Shapes.Line;
 using WpfRectangle = System.Windows.Shapes.Rectangle;
+using CADImport;
 
 namespace CADRecognition
 {
+    internal static class DxfSafe
+    {
+        public static IEnumerable<Line> Lines(DxfDocument doc) => doc?.Entities?.Lines ?? Enumerable.Empty<Line>();
+        public static IEnumerable<Circle> Circles(DxfDocument doc) => doc?.Entities?.Circles ?? Enumerable.Empty<Circle>();
+        public static IEnumerable<Arc> Arcs(DxfDocument doc) => doc?.Entities?.Arcs ?? Enumerable.Empty<Arc>();
+        public static IEnumerable<Polyline2D> Polylines2D(DxfDocument doc) => doc?.Entities?.Polylines2D ?? Enumerable.Empty<Polyline2D>();
+        public static IEnumerable<Insert> Inserts(DxfDocument doc) => doc?.Entities?.Inserts ?? Enumerable.Empty<Insert>();
+    }
+
+    internal static class CadDocumentLoader
+    {
+        public static DxfDocument Load(string path)
+        {
+            var ext = System.IO.Path.GetExtension(path);
+            if (string.Equals(ext, ".dwg", StringComparison.OrdinalIgnoreCase))
+            {
+                return LoadDwg(path);
+            }
+
+            return DxfDocument.Load(path);
+        }
+
+        private static DxfDocument LoadDwg(string path)
+        {
+            using var editor = new CADImport.CADImportControls.CADEditorControl();
+            editor.LoadFile(path);
+
+            var image = editor.Image;
+            if (image?.CurrentLayout?.Entities == null || image.CurrentLayout.Entities.Count == 0)
+            {
+                throw new InvalidOperationException("DWG 读取成功但未解析出实体，请检查图纸版本或CADImport运行库。");
+            }
+
+            var doc = new DxfDocument();
+
+            foreach (var e in image.CurrentLayout.Entities.Cast<object>())
+            {
+                if (e is CADLine ln)
+                {
+                    doc.Entities.Add(new Line(
+                        new Vector3(ln.Point.X, ln.Point.Y, 0),
+                        new Vector3(ln.Point1.X, ln.Point1.Y, 0)));
+                    continue;
+                }
+
+                if (e is CADCircle cc)
+                {
+                    doc.Entities.Add(new Circle(
+                        new Vector3(cc.Point.X, cc.Point.Y, 0),
+                        cc.Radius));
+                    continue;
+                }
+
+                if (e is CADArc ca)
+                {
+                    var start = NormalizeDeg(ca.StartParam * 180.0 / Math.PI);
+                    var end = NormalizeDeg(ca.EndParam * 180.0 / Math.PI);
+                    doc.Entities.Add(new Arc(
+                        new Vector3(ca.Point.X, ca.Point.Y, 0),
+                        ca.Radius,
+                        start,
+                        end));
+                    continue;
+                }
+            }
+
+            return doc;
+        }
+
+        private static double NormalizeDeg(double degree)
+        {
+            var d = degree % 360.0;
+            if (d < 0) d += 360.0;
+            return d;
+        }
+    }
+
     public partial class MainWindow : Window, INotifyPropertyChanged
     {
         private readonly IDxfPreviewPlugin _previewPlugin = new BasicCanvasPreviewPlugin();
@@ -78,7 +157,7 @@ namespace CADRecognition
         {
             var dialog = new WinOpenFileDialog
             {
-                Filter = "DXF 文件 (*.dxf)|*.dxf",
+                Filter = "CAD 文件 (*.dxf;*.dwg)|*.dxf;*.dwg|DXF 文件 (*.dxf)|*.dxf|DWG 文件 (*.dwg)|*.dwg",
                 Multiselect = false
             };
             if (dialog.ShowDialog(this) != true)
@@ -87,7 +166,7 @@ namespace CADRecognition
             }
 
             _projectFile = dialog.FileName;
-            _projectDoc = DxfDocument.Load(_projectFile);
+            _projectDoc = LoadCadDocument(_projectFile);
             var removedProjectLines = RemoveDuplicateLines(_projectDoc);
             _documentCache[_projectFile] = _projectDoc;
 
@@ -111,7 +190,7 @@ namespace CADRecognition
         {
             var dialog = new WinOpenFileDialog
             {
-                Filter = "DXF 文件 (*.dxf)|*.dxf",
+                Filter = "CAD 文件 (*.dxf;*.dwg)|*.dxf;*.dwg|DXF 文件 (*.dxf)|*.dxf|DWG 文件 (*.dwg)|*.dwg",
                 Multiselect = true
             };
             if (dialog.ShowDialog(this) != true)
@@ -123,7 +202,7 @@ namespace CADRecognition
             _moldFiles.AddRange(dialog.FileNames);
             foreach (var file in _moldFiles)
             {
-                var moldDoc = DxfDocument.Load(file);
+                var moldDoc = LoadCadDocument(file);
                 RemoveDuplicateLines(moldDoc);
                 _documentCache[file] = moldDoc;
             }
@@ -134,12 +213,31 @@ namespace CADRecognition
 
             MoldCountText.Text = _moldFiles.Count.ToString(CultureInfo.InvariantCulture);
             RefreshFileList();
-            StatusText.Text = $"已导入 {_moldFiles.Count} 张模具 DXF。";
+            StatusText.Text = $"已导入 {_moldFiles.Count} 张模具 CAD 图。";
+        }
+
+        private DxfDocument LoadCadDocument(string path)
+        {
+            try
+            {
+                return CadDocumentLoader.Load(path);
+            }
+            catch (Exception ex)
+            {
+                StatusText.Text = $"读取失败：{System.IO.Path.GetFileName(path)}，{ex.Message}";
+                throw;
+            }
         }
 
         private static int RemoveDuplicateLines(DxfDocument doc)
         {
-            if (doc.Entities.Lines.Count() <= 1)
+            if (doc?.Entities == null || DxfSafe.Lines(doc) == null)
+            {
+                return 0;
+            }
+
+            var lines = doc.Entities.Lines.Where(l => l != null).ToList();
+            if (lines.Count <= 1)
             {
                 return 0;
             }
@@ -160,7 +258,7 @@ namespace CADRecognition
             var seen = new HashSet<string>(StringComparer.Ordinal);
             var dup = new List<Line>();
 
-            foreach (var l in doc.Entities.Lines)
+            foreach (var l in lines)
             {
                 var key = Key((l.StartPoint.X, l.StartPoint.Y), (l.EndPoint.X, l.EndPoint.Y));
                 if (!seen.Add(key))
@@ -437,7 +535,7 @@ namespace CADRecognition
                 {
                     return null;
                 }
-                doc = DxfDocument.Load(path);
+                doc = LoadCadDocument(path);
                 _documentCache[path] = doc;
             }
 
@@ -469,13 +567,13 @@ namespace CADRecognition
                     dc.DrawLine(linePen, Map(l.StartPoint.X, l.StartPoint.Y), Map(l.EndPoint.X, l.EndPoint.Y));
                 }
 
-                foreach (var c in doc.Entities.Circles)
+                foreach (var c in DxfSafe.Circles(doc))
                 {
                     var center = Map(c.Center.X, c.Center.Y);
                     dc.DrawEllipse(null, circlePen, center, c.Radius * scale, c.Radius * scale);
                 }
 
-                foreach (var p in doc.Entities.Polylines2D)
+                foreach (var p in DxfSafe.Polylines2D(doc))
                 {
                     var pts = DxfAnalyzer.ExpandPolyline2D(p, 12);
                     if (pts.Count < 2)
@@ -490,7 +588,7 @@ namespace CADRecognition
                     dc.DrawGeometry(null, polyPen, geo);
                 }
 
-                foreach (var a in doc.Entities.Arcs)
+                foreach (var a in DxfSafe.Arcs(doc))
                 {
                     var pts = DxfAnalyzer.SampleArc(a, 18);
                     if (pts.Count < 2)
@@ -1205,7 +1303,7 @@ namespace CADRecognition
 
         public static MoldProfile ExtractMold(int moldId, string path)
         {
-            var doc = DxfDocument.Load(path);
+            var doc = CadDocumentLoader.Load(path);
             // 模具特征只取“可闭合几何”，避免 OpenPolyline 的伪面积干扰面积比匹配。
             var holes = ExtractHoles(doc, includeOpenPolylines: false);
             var outer = DetectOuterRectangle(doc);

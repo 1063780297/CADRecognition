@@ -7,10 +7,17 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>disable</Nullable>
     <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="netDxf" Version="2023.11.10" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="CADImport">
+      <HintPath>..\..\CAD.NET_v16.1.0.65224(1)\Dlls\net40\CADImport.dll</HintPath>
+    </Reference>
   </ItemGroup>
 
 </Project>

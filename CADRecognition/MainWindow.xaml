@@ -44,8 +44,8 @@
 
         <Border Grid.Row="0" Grid.ColumnSpan="3" Background="#2A2A2A" Padding="8" CornerRadius="4">
             <StackPanel Orientation="Horizontal">
-                <Button Content="导入工程 DXF(2010)" Click="ImportProjectDxf_Click" Margin="0,0,6,0" />
-                <Button Content="导入模具 DXF(可多选)" Click="ImportMoldsDxf_Click" Margin="0,0,6,0" />
+                <Button Content="导入工程图纸" Click="ImportProjectDxf_Click" Margin="0,0,6,0" />
+                <Button Content="导入模具图纸(可多选)" Click="ImportMoldsDxf_Click" Margin="0,0,6,0" />
                 <Button Content="一键识别匹配" Click="Recognize_Click" Margin="0,0,12,0" />
                 <CheckBox x:Name="CompactAnnoCheckBox"
                           Content="简洁标注"
