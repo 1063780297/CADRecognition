@@ -85,6 +85,8 @@ namespace CADRecognition
         public string MoldCode { get; set; } = string.Empty;
         public double PosX { get; set; }
         public double PosY { get; set; }
+        public double AbsX { get; set; }
+        public double AbsY { get; set; }
         public string PositionRelation { get; set; } = string.Empty;
         public string IsCornerCandidate { get; set; } = string.Empty;
         public string IsEdgeHole { get; set; } = string.Empty;

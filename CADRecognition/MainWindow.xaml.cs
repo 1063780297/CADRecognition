@@ -326,12 +326,12 @@ namespace CADRecognition
             var matcher = new MoldMatcher();
             var result = matcher.Match(project, molds);
             _lastMatchResult = result;
-            RenderResult(result, molds);
+            RenderResult(result, molds, project.OuterRectangle);
             RenderPreview(_projectDoc, _projectFile, withAnnotation: true);
             StatusText.Text = $"识别完成：外轮廓 {project.OuterRectangle.Width:F2} x {project.OuterRectangle.Height:F2}，孔洞 {result.HoleAssignments.Count} 个。";
         }
 
-        private void RenderResult(MatchResult result, IReadOnlyList<MoldProfile> molds)
+        private void RenderResult(MatchResult result, IReadOnlyList<MoldProfile> molds, RectBounds outer)
         {
             _moldRows.Clear();
             _positionRows.Clear();
@@ -367,8 +367,10 @@ namespace CADRecognition
                     HoleType = row.Hole.HoleType,
                     MoldId = row.MoldId,
                     MoldCode = row.MoldId > 0 ? $"M{row.MoldId:D2}" : "未匹配",
-                    PosX = Math.Round(row.Hole.Centroid.X, 3),
-                    PosY = Math.Round(row.Hole.Centroid.Y, 3),
+                    PosX = Math.Round(row.Hole.Centroid.X - outer.MinX, 0),
+                    PosY = Math.Round(row.Hole.Centroid.Y - outer.MinY, 0),
+                    AbsX = row.Hole.Centroid.X,
+                    AbsY = row.Hole.Centroid.Y,
                     PositionRelation = row.PositionRelation,
                     IsCornerCandidate = row.IsCornerCandidate ? "是" : "否",
                     IsEdgeHole = row.IsEdgeHole ? "是" : "否",
@@ -507,7 +509,7 @@ namespace CADRecognition
             {
                 return;
             }
-            _viewer.FocusHole(row.PosX, row.PosY, row.MoldId);
+            _viewer.FocusHole(row.AbsX, row.AbsY, row.MoldId);
             StatusText.Text = $"已定位孔位 #{row.Index}（{row.MoldCode}），角候选={row.IsCornerCandidate}，边缘孔={row.IsEdgeHole}，Top3={row.TopCandidates}";
         }
 
@@ -517,8 +519,8 @@ namespace CADRecognition
             {
                 return;
             }
-            _viewer.FocusHole(row.PosX, row.PosY, row.MoldId, targetZoom: 4.0);
-            await _viewer.BlinkFocusAsync(row.PosX, row.PosY, row.MoldId);
+            _viewer.FocusHole(row.AbsX, row.AbsY, row.MoldId, targetZoom: 4.0);
+            await _viewer.BlinkFocusAsync(row.AbsX, row.AbsY, row.MoldId);
             StatusText.Text = $"已放大定位孔位 #{row.Index}（{row.MoldCode}），角候选={row.IsCornerCandidate}，边缘孔={row.IsEdgeHole}，Top3={row.TopCandidates}";
         }
 
@@ -1328,7 +1330,7 @@ namespace CADRecognition
                 candidates.Add(feature);
             }
 
-            var outline = ExtractMoldOutline(doc, feature.Centroid);
+            var outline = ExtractMoldOutline(doc);
             return new MoldProfile(moldId, path, feature, outline, candidates);
         }
 
@@ -2647,7 +2649,7 @@ namespace CADRecognition
                 signature);
         }
 
-        private static List<(double X, double Y)> ExtractMoldOutline(DxfDocument doc, (double X, double Y) referenceCenter)
+        private static List<(double X, double Y)> ExtractMoldOutline(DxfDocument doc)
         {
             var pts = CollectGeometryPoints(doc);
             if (pts.Count < 2)
@@ -2655,8 +2657,7 @@ namespace CADRecognition
                 return [];
             }
 
-            // 关键修复：轮廓坐标要以“模具自身几何中心”为原点。
-            // 之前用特征中心(referenceCenter)会在特征不居中时导致整块 M01 偏移。
+            // 模具轮廓仍以“模具中心”为原点；后续显示/定位时再按图纸左下角计算绝对位置。
             var minX = pts.Min(p => p.X);
             var maxX = pts.Max(p => p.X);
             var minY = pts.Min(p => p.Y);
