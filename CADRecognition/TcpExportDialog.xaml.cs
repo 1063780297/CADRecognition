@@ -400,4 +400,13 @@ namespace CADRecognition
             Close();
         }
     }
+
+    public sealed class TcpGridRow
+    {
+        public int RowIndex { get; set; }
+        public string X { get; set; } = string.Empty;
+        public string Y { get; set; } = string.Empty;
+        public string PositionMoldId { get; set; } = string.Empty;
+        public string PunchMoldId { get; set; } = string.Empty;
+    }
 }

@@ -119,7 +119,7 @@ namespace CADRecognition
 
         private string? _projectFile;
         private DxfDocument? _projectDoc;
-        private bool _compactAnnotation = true;
+        private bool _compactAnnotation = false;
 
         public MainWindow()
         {
@@ -372,8 +372,8 @@ namespace CADRecognition
             model.CustomContent = string.Empty;
 
             var boundary = GetRecognitionBoundary();
-            var stage1Rows = SplitRowsByBoundary(_positionRows, boundary, false).ToList();
-            var stage2Rows = SplitRowsByBoundary(_positionRows, boundary, true).ToList();
+            var stage1Rows = SplitRowsByBoundary(_positionRows, boundary, true).ToList();
+            var stage2Rows = SplitRowsByBoundary(_positionRows, boundary, false).ToList();
             model.Stage1DiagramCoordinates = stage1Rows.Select(r => new TcpCoordinateRow { X = r.PosX, Y = r.PosY }).ToList();
             model.Stage2DiagramCoordinates = stage2Rows.Select(r => new TcpCoordinateRow { X = r.PosX, Y = r.PosY }).ToList();
             model.Stage1PositionMoldIds = stage1Rows.Select(r => r.MoldId).ToList();
