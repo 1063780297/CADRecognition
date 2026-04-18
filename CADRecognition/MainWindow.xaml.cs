@@ -331,6 +331,90 @@ namespace CADRecognition
             StatusText.Text = $"识别完成：外轮廓 {project.OuterRectangle.Width:F2} x {project.OuterRectangle.Height:F2}，孔洞 {result.HoleAssignments.Count} 个。";
         }
 
+        private void Export_Click(object sender, RoutedEventArgs e)
+        {
+            if (_lastMatchResult is null || _projectFile is null)
+            {
+                StatusText.Text = "请先完成识图后再导出。";
+                return;
+            }
+
+            var dialog = new TcpExportDialog(BuildTcpExportModel())
+            {
+                Owner = this
+            };
+
+            if (dialog.ShowDialog() == true)
+            {
+                StatusText.Text = "已导出并发送 JSON。";
+            }
+        }
+
+        private TcpExportModel BuildTcpExportModel()
+        {
+            var model = new TcpExportModel();
+            model.ProgramName = System.IO.Path.GetFileNameWithoutExtension(_projectFile);
+            model.ProgramNo = 0;
+            model.LeftRightDoor = 0;
+            model.Material = 0;
+            model.Type = 0;
+            model.FormingLength = 0;
+            model.FormingWidth = 0;
+            model.FormingThickness = 0;
+            model.Stage1PunchCount = _positionRows.Count;
+            model.Stage2PunchCount = 0;
+            model.Spare2 = 0;
+            model.PlateLength = _lastProjectProfile?.OuterRectangle.Width ?? 0;
+            model.PlateWidth = _lastProjectProfile?.OuterRectangle.Height ?? 0;
+            model.PlateThickness = 0;
+            model.Spare3 = 0;
+            model.Spare4 = 0;
+            model.CustomContent = string.Empty;
+
+            var boundary = GetRecognitionBoundary();
+            var stage1Rows = SplitRowsByBoundary(_positionRows, boundary, false).ToList();
+            var stage2Rows = SplitRowsByBoundary(_positionRows, boundary, true).ToList();
+            model.Stage1DiagramCoordinates = stage1Rows.Select(r => new TcpCoordinateRow { X = r.PosX, Y = r.PosY }).ToList();
+            model.Stage2DiagramCoordinates = stage2Rows.Select(r => new TcpCoordinateRow { X = r.PosX, Y = r.PosY }).ToList();
+            model.Stage1PositionMoldIds = stage1Rows.Select(r => r.MoldId).ToList();
+            model.Stage2PositionMoldIds = stage2Rows.Select(r => r.MoldId).ToList();
+            model.Stage1PunchMoldIds = stage1Rows.Select(r => r.MoldId).ToList();
+            model.Stage2PunchMoldIds = stage2Rows.Select(r => r.MoldId).ToList();
+            return model;
+        }
+
+        private RectBounds GetRecognitionBoundary()
+        {
+            if (_lastProjectProfile is not null)
+            {
+                return _lastProjectProfile.OuterRectangle;
+            }
+
+            if (_positionRows.Count > 0)
+            {
+                var minX = _positionRows.Min(x => x.PosX);
+                var minY = _positionRows.Min(x => x.PosY);
+                var maxX = _positionRows.Max(x => x.PosX);
+                var maxY = _positionRows.Max(x => x.PosY);
+                return new RectBounds(minX, minY, maxX, maxY);
+            }
+
+            return new RectBounds(0, 0, 1, 1);
+        }
+
+        private IEnumerable<PositionRow> SplitRowsByBoundary(IEnumerable<PositionRow> rows, RectBounds boundary, bool upperHalf)
+        {
+            var midpoint = boundary.MinY + boundary.Height / 2.0;
+            foreach (var row in rows.OrderBy(x => x.PosY).ThenBy(x => x.PosX))
+            {
+                var isUpper = row.PosY >= midpoint;
+                if (upperHalf == isUpper)
+                {
+                    yield return row;
+                }
+            }
+        }
+
         private void RenderResult(MatchResult result, IReadOnlyList<MoldProfile> molds, RectBounds outer)
         {
             _moldRows.Clear();
@@ -2267,7 +2351,9 @@ namespace CADRecognition
                         }
                         if (s1.Equals(end))
                         {
-                            chain.AddRange(seg.Reverse().Skip(1));
+                            var reversed = seg.ToArray();
+                            Array.Reverse(reversed);
+                            chain.AddRange(reversed.Skip(1));
                             used[idx] = true;
                             advanced = true;
                             break;
@@ -3996,7 +4082,9 @@ namespace CADRecognition
             }
 
             var forward = MinCyclicRmse(a, b);
-            var mirrored = MinCyclicRmse(a, b.Reverse().ToArray());
+            var mirroredSource = b.ToArray();
+            Array.Reverse(mirroredSource);
+            var mirrored = MinCyclicRmse(a, mirroredSource);
             return Math.Min(forward, mirrored);
         }
 

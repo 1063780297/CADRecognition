@@ -47,9 +47,10 @@
                 <Button Content="导入工程图纸" Click="ImportProjectDxf_Click" Margin="0,0,6,0" />
                 <Button Content="导入模具图纸(可多选)" Click="ImportMoldsDxf_Click" Margin="0,0,6,0" />
                 <Button Content="一键识别匹配" Click="Recognize_Click" Margin="0,0,12,0" />
+                <Button Content="导出" Click="Export_Click" Margin="0,0,6,0" />
                 <CheckBox x:Name="CompactAnnoCheckBox"
                           Content="简洁标注"
-                          IsChecked="True"
+                          IsChecked="False"
                           Checked="CompactAnnoCheckBox_Checked"
                           Unchecked="CompactAnnoCheckBox_Checked"
                           Foreground="#FFFFFF"
