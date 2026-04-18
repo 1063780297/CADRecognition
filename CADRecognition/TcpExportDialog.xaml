@@ -141,12 +141,12 @@
                                 <RowDefinition Height="Auto"/>
                                 <RowDefinition Height="*"/>
                             </Grid.RowDefinitions>
-                            <StackPanel Orientation="Horizontal" Margin="4">
+                            <!--<StackPanel Orientation="Horizontal" Margin="4">
                                 <Button Content="插入" Width="64" Margin="0,0,6,0" Click="Stage1Insert_Click"/>
                                 <Button Content="删除" Width="64" Margin="0,0,6,0" Click="Stage1Delete_Click"/>
                                 <Button Content="复制" Width="64" Margin="0,0,6,0" Click="Stage1Copy_Click"/>
                                 <Button Content="粘贴" Width="64" Click="Stage1Paste_Click"/>
-                            </StackPanel>
+                            </StackPanel>-->
                             <DataGrid x:Name="Stage1Grid"
                                       Grid.Row="1"
                                       AutoGenerateColumns="False"
