@@ -1,3 +1,4 @@
+#nullable enable
 using System.Windows.Media;
 
 namespace CADRecognition
