@@ -3171,94 +3171,6 @@ namespace CADRecognition
                     $"A={pick.AreaRatio:F3},P={pick.PerimRatio:F3}"));
             }
 
-            // Edge partial stamping：每条边最多保留一个“最佳局部冲压”，避免同一孔被重复打两次。
-            foreach (var sideGroup in project.EdgeCandidates.GroupBy(c => c.Side))
-            {
-                var sideBest = sideGroup
-                    .Select(cand =>
-                    {
-                        var overlapThreshold = Math.Max(Math.Min(cand.Width, cand.Height) * 0.6, 25.0);
-                        var overlapsRealHole = holePool.Any(h =>
-                        {
-                            var dx = h.Centroid.X - cand.Centroid.X;
-                            var dy = h.Centroid.Y - cand.Centroid.Y;
-                            return Math.Sqrt(dx * dx + dy * dy) <= overlapThreshold;
-                        });
-                        if (overlapsRealHole)
-                        {
-                            return null;
-                        }
-
-                        var best = nonCornerMolds
-                            .Select(m =>
-                            {
-                                var chamfer = TrimmedChamferScore(m.OutlinePoints, cand.Points, out var placement);
-                                if (double.IsInfinity(chamfer))
-                                {
-                                    return null;
-                                }
-
-                                // 边缘局部冲压优先“同类形状 + 足够尺寸”的模具，避免误选小圆模(M16)。
-                                var candHoleType = cand.Points.Count >= 10 ? "Polyline" : "OpenPolyline";
-                                var pseudoCand = new HoleFeature(
-                                    candHoleType,
-                                    cand.Centroid,
-                                    cand.Width,
-                                    cand.Height,
-                                    Math.Max(cand.Width * cand.Height * 0.45, 1.0),
-                                    Math.Max(cand.Perimeter, 1.0),
-                                    0,
-                                    cand.Signature);
-                                var typeMatch = IsSameShapeType(pseudoCand, m.Feature) ? 0.0 : 0.5;
-                                var sig = SignatureDistance(cand.Signature, m.Feature.Signature);
-                                var wRatio = cand.Width / Math.Max(m.Feature.Width, 1e-6);
-                                var hRatio = cand.Height / Math.Max(m.Feature.Height, 1e-6);
-                                var sizePenalty = (wRatio > 1.05 || hRatio > 1.05) ? 1.2 : 0.0;
-                                var smallMoldPenalty = (m.Feature.Width < cand.Width * 0.75 || m.Feature.Height < cand.Height * 0.75) ? 1.5 : 0.0;
-
-                                var score = chamfer + sig * 0.9 + typeMatch + sizePenalty + smallMoldPenalty;
-                                return new { m.MoldId, Score = score, Placement = placement };
-                            })
-                            .Where(x => x is not null)
-                            .Select(x => x!)
-                            .OrderBy(x => x.Score)
-                            .FirstOrDefault();
-                        if (best is null || double.IsInfinity(best.Score))
-                        {
-                            return null;
-                        }
-
-                        var placementHole = new HoleFeature(
-                            $"EdgePartial:{cand.Side}",
-                            best.Placement,
-                            cand.Width,
-                            cand.Height,
-                            Math.Max(cand.Width * cand.Height * 0.45, 1.0),
-                            Math.Max(cand.Perimeter, 1.0),
-                            0,
-                            cand.Signature);
-
-                        return new { Hole = placementHole, best.MoldId, best.Score };
-                    })
-                    .Where(x => x is not null)
-                    .Select(x => x!)
-                    .OrderBy(x => x.Score)
-                    .FirstOrDefault();
-
-                if (sideBest is null)
-                {
-                    continue;
-                }
-
-                rows.Add(new HoleAssignment(
-                    sideBest.Hole,
-                    sideBest.MoldId,
-                    "边缘局部冲压",
-                    false,
-                    true,
-                    BuildTopCandidates(sideBest.Hole, nonCornerMolds, project.OuterRectangle, 3)));
-            }
-
             var cleaned = DeduplicateAssignments(rows);
             return new MatchResult(cleaned, guidePaths);
         }
@@ -4002,28 +3914,38 @@ namespace CADRecognition
                 return source;
             }
 
-            var result = new List<HoleAssignment>();
+            var bestByHole = new Dictionary<string, HoleAssignment>(StringComparer.Ordinal);
             foreach (var row in source)
             {
-                var dup = result.Any(existing =>
+                var key = BuildHoleKey(row.Hole);
+                if (!bestByHole.TryGetValue(key, out var current))
                 {
-                    if (existing.MoldId != row.MoldId)
-                    {
-                        return false;
-                    }
+                    bestByHole[key] = row;
+                    continue;
+                }
 
-                    var dx = existing.Hole.Centroid.X - row.Hole.Centroid.X;
-                    var dy = existing.Hole.Centroid.Y - row.Hole.Centroid.Y;
-                    return Math.Sqrt(dx * dx + dy * dy) <= 1e-6;
-                });
-
-                if (!dup)
+                var currentScore = AssignmentPriority(current);
+                var newScore = AssignmentPriority(row);
+                if (newScore < currentScore)
                 {
-                    result.Add(row);
+                    bestByHole[key] = row;
                 }
             }
 
-            return result;
+            return bestByHole.Values.ToList();
+        }
+
+        private static string BuildHoleKey(HoleFeature hole)
+        {
+            return $"{Math.Round(hole.Centroid.X, 4):F4}|{Math.Round(hole.Centroid.Y, 4):F4}|{Math.Round(hole.Width, 4):F4}|{Math.Round(hole.Height, 4):F4}|{hole.HoleType}";
+        }
+
+        private static double AssignmentPriority(HoleAssignment row)
+        {
+            var moldPenalty = row.MoldId == 1 ? 0.0 : 1.0;
+            var edgePenalty = row.Hole.HoleType.StartsWith("EdgePartial:", StringComparison.Ordinal) ? 0.4 : 0.0;
+            var cornerBonus = row.IsCornerCandidate ? -0.1 : 0.0;
+            return moldPenalty + edgePenalty + cornerBonus;
         }
 
         private static bool IsInCornerMissingZone(HoleFeature hole, RectBounds rect, RectCorner corner)
