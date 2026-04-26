@@ -39,13 +39,14 @@
         <Grid.ColumnDefinitions>
             <ColumnDefinition Width="250" />
             <ColumnDefinition Width="*" />
-            <ColumnDefinition Width="420" />
+            <ColumnDefinition Width="520" />
         </Grid.ColumnDefinitions>
 
         <Border Grid.Row="0" Grid.ColumnSpan="3" Background="#2A2A2A" Padding="8" CornerRadius="4">
             <StackPanel Orientation="Horizontal">
                 <Button Content="导入工程图纸" Click="ImportProjectDxf_Click" Margin="0,0,6,0" />
-                <Button Content="导入模具图纸(可多选)" Click="ImportMoldsDxf_Click" Margin="0,0,6,0" />
+                <Button Content="导入台1模具" Click="ImportStage1MoldDxf_Click" Margin="0,0,6,0" />
+                <Button Content="导入台2模具" Click="ImportStage2MoldDxf_Click" Margin="0,0,6,0" />
                 <Button Content="一键识别匹配" Click="Recognize_Click" Margin="0,0,12,0" />
                 <Button Content="导出" Click="Export_Click" Margin="0,0,6,0" />
                 <TextBlock Text="板宽：" Foreground="#DDDDDD" VerticalAlignment="Center" Margin="0,0,4,0"/>
@@ -54,7 +55,8 @@
                          Height="24"
                          Text="0"
                          VerticalContentAlignment="Center"
-                         Margin="0,0,16,0"/>
+                         Margin="0,0,16,0"
+                         TextChanged="BoardWidthTextBox_TextChanged"/>
                 <CheckBox x:Name="CompactAnnoCheckBox"
                           Content="简洁标注"
                           IsChecked="False"
@@ -65,7 +67,7 @@
                           Margin="0,0,20,0"/>
                 <TextBlock Text="已加载工程：" Foreground="#DDDDDD" VerticalAlignment="Center" />
                 <TextBlock x:Name="ProjectFileText" Foreground="#9CDCFE" VerticalAlignment="Center" Margin="4,0,20,0" />
-                <TextBlock Text="模具数量：" Foreground="#DDDDDD" VerticalAlignment="Center" />
+                <TextBlock Text="台1/台2：" Foreground="#DDDDDD" VerticalAlignment="Center" />
                 <TextBlock x:Name="MoldCountText" Foreground="#9CDCFE" VerticalAlignment="Center" Margin="4,0,0,0" />
             </StackPanel>
         </Border>
@@ -95,21 +97,26 @@
         </Border>
 
         <Grid Grid.Row="1" Grid.Column="2" Margin="0,10,0,10">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
             <Grid.RowDefinitions>
-                <RowDefinition Height="*" />
+                <RowDefinition Height="Auto" />
                 <RowDefinition Height="*" />
             </Grid.RowDefinitions>
 
-            <Border Grid.Row="0" Background="#252525" CornerRadius="4" Padding="8" Margin="0,0,0,8">
+            <Border Grid.Row="0" Grid.Column="0" Background="#252525" CornerRadius="4" Padding="8" Margin="0,0,4,8" Height="360">
                 <DockPanel>
-                    <TextBlock DockPanel.Dock="Top" Text="模具清单" FontWeight="SemiBold" Foreground="#FFFFFF" Margin="0,0,0,6" />
-                    <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,8">
-                        <TextBlock Text="M01模具：" Foreground="#FFFFFF" VerticalAlignment="Center" Margin="0,0,6,0"/>
-                        <ComboBox x:Name="M01MoldComboBox" Width="220" Height="24"/>
+                    <TextBlock DockPanel.Dock="Top" Text="台1模具" FontWeight="SemiBold" Foreground="#FFFFFF" Margin="0,0,0,6" />
+                    <StackPanel DockPanel.Dock="Top" Orientation="Vertical" Margin="0,0,0,8">
+                        <TextBlock Text="导入与选择" Foreground="#FFFFFF" VerticalAlignment="Center" Margin="0,0,0,4"/>
+                        <ComboBox x:Name="Stage1MoldComboBox" Height="24" Margin="0,0,0,6"/>
+                        <TextBlock x:Name="Stage1MoldSummaryText" Foreground="#9CDCFE" TextWrapping="Wrap"/>
                     </StackPanel>
-                    <WrapPanel x:Name="LegendPanel" DockPanel.Dock="Top" Margin="0,0,0,8"/>
-                    <DataGrid x:Name="MoldGrid"
-                              ItemsSource="{Binding MoldRows}"
+                    <WrapPanel x:Name="Stage1LegendPanel" DockPanel.Dock="Top" Margin="0,0,0,8"/>
+                    <DataGrid x:Name="Stage1MoldGrid"
+                              ItemsSource="{Binding Stage1MoldRows}"
                               AutoGenerateColumns="False"
                               CanUserAddRows="False"
                               IsReadOnly="True"
@@ -122,9 +129,11 @@
                               HorizontalGridLinesBrush="#2E415A"
                               VerticalGridLinesBrush="#2E415A"
                               BorderBrush="#4B5E78"
+                              ScrollViewer.VerticalScrollBarVisibility="Auto"
+                              ScrollViewer.HorizontalScrollBarVisibility="Auto"
                               ColumnHeaderStyle="{StaticResource HighContrastDataGridHeaderStyle}">
                         <DataGrid.Columns>
-                            <DataGridTemplateColumn Header="预览" Width="92">
+                            <DataGridTemplateColumn Header="预览" Width="60">
                                 <DataGridTemplateColumn.CellTemplate>
                                     <DataTemplate>
                                         <Border Width="80" Height="52" Background="#111111" BorderBrush="#3D3D3D" BorderThickness="1" CornerRadius="2" Padding="1">
@@ -135,7 +144,7 @@
                             </DataGridTemplateColumn>
                             <DataGridTextColumn Binding="{Binding MoldCode}" Header="模具编号" Width="*"/>
                             <DataGridTextColumn Binding="{Binding MoldName}" Header="模具名称" Width="*"/>
-                            <DataGridTextColumn Binding="{Binding UsedCount}" Header="使用次数" Width="80"/>
+                            <DataGridTextColumn Binding="{Binding UsedCount}" Header="使用次数" Width="*"/>
                             <DataGridTextColumn Binding="{Binding MatchType}" Header="匹配类型" Width="*"/>
                             <DataGridTextColumn Binding="{Binding Remark}" Header="备注" Width="*"/>
                         </DataGrid.Columns>
@@ -143,13 +152,17 @@
                 </DockPanel>
             </Border>
 
-            <Border Grid.Row="1" Background="#252525" CornerRadius="4" Padding="8">
+            <Border Grid.Row="0" Grid.Column="1" Background="#252525" CornerRadius="4" Padding="8" Margin="4,0,0,8" Height="360">
                 <DockPanel>
-                    <TextBlock DockPanel.Dock="Top" Text="孔位匹配明细" FontWeight="SemiBold" Foreground="#FFFFFF" Margin="0,0,0,6" />
-                    <DataGrid x:Name="PositionGrid"
-                              ItemsSource="{Binding PositionRows}"
-                              MouseLeftButtonUp="PositionGrid_MouseLeftButtonUp"
-                              MouseDoubleClick="PositionGrid_MouseDoubleClick"
+                    <TextBlock DockPanel.Dock="Top" Text="台2模具" FontWeight="SemiBold" Foreground="#FFFFFF" Margin="0,0,0,6" />
+                    <StackPanel DockPanel.Dock="Top" Orientation="Vertical" Margin="0,0,0,8">
+                        <TextBlock Text="导入与选择" Foreground="#FFFFFF" VerticalAlignment="Center" Margin="0,0,0,4"/>
+                        <ComboBox x:Name="Stage2MoldComboBox" Height="24" Margin="0,0,0,6"/>
+                        <TextBlock x:Name="Stage2MoldSummaryText" Foreground="#9CDCFE" TextWrapping="Wrap"/>
+                    </StackPanel>
+                    <WrapPanel x:Name="Stage2LegendPanel" DockPanel.Dock="Top" Margin="0,0,0,8"/>
+                    <DataGrid x:Name="Stage2MoldGrid"
+                              ItemsSource="{Binding Stage2MoldRows}"
                               AutoGenerateColumns="False"
                               CanUserAddRows="False"
                               IsReadOnly="True"
@@ -162,22 +175,96 @@
                               HorizontalGridLinesBrush="#2E415A"
                               VerticalGridLinesBrush="#2E415A"
                               BorderBrush="#4B5E78"
+                              ScrollViewer.VerticalScrollBarVisibility="Auto"
+                              ScrollViewer.HorizontalScrollBarVisibility="Auto"
                               ColumnHeaderStyle="{StaticResource HighContrastDataGridHeaderStyle}">
                         <DataGrid.Columns>
-                            <DataGridTextColumn Binding="{Binding Index}" Header="序号" Width="52"/>
-                            <DataGridTextColumn Binding="{Binding HoleType}" Header="孔型" Width="96"/>
-                            <DataGridTextColumn Binding="{Binding MoldCode}" Header="匹配模具" Width="78"/>
-                            <DataGridTextColumn Binding="{Binding PosX}" Header="X" Width="82"/>
-                            <DataGridTextColumn Binding="{Binding PosY}" Header="Y" Width="82"/>
-                            <DataGridTextColumn Binding="{Binding IsCornerCandidate}" Header="角候选" Width="64" Visibility="Hidden"/>
-                            <DataGridTextColumn Binding="{Binding IsEdgeHole}" Header="边缘孔" Width="64" Visibility="Hidden"/>
-                            <DataGridTextColumn Binding="{Binding PositionRelation}" Header="位置关系" Width="120" Visibility="Hidden"/>
-                            <DataGridTextColumn Binding="{Binding TopCandidates}" Header="Top3候选(面积比)" Width="260" Visibility="Hidden"/>
-                            <DataGridTextColumn Binding="{Binding AreaRatio}" Header="选中面积比" Width="96" Visibility="Hidden"/>
-                            <DataGridTextColumn Binding="{Binding FailureReason}" Header="失败原因" Width="320" Visibility="Hidden"/>
+                            <DataGridTemplateColumn Header="预览" Width="60">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <Border Width="80" Height="52" Background="#111111" BorderBrush="#3D3D3D" BorderThickness="1" CornerRadius="2" Padding="1">
+                                            <Image Source="{Binding MoldPreview}" Stretch="Uniform"/>
+                                        </Border>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+                            <DataGridTextColumn Binding="{Binding MoldCode}" Header="模具编号" Width="*"/>
+                            <DataGridTextColumn Binding="{Binding MoldName}" Header="模具名称" Width="*"/>
+                            <DataGridTextColumn Binding="{Binding UsedCount}" Header="使用次数" Width="*"/>
+                            <DataGridTextColumn Binding="{Binding MatchType}" Header="匹配类型" Width="*"/>
+                            <DataGridTextColumn Binding="{Binding Remark}" Header="备注" Width="*"/>
                         </DataGrid.Columns>
                     </DataGrid>
                 </DockPanel>
+            </Border>
+
+            <Border Grid.Row="1" Grid.ColumnSpan="2" Background="#252525" CornerRadius="4" Padding="8">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <DockPanel Grid.Column="0" Margin="0,0,6,0">
+                        <TextBlock DockPanel.Dock="Top" Text="台1孔位" FontWeight="SemiBold" Foreground="#FFFFFF" Margin="0,0,0,6" />
+                        <DataGrid x:Name="PositionGrid"
+                                  ItemsSource="{Binding Stage1PositionRows}"
+                                  MouseLeftButtonUp="PositionGrid_MouseLeftButtonUp"
+                                  MouseDoubleClick="PositionGrid_MouseDoubleClick"
+                                  AutoGenerateColumns="False"
+                                  CanUserAddRows="False"
+                                  IsReadOnly="True"
+                                  HeadersVisibility="Column"
+                                  GridLinesVisibility="Horizontal"
+                                  RowBackground="#0F1722"
+                                  AlternatingRowBackground="#152131"
+                                  Background="#0B1220"
+                                  Foreground="#FFFFFF"
+                                  HorizontalGridLinesBrush="#2E415A"
+                                  VerticalGridLinesBrush="#2E415A"
+                                  BorderBrush="#4B5E78"
+                                  ScrollViewer.VerticalScrollBarVisibility="Auto"
+                                  ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                                  ColumnHeaderStyle="{StaticResource HighContrastDataGridHeaderStyle}">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Binding="{Binding Index}" Header="序号" Width="*"/>
+                                <DataGridTextColumn Binding="{Binding HoleType}" Header="孔型" Width="2*"/>
+                                <DataGridTextColumn Binding="{Binding MoldCode}" Header="模具" Width="*"/>
+                                <DataGridTextColumn Binding="{Binding PosX}" Header="X" Width="*"/>
+                                <DataGridTextColumn Binding="{Binding PosY}" Header="Y" Width="*"/>
+                            </DataGrid.Columns>
+                        </DataGrid>
+                    </DockPanel>
+                    <DockPanel Grid.Column="1" Margin="6,0,0,0">
+                        <TextBlock DockPanel.Dock="Top" Text="台2孔位" FontWeight="SemiBold" Foreground="#FFFFFF" Margin="0,0,0,6" />
+                        <DataGrid x:Name="Stage2PositionGrid"
+                                  ItemsSource="{Binding Stage2PositionRows}"
+                                  MouseLeftButtonUp="PositionGrid_MouseLeftButtonUp"
+                                  MouseDoubleClick="PositionGrid_MouseDoubleClick"
+                                  AutoGenerateColumns="False"
+                                  CanUserAddRows="False"
+                                  IsReadOnly="True"
+                                  HeadersVisibility="Column"
+                                  GridLinesVisibility="Horizontal"
+                                  RowBackground="#0F1722"
+                                  AlternatingRowBackground="#152131"
+                                  Background="#0B1220"
+                                  Foreground="#FFFFFF"
+                                  HorizontalGridLinesBrush="#2E415A"
+                                  VerticalGridLinesBrush="#2E415A"
+                                  BorderBrush="#4B5E78"
+                                  ScrollViewer.VerticalScrollBarVisibility="Auto"
+                                  ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                                  ColumnHeaderStyle="{StaticResource HighContrastDataGridHeaderStyle}">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Binding="{Binding Index}" Header="序号" Width="*"/>
+                                <DataGridTextColumn Binding="{Binding HoleType}" Header="孔型" Width="2*"/>
+                                <DataGridTextColumn Binding="{Binding MoldCode}" Header="模具" Width="*"/>
+                                <DataGridTextColumn Binding="{Binding PosX}" Header="X" Width="*"/>
+                                <DataGridTextColumn Binding="{Binding PosY}" Header="Y" Width="*"/>
+                            </DataGrid.Columns>
+                        </DataGrid>
+                    </DockPanel>
+                </Grid>
             </Border>
         </Grid>
 

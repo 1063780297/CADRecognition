@@ -10,6 +10,7 @@ using System.Runtime.CompilerServices;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
+using ComboBox = System.Windows.Controls.ComboBox;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
@@ -678,10 +679,14 @@ namespace CADRecognition
         private readonly Dictionary<string, DxfDocument> _documentCache = [];
         private readonly Dictionary<string, ImageSource> _moldPreviewCache = [];
         private readonly InteractiveDxfPreview _viewer = new();
-        private readonly ObservableCollection<MoldRow> _moldRows = [];
-        private readonly ObservableCollection<PositionRow> _positionRows = [];
-        private readonly List<string> _moldFiles = [];
-        private string? _selectedM01File;
+        private readonly ObservableCollection<MoldRow> _stage1MoldRows = [];
+        private readonly ObservableCollection<MoldRow> _stage2MoldRows = [];
+        private readonly ObservableCollection<PositionRow> _stage1PositionRows = [];
+        private readonly ObservableCollection<PositionRow> _stage2PositionRows = [];
+        private readonly List<string> _stage1MoldFiles = [];
+        private readonly List<string> _stage2MoldFiles = [];
+        private string? _selectedStage1File;
+        private string? _selectedStage2File;
         private MatchResult? _lastMatchResult;
         private ProjectProfile? _lastProjectProfile;
         private List<MoldProfile> _lastMolds = [];
@@ -703,8 +708,10 @@ namespace CADRecognition
             FileTreeView.Items.Clear();
         }
 
-        public ObservableCollection<MoldRow> MoldRows => _moldRows;
-        public ObservableCollection<PositionRow> PositionRows => _positionRows;
+        public ObservableCollection<MoldRow> Stage1MoldRows => _stage1MoldRows;
+        public ObservableCollection<MoldRow> Stage2MoldRows => _stage2MoldRows;
+        public ObservableCollection<PositionRow> Stage1PositionRows => _stage1PositionRows;
+        public ObservableCollection<PositionRow> Stage2PositionRows => _stage2PositionRows;
 
         public event PropertyChangedEventHandler? PropertyChanged;
 
@@ -761,6 +768,25 @@ namespace CADRecognition
             return _boardWidth;
         }
 
+        private void BoardWidthTextBox_TextChanged(object sender, TextChangedEventArgs e)
+        {
+            var width = ReadBoardWidth();
+            if (_projectDoc is not null && !string.IsNullOrWhiteSpace(_projectFile))
+            {
+                RenderPreview(_projectDoc, _projectFile, withAnnotation: _lastMatchResult is not null);
+            }
+            else if (_lastProjectProfile is not null)
+            {
+                _viewer.RenderCornerContours(
+                    _lastProjectProfile.OuterRectangle,
+                    _lastOuterContourPoints,
+                    _lastMatchResult?.GuidePaths,
+                    _lastProjectProfile.CornerCandidates,
+                    width,
+                    _lastProjectProfile.OuterRectangle.MinY + width);
+            }
+        }
+
         private void ImportProjectDxf_Click(object sender, RoutedEventArgs e)
         {
             var dialog = new WinOpenFileDialog
@@ -780,11 +806,14 @@ namespace CADRecognition
 
             // 导入新工程时清空上一张图纸的识别/标注展示状态。
             _lastMatchResult = null;
-            _lastProjectProfile = null;
-            _lastOuterContourPoints = [];
-            _moldRows.Clear();
-            _positionRows.Clear();
-            LegendPanel.Children.Clear();
+            _lastProjectProfile = DxfAnalyzer.ExtractProject(_projectDoc);
+            _lastOuterContourPoints = DxfAnalyzer.ExtractOuterContourForDebug(_projectDoc);
+            _stage1MoldRows.Clear();
+            _stage2MoldRows.Clear();
+            _stage1PositionRows.Clear();
+            _stage2PositionRows.Clear();
+            Stage1LegendPanel.Children.Clear();
+            Stage2LegendPanel.Children.Clear();
 
             ProjectFileText.Text = System.IO.Path.GetFileName(_projectFile);
             RefreshFileList();
@@ -795,7 +824,17 @@ namespace CADRecognition
                 : "工程 DXF 已加载。";
         }
 
-        private void ImportMoldsDxf_Click(object sender, RoutedEventArgs e)
+        private void ImportStage1MoldDxf_Click(object sender, RoutedEventArgs e)
+        {
+            ImportMoldsForStage(1);
+        }
+
+        private void ImportStage2MoldDxf_Click(object sender, RoutedEventArgs e)
+        {
+            ImportMoldsForStage(2);
+        }
+
+        private void ImportMoldsForStage(int stageId)
         {
             var dialog = new WinOpenFileDialog
             {
@@ -807,22 +846,40 @@ namespace CADRecognition
                 return;
             }
 
-            _moldFiles.Clear();
-            _moldFiles.AddRange(dialog.FileNames);
-            foreach (var file in _moldFiles)
+            var targetFiles = stageId == 1 ? _stage1MoldFiles : _stage2MoldFiles;
+            targetFiles.Clear();
+            targetFiles.AddRange(dialog.FileNames);
+            foreach (var file in targetFiles)
             {
                 var moldDoc = LoadCadDocument(file);
                 RemoveDuplicateLines(moldDoc);
                 _documentCache[file] = moldDoc;
             }
 
-            M01MoldComboBox.ItemsSource = _moldFiles.Select(System.IO.Path.GetFileName).ToList();
-            _selectedM01File = _moldFiles.FirstOrDefault();
-            M01MoldComboBox.SelectedIndex = _selectedM01File is null ? -1 : 0;
+            if (stageId == 1)
+            {
+                Stage1MoldComboBox.ItemsSource = _stage1MoldFiles.Select(System.IO.Path.GetFileName).ToList();
+                _selectedStage1File = _stage1MoldFiles.FirstOrDefault();
+                Stage1MoldComboBox.SelectedIndex = _selectedStage1File is null ? -1 : 0;
+                Stage1MoldSummaryText.Text = _stage1MoldFiles.Count == 0
+                    ? "未导入"
+                    : $"已导入 {_stage1MoldFiles.Count} 张，默认：{System.IO.Path.GetFileName(_selectedStage1File!)}";
+            }
+            else
+            {
+                Stage2MoldComboBox.ItemsSource = _stage2MoldFiles.Select(System.IO.Path.GetFileName).ToList();
+                _selectedStage2File = _stage2MoldFiles.FirstOrDefault();
+                Stage2MoldComboBox.SelectedIndex = _selectedStage2File is null ? -1 : 0;
+                Stage2MoldSummaryText.Text = _stage2MoldFiles.Count == 0
+                    ? "未导入"
+                    : $"已导入 {_stage2MoldFiles.Count} 张，默认：{System.IO.Path.GetFileName(_selectedStage2File!)}";
+            }
 
-            MoldCountText.Text = _moldFiles.Count.ToString(CultureInfo.InvariantCulture);
+            MoldCountText.Text = $"{_stage1MoldFiles.Count}/{_stage2MoldFiles.Count}";
             RefreshFileList();
-            StatusText.Text = $"已导入 {_moldFiles.Count} 张模具 CAD 图。";
+            StatusText.Text = stageId == 1
+                ? $"已导入台1模具 {_stage1MoldFiles.Count} 张。"
+                : $"已导入台2模具 {_stage2MoldFiles.Count} 张。";
         }
 
         private DxfDocument LoadCadDocument(string path)
@@ -884,16 +941,16 @@ namespace CADRecognition
             return dup.Count;
         }
 
-        private string? ResolveSelectedM01File()
+        private string? ResolveSelectedMoldFile(ComboBox comboBox, IReadOnlyList<string> files)
         {
-            if (_moldFiles.Count == 0)
+            if (files.Count == 0)
             {
                 return null;
             }
 
-            if (M01MoldComboBox.SelectedItem is string selectedName)
+            if (comboBox.SelectedItem is string selectedName)
             {
-                var matched = _moldFiles.FirstOrDefault(f =>
+                var matched = files.FirstOrDefault(f =>
                     string.Equals(System.IO.Path.GetFileName(f), selectedName, StringComparison.OrdinalIgnoreCase));
                 if (!string.IsNullOrWhiteSpace(matched))
                 {
@@ -901,7 +958,7 @@ namespace CADRecognition
                 }
             }
 
-            return _moldFiles.First();
+            return files.First();
         }
 
         private void Recognize_Click(object sender, RoutedEventArgs e)
@@ -911,34 +968,54 @@ namespace CADRecognition
                 StatusText.Text = "请先导入工程 DXF。";
                 return;
             }
-            if (_moldFiles.Count == 0)
+            if (_stage1MoldFiles.Count == 0 || _stage2MoldFiles.Count == 0)
             {
-                StatusText.Text = "请先导入模具 DXF。";
+                StatusText.Text = "请先分别导入台1模具和台2模具。";
                 return;
             }
 
             var project = DxfAnalyzer.ExtractProject(_projectDoc);
             _lastProjectProfile = project;
             _lastOuterContourPoints = DxfAnalyzer.ExtractOuterContourForDebug(_projectDoc);
-            ReadBoardWidth();
+            var boardWidth = ReadBoardWidth();
+            var splitY = project.OuterRectangle.MinY + boardWidth;
+            var stage1Project = new ProjectProfile(
+                project.OuterRectangle,
+                project.Holes.Where(h => h.Centroid.Y < splitY).ToList(),
+                project.CornerCandidates,
+                project.EdgeCandidates,
+                project.CornerStepPaths,
+                project.ContourPaths);
+            var stage2Project = new ProjectProfile(
+                project.OuterRectangle,
+                project.Holes.Where(h => h.Centroid.Y >= splitY).ToList(),
+                project.CornerCandidates,
+                project.EdgeCandidates,
+                project.CornerStepPaths,
+                project.ContourPaths);
 
-            _selectedM01File = ResolveSelectedM01File();
-            var orderedFiles = _moldFiles
-                .OrderBy(f => string.Equals(f, _selectedM01File, StringComparison.OrdinalIgnoreCase) ? 0 : 1)
-                .ThenBy(f => f, StringComparer.OrdinalIgnoreCase)
-                .ToList();
+            _selectedStage1File = ResolveSelectedMoldFile(Stage1MoldComboBox, _stage1MoldFiles);
+            _selectedStage2File = ResolveSelectedMoldFile(Stage2MoldComboBox, _stage2MoldFiles);
 
-            var molds = orderedFiles
-                .Select((f, idx) => DxfAnalyzer.ExtractMold(idx + 1, f))
-                .ToList();
-            _lastMolds = molds;
+            var stage1Files = _selectedStage1File is null
+                ? _stage1MoldFiles.ToList()
+                : _stage1MoldFiles.Where(f => string.Equals(f, _selectedStage1File, StringComparison.OrdinalIgnoreCase)).Concat(_stage1MoldFiles.Where(f => !string.Equals(f, _selectedStage1File, StringComparison.OrdinalIgnoreCase))).ToList();
+            var stage2Files = _selectedStage2File is null
+                ? _stage2MoldFiles.ToList()
+                : _stage2MoldFiles.Where(f => string.Equals(f, _selectedStage2File, StringComparison.OrdinalIgnoreCase)).Concat(_stage2MoldFiles.Where(f => !string.Equals(f, _selectedStage2File, StringComparison.OrdinalIgnoreCase))).ToList();
+
+            var stage1Molds = stage1Files.Select((f, idx) => DxfAnalyzer.ExtractMold(1 + idx, f)).ToList();
+            var stage2Molds = stage2Files.Select((f, idx) => DxfAnalyzer.ExtractMold(101 + idx, f)).ToList();
+            _lastMolds = stage1Molds.Concat(stage2Molds).ToList();
 
             var matcher = new MoldMatcher();
-            var result = matcher.Match(project, molds);
-            _lastMatchResult = result;
-            RenderResult(result, molds, project.OuterRectangle);
+            var stage1Result = matcher.Match(stage1Project, stage1Molds);
+            var stage2Result = matcher.Match(stage2Project, stage2Molds);
+            _lastMatchResult = new MatchResult(stage1Result.HoleAssignments.Concat(stage2Result.HoleAssignments).ToList(), stage1Result.GuidePaths ?? stage2Result.GuidePaths);
+            RenderStageResult(stage1Result, stage1Molds, isStage1: true);
+            RenderStageResult(stage2Result, stage2Molds, isStage1: false);
             RenderPreview(_projectDoc, _projectFile, withAnnotation: true);
-            StatusText.Text = $"识别完成：外轮廓 {project.OuterRectangle.Width:F2} x {project.OuterRectangle.Height:F2}，孔洞 {result.HoleAssignments.Count} 个。";
+            StatusText.Text = $"识别完成：台1 {stage1Result.HoleAssignments.Count} 个，台2 {stage2Result.HoleAssignments.Count} 个。";
         }
 
         private void Export_Click(object sender, RoutedEventArgs e)
@@ -983,12 +1060,13 @@ namespace CADRecognition
             model.CustomContent = string.Empty;
 
             var boundaryWidth = model.PlateWidth > 0 ? model.PlateWidth : (_lastProjectProfile?.OuterRectangle.Height ?? 0);
-            var stage2Rows = boundaryWidth > 0
-                ? _positionRows.Where(r => r.PosX <= boundaryWidth).OrderBy(r => r.PosY).ThenBy(r => r.PosX).ToList()
-                : _positionRows.OrderBy(r => r.PosY).ThenBy(r => r.PosX).ToList();
-            var stage1Rows = boundaryWidth > 0
-                ? _positionRows.Where(r => r.PosX > boundaryWidth).OrderBy(r => r.PosY).ThenBy(r => r.PosX).ToList()
-                : [];
+            var stage1Rows = _stage1PositionRows.OrderBy(r => r.PosY).ThenBy(r => r.PosX).ToList();
+            var stage2Rows = _stage2PositionRows.OrderBy(r => r.PosY).ThenBy(r => r.PosX).ToList();
+            if (stage1Rows.Count == 0 && stage2Rows.Count == 0 && boundaryWidth > 0)
+            {
+                stage1Rows = [];
+                stage2Rows = [];
+            }
 
             model.Stage1PunchCount = stage1Rows.Count;
             model.Stage2PunchCount = stage2Rows.Count;
@@ -1008,12 +1086,13 @@ namespace CADRecognition
                 return _lastProjectProfile.OuterRectangle;
             }
 
-            if (_positionRows.Count > 0)
+            if (_stage1PositionRows.Count > 0 || _stage2PositionRows.Count > 0)
             {
-                var minX = _positionRows.Min(x => x.PosX);
-                var minY = _positionRows.Min(x => x.PosY);
-                var maxX = _positionRows.Max(x => x.PosX);
-                var maxY = _positionRows.Max(x => x.PosY);
+                var all = _stage1PositionRows.Concat(_stage2PositionRows).ToList();
+                var minX = all.Min(x => x.PosX);
+                var minY = all.Min(x => x.PosY);
+                var maxX = all.Max(x => x.PosX);
+                var maxY = all.Max(x => x.PosY);
                 return new RectBounds(minX, minY, maxX, maxY);
             }
 
@@ -1033,11 +1112,12 @@ namespace CADRecognition
             }
         }
 
-        private void RenderResult(MatchResult result, IReadOnlyList<MoldProfile> molds, RectBounds outer)
+        private void RenderStageResult(MatchResult result, IReadOnlyList<MoldProfile> molds, bool isStage1)
         {
-            _moldRows.Clear();
-            _positionRows.Clear();
-            RenderLegend(molds);
+            var moldRows = isStage1 ? _stage1MoldRows : _stage2MoldRows;
+            var positionRows = isStage1 ? _stage1PositionRows : _stage2PositionRows;
+            moldRows.Clear();
+            positionRows.Clear();
 
             var useCounter = result.HoleAssignments
                 .Where(x => !x.Hole.HoleType.StartsWith("EdgeNotch:", StringComparison.Ordinal))
@@ -1047,7 +1127,7 @@ namespace CADRecognition
             foreach (var mold in molds.OrderBy(x => x.MoldId))
             {
                 useCounter.TryGetValue(mold.MoldId, out var count);
-                _moldRows.Add(new MoldRow
+                moldRows.Add(new MoldRow
                 {
                     MoldPreview = BuildMoldPreview(mold.FilePath),
                     MoldCode = $"M{mold.MoldId:D2}",
@@ -1058,22 +1138,24 @@ namespace CADRecognition
                 });
             }
 
-            var i = 1;
-            foreach (var row in result.HoleAssignments
-                         .Where(x => !x.Hole.HoleType.StartsWith("EdgeNotch:", StringComparison.Ordinal))
-                         .OrderBy(x => x.Hole.Centroid.Y).ThenBy(x => x.Hole.Centroid.X))
+            var index = 1;
+            var rows = result.HoleAssignments
+                .Where(x => !x.Hole.HoleType.StartsWith("EdgeNotch:", StringComparison.Ordinal))
+                .OrderBy(x => x.Hole.Centroid.Y).ThenBy(x => x.Hole.Centroid.X);
+
+            foreach (var row in rows)
             {
-                _positionRows.Add(new PositionRow
+                positionRows.Add(new PositionRow
                 {
-                    Index = i++,
+                    Index = index++,
                     HoleType = row.Hole.HoleType,
                     MoldId = row.MoldId,
                     MoldCode = row.MoldId > 0 ? $"M{row.MoldId:D2}" : "未匹配",
-                    PosX = Math.Round(row.Hole.Centroid.X - outer.MinX, 0),
-                    PosY = Math.Round(row.Hole.Centroid.Y - outer.MinY, 0),
+                    PosX = Math.Round(row.Hole.Centroid.X - _lastProjectProfile!.OuterRectangle.MinX, 0),
+                    PosY = Math.Round(isStage1 ? row.Hole.Centroid.Y - _lastProjectProfile!.OuterRectangle.MinY : row.Hole.Centroid.Y - (_lastProjectProfile!.OuterRectangle.MinY + ReadBoardWidth()), 0),
                     AbsX = row.Hole.Centroid.X,
                     AbsY = row.Hole.Centroid.Y,
-                    PositionRelation = row.PositionRelation,
+                    PositionRelation = isStage1 ? "台1区域" : "台2区域",
                     IsCornerCandidate = row.IsCornerCandidate ? "是" : "否",
                     IsEdgeHole = row.IsEdgeHole ? "是" : "否",
                     TopCandidates = row.TopCandidates,
@@ -1085,7 +1167,8 @@ namespace CADRecognition
 
         private void RenderLegend(IReadOnlyList<MoldProfile> molds)
         {
-            LegendPanel.Children.Clear();
+            Stage1LegendPanel.Children.Clear();
+            Stage2LegendPanel.Children.Clear();
             foreach (var mold in molds.OrderBy(x => x.MoldId))
             {
                 var color = InteractiveDxfPreview.GetMoldColor(mold.MoldId);
@@ -1116,7 +1199,14 @@ namespace CADRecognition
                     VerticalAlignment = VerticalAlignment.Center
                 });
                 chip.Child = panel;
-                LegendPanel.Children.Add(chip);
+                if (mold.MoldId == 1)
+                {
+                    Stage1LegendPanel.Children.Add(chip);
+                }
+                else
+                {
+                    Stage2LegendPanel.Children.Add(chip);
+                }
             }
         }
 
@@ -1144,37 +1234,54 @@ namespace CADRecognition
                 });
             }
 
-            var moldNode = new TreeViewItem
+            var stage1Node = new TreeViewItem
             {
-                Header = "模具库",
+                Header = "台1模具",
                 IsExpanded = true
             };
-            foreach (var file in _moldFiles)
+            foreach (var file in _stage1MoldFiles)
             {
-                moldNode.Items.Add(new TreeViewItem
+                stage1Node.Items.Add(new TreeViewItem
                 {
                     Header = System.IO.Path.GetFileName(file),
                     Tag = file
                 });
             }
+
+            var stage2Node = new TreeViewItem
+            {
+                Header = "台2模具",
+                IsExpanded = true
+            };
+            foreach (var file in _stage2MoldFiles)
+            {
+                stage2Node.Items.Add(new TreeViewItem
+                {
+                    Header = System.IO.Path.GetFileName(file),
+                    Tag = file
+                });
+            }
+
             root.Items.Add(projectNode);
-            root.Items.Add(moldNode);
+            root.Items.Add(stage1Node);
+            root.Items.Add(stage2Node);
             FileTreeView.Items.Add(root);
         }
 
         private void RenderPreview(DxfDocument doc, string? path, bool withAnnotation)
         {
             _previewPlugin.CreatePreview(doc, _viewer);
-            if (withAnnotation && !string.IsNullOrWhiteSpace(path) && path == _projectFile)
+            if (!string.IsNullOrWhiteSpace(path) && path == _projectFile && _lastProjectProfile is not null)
             {
                 _viewer.RenderCornerContours(
-                    _lastProjectProfile?.OuterRectangle,
+                    _lastProjectProfile.OuterRectangle,
                     _lastOuterContourPoints,
-                    _lastMatchResult?.GuidePaths,
-                    _lastProjectProfile?.CornerCandidates,
-                    _boardWidth);
+                    withAnnotation ? _lastMatchResult?.GuidePaths : null,
+                    _lastProjectProfile.CornerCandidates,
+                    _boardWidth,
+                    _lastProjectProfile.OuterRectangle.MinY + _boardWidth);
 
-                if (_lastMatchResult is not null)
+                if (withAnnotation && _lastMatchResult is not null)
                 {
                     _viewer.RenderAnnotations(_lastMatchResult.HoleAssignments, _lastMolds);
                 }
@@ -1185,7 +1292,7 @@ namespace CADRecognition
             }
             else
             {
-                _viewer.RenderCornerContours(null, null, null, null, null);
+                _viewer.RenderCornerContours(null, null, null, null, 0, null);
                 _viewer.RenderAnnotations([], []);
             }
             PreviewHintText.Visibility = Visibility.Collapsed;
@@ -1526,7 +1633,8 @@ namespace CADRecognition
             IReadOnlyList<(double X, double Y)>? outerContourPoints,
             IReadOnlyList<CornerStepPath>? cornerPaths,
             IReadOnlyList<HoleFeature>? cornerHints,
-            double boardWidth)
+            double boardWidth,
+            double? splitY = null)
         {
             _zoneCanvas.Children.Clear();
             if (rect is null)
@@ -1550,26 +1658,21 @@ namespace CADRecognition
             Canvas.SetTop(rectBox, Math.Min(r1.Y, r2.Y));
             _zoneCanvas.Children.Add(rectBox);
 
-            if (boardWidth > 0)
+            if (boardWidth > 0 && splitY.HasValue)
             {
-                var expandedLeft = boardWidth * 0.9;
-                var expandedRight = boardWidth * 1.1;
-                var leftPt = ModelToCanvas(expandedLeft, rect.MinY);
-                var rightPt = ModelToCanvas(expandedRight, rect.MinY);
-                var topPt = ModelToCanvas(expandedLeft, rect.MaxY);
-                var bottomPt = ModelToCanvas(expandedRight, rect.MaxY);
-                var boardLine = new WpfRectangle
+                var splitLeft = ModelToCanvas(rect.MinX, splitY.Value);
+                var splitRight = ModelToCanvas(rect.MaxX, splitY.Value);
+                var threshold = new WpfLine
                 {
-                    Width = Math.Abs(rightPt.X - leftPt.X),
-                    Height = Math.Abs(bottomPt.Y - topPt.Y),
+                    X1 = splitLeft.X,
+                    Y1 = splitLeft.Y,
+                    X2 = splitRight.X,
+                    Y2 = splitRight.Y,
                     Stroke = new SolidColorBrush(WpfColor.FromArgb(255, 255, 0, 0)),
-                    StrokeThickness = 1.0,
-                    StrokeDashArray = new DoubleCollection([6, 4]),
-                    Fill = WpfBrushes.Transparent
+                    StrokeThickness = 1.2,
+                    StrokeDashArray = new DoubleCollection([8, 4, 2, 4])
                 };
-                Canvas.SetLeft(boardLine, Math.Min(leftPt.X, rightPt.X));
-                Canvas.SetTop(boardLine, Math.Min(topPt.Y, bottomPt.Y));
-                _zoneCanvas.Children.Add(boardLine);
+                _zoneCanvas.Children.Add(threshold);
             }
 
             // 2) 画当前识别到的真实外轮廓（红色）
