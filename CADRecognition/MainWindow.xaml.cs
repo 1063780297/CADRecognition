@@ -22,6 +22,7 @@ using WpfEllipse = System.Windows.Shapes.Ellipse;
 using WpfLine = System.Windows.Shapes.Line;
 using WpfRectangle = System.Windows.Shapes.Rectangle;
 using CADImport;
+using Path = System.Windows.Shapes.Path;
 
 namespace CADRecognition
 {
@@ -74,124 +75,51 @@ namespace CADRecognition
             switch (entity)
             {
                 case CADLine line:
-                    AddLine(doc, line.Point.X, line.Point.Y, line.Point1.X, line.Point1.Y);
+                    doc.Entities.Add(new Line(
+                        new Vector3(line.Point.X, line.Point.Y, 0),
+                        new Vector3(line.Point1.X, line.Point1.Y, 0)));
                     break;
 
                 case CADArc arc:
-                    AddSampledArc(doc, arc);
+                    doc.Entities.Add(CreateArcFromImportedArc(arc));
                     break;
 
                 case CADCircle circle:
-                    AddSampledCircle(doc, circle.Point.X, circle.Point.Y, circle.Radius);
+                    doc.Entities.Add(new Circle(
+                        new Vector3(circle.Point.X, circle.Point.Y, 0),
+                        circle.Radius));
                     break;
             }
         }
 
-        private static void AddLine(DxfDocument doc, double x1, double y1, double x2, double y2)
+        private static Arc CreateArcFromImportedArc(CADArc arc)
         {
-            doc.Entities.Add(new Line(
-                new Vector3(x1, y1, 0),
-                new Vector3(x2, y2, 0)));
-        }
-
-        private static void AddSampledCircle(DxfDocument doc, double cx, double cy, double radius)
-        {
-            if (radius <= 0)
-            {
-                return;
-            }
-
-            var segments = Math.Max(24, (int)Math.Ceiling(radius * 8));
-            var pts = SampleCirclePoints(cx, cy, radius, segments);
-            AddPolylineSegments(doc, pts, closed: true);
-        }
-
-        private static void AddSampledArc(DxfDocument doc, CADArc arc)
-        {
-            var centerX = Convert.ToDouble(arc.Point.X, CultureInfo.InvariantCulture);
-            var centerY = Convert.ToDouble(arc.Point.Y, CultureInfo.InvariantCulture);
+            var center = new Vector3(arc.Point.X, arc.Point.Y, 0);
             var radius = Convert.ToDouble(arc.Radius, CultureInfo.InvariantCulture);
-            if (radius <= 0)
-            {
-                return;
-            }
-
             var startAngle = TryGetArcAngle(arc, "StartParam", "StartAngle", "Start")
-                ?? TryGetAngleFromPoint(centerX, centerY, arc, "StartPoint", "FromPoint", "P1");
+                ?? TryGetAngleFromPoint(center.X, center.Y, arc, "StartPoint", "FromPoint", "P1");
             var endAngle = TryGetArcAngle(arc, "EndParam", "EndAngle", "End")
-                ?? TryGetAngleFromPoint(centerX, centerY, arc, "EndPoint", "ToPoint", "P2");
+                ?? TryGetAngleFromPoint(center.X, center.Y, arc, "EndPoint", "ToPoint", "P2");
 
-            if (!startAngle.HasValue || !endAngle.HasValue)
+            if (!startAngle.HasValue || !endAngle.HasValue || radius <= 0)
             {
-                var fallback = SampleCirclePoints(centerX, centerY, radius, 36);
-                AddPolylineSegments(doc, fallback, closed: true);
-                return;
+                return new Arc(center, Math.Max(radius, 1), 0, 360);
             }
 
-            var sweep = NormalizeSweep(startAngle.Value, endAngle.Value);
+            var start = NormalizeDeg(startAngle.Value);
+            var end = NormalizeDeg(endAngle.Value);
+            var sweep = NormalizeSweep(start, end);
             if (sweep <= 0.0)
             {
                 sweep += 360.0;
             }
 
-            var segments = Math.Max(12, (int)Math.Ceiling(Math.Abs(sweep) / 8.0));
-            var sampled = SampleArcPoints(centerX, centerY, radius, startAngle.Value, endAngle.Value, segments);
-            AddPolylineSegments(doc, sampled, closed: false);
-        }
-
-        private static List<(double X, double Y)> SampleCirclePoints(double cx, double cy, double radius, int segments)
-        {
-            var pts = new List<(double X, double Y)>(segments + 1);
-            for (var i = 0; i <= segments; i++)
+            if (sweep >= 359.999)
             {
-                var t = (double)i / segments;
-                var angle = 2.0 * Math.PI * t;
-                pts.Add((cx + radius * Math.Cos(angle), cy + radius * Math.Sin(angle)));
-            }
-            return pts;
-        }
-
-        private static List<(double X, double Y)> SampleArcPoints(double cx, double cy, double radius, double startDeg, double endDeg, int segments)
-        {
-            var sweep = NormalizeSweep(startDeg, endDeg);
-            if (sweep <= 0.0)
-            {
-                sweep += 360.0;
+                return new Arc(center, radius, 0, 360);
             }
 
-            var pts = new List<(double X, double Y)>(segments + 1);
-            for (var i = 0; i <= segments; i++)
-            {
-                var t = (double)i / segments;
-                var angle = (startDeg + sweep * t) * Math.PI / 180.0;
-                pts.Add((cx + radius * Math.Cos(angle), cy + radius * Math.Sin(angle)));
-            }
-            return pts;
-        }
-
-        private static void AddPolylineSegments(DxfDocument doc, IReadOnlyList<(double X, double Y)> pts, bool closed)
-        {
-            if (pts.Count < 2)
-            {
-                return;
-            }
-
-            for (var i = 1; i < pts.Count; i++)
-            {
-                var a = pts[i - 1];
-                var b = pts[i];
-                AddLine(doc, a.X, a.Y, b.X, b.Y);
-            }
-
-            if (closed)
-            {
-                var first = pts[0];
-                var last = pts[^1];
-                if (Math.Abs(first.X - last.X) > 1e-9 || Math.Abs(first.Y - last.Y) > 1e-9)
-                {
-                    AddLine(doc, last.X, last.Y, first.X, first.Y);
-                }
-            }
+            return new Arc(center, radius, start, start + sweep);
         }
 
         private static double? TryGetArcAngle(object arc, params string[] names)
@@ -281,6 +209,7 @@ namespace CADRecognition
             }
             return sweep;
         }
+
     }
 
     public partial class MainWindow : Window, INotifyPropertyChanged
@@ -535,7 +464,7 @@ namespace CADRecognition
         {
             var model = new TcpExportModel();
             model.ProgramName = System.IO.Path.GetFileNameWithoutExtension(_projectFile);
-            model.ProgramNo = 0;
+            model.ProgramNo = System.IO.Path.GetFileNameWithoutExtension(_projectFile);
             model.LeftRightDoor = 0;
             model.Material = 0;
             model.Type = 0;
@@ -834,40 +763,22 @@ namespace CADRecognition
                     dc.DrawLine(linePen, Map(l.StartPoint.X, l.StartPoint.Y), Map(l.EndPoint.X, l.EndPoint.Y));
                 }
 
-                foreach (var c in DxfSafe.Circles(doc))
+                foreach (var shape in CadPreviewGeometry.BuildPreviewShapes(doc, DxfAnalyzer.ExpandPolyline2D, DxfAnalyzer.SampleArc))
                 {
-                    var center = Map(c.Center.X, c.Center.Y);
-                    dc.DrawEllipse(null, circlePen, center, c.Radius * scale, c.Radius * scale);
-                }
-
-                foreach (var p in DxfSafe.Polylines2D(doc))
-                {
-                    var pts = DxfAnalyzer.ExpandPolyline2D(p, 12);
-                    if (pts.Count < 2)
+                    var pen = shape.Kind switch
                     {
-                        continue;
-                    }
-                    var geo = new StreamGeometry();
-                    using var g = geo.Open();
-                    g.BeginFigure(Map(pts[0].X, pts[0].Y), false, p.IsClosed);
-                    g.PolyLineTo(pts.Skip(1).Select(t => Map(t.X, t.Y)).ToList(), true, false);
-                    geo.Freeze();
-                    dc.DrawGeometry(null, polyPen, geo);
-                }
+                        CadPreviewShapeKind.Line => linePen,
+                        CadPreviewShapeKind.Circle => circlePen,
+                        CadPreviewShapeKind.Arc => arcPen,
+                        CadPreviewShapeKind.Polyline => polyPen,
+                        _ => linePen
+                    };
 
-                foreach (var a in DxfSafe.Arcs(doc))
-                {
-                    var pts = DxfAnalyzer.SampleArc(a, 18);
-                    if (pts.Count < 2)
+                    var geo = shape.ToGeometry(Map);
+                    if (geo is not null)
                     {
-                        continue;
+                        dc.DrawGeometry(null, pen, geo);
                     }
-                    var geo = new StreamGeometry();
-                    using var g = geo.Open();
-                    g.BeginFigure(Map(pts[0].X, pts[0].Y), false, false);
-                    g.PolyLineTo(pts.Skip(1).Select(t => Map(t.X, t.Y)).ToList(), true, false);
-                    geo.Freeze();
-                    dc.DrawGeometry(null, arcPen, geo);
                 }
             }
 
@@ -906,65 +817,24 @@ namespace CADRecognition
 
             var unifiedStroke = new SolidColorBrush(WpfColor.FromRgb(144, 238, 144));
 
-            foreach (var line in document.Entities.Lines)
+            foreach (var shape in CadPreviewGeometry.BuildPreviewShapes(document, DxfAnalyzer.ExpandPolyline2D, DxfAnalyzer.SampleArc))
             {
-                canvas.Children.Add(new WpfLine
+                var geometry = shape.ToGeometry((x, y) => new System.Windows.Point(
+                    (x - bounds.MinX) * scale + margin,
+                    viewHeight - ((y - bounds.MinY) * scale + margin)));
+                if (geometry is null)
                 {
-                    X1 = (line.StartPoint.X - bounds.MinX) * scale + margin,
-                    Y1 = viewHeight - ((line.StartPoint.Y - bounds.MinY) * scale + margin),
-                    X2 = (line.EndPoint.X - bounds.MinX) * scale + margin,
-                    Y2 = viewHeight - ((line.EndPoint.Y - bounds.MinY) * scale + margin),
-                    Stroke = unifiedStroke,
-                    StrokeThickness = 1
-                });
-            }
+                    continue;
+                }
 
-            foreach (var circle in document.Entities.Circles)
-            {
-                var r = circle.Radius * scale;
-                var x = (circle.Center.X - bounds.MinX) * scale + margin - r;
-                var y = viewHeight - ((circle.Center.Y - bounds.MinY) * scale + margin) - r;
-                var el = new WpfEllipse
+                var path = new Path
                 {
-                    Width = r * 2,
-                    Height = r * 2,
-                    Stroke = unifiedStroke,
-                    StrokeThickness = 1
-                };
-                Canvas.SetLeft(el, x);
-                Canvas.SetTop(el, y);
-                canvas.Children.Add(el);
-            }
-
-            foreach (var poly in document.Entities.Polylines2D.Where(p => p.IsClosed))
-            {
-                var sampled = DxfAnalyzer.ExpandPolyline2D(poly, 24);
-                var points = new PointCollection(sampled.Select(v =>
-                    new System.Windows.Point(
-                        (v.X - bounds.MinX) * scale + margin,
-                        viewHeight - ((v.Y - bounds.MinY) * scale + margin))));
-                canvas.Children.Add(new Polygon
-                {
-                    Points = points,
+                    Data = geometry,
                     Stroke = unifiedStroke,
                     StrokeThickness = 1,
                     Fill = WpfBrushes.Transparent
-                });
-            }
-
-            foreach (var arc in document.Entities.Arcs)
-            {
-                var sampled = DxfAnalyzer.SampleArc(arc, 32);
-                var points = new PointCollection(sampled.Select(p =>
-                    new System.Windows.Point(
-                        (p.X - bounds.MinX) * scale + margin,
-                        viewHeight - ((p.Y - bounds.MinY) * scale + margin))));
-                canvas.Children.Add(new Polyline
-                {
-                    Points = points,
-                    Stroke = unifiedStroke,
-                    StrokeThickness = 1
-                });
+                };
+                canvas.Children.Add(path);
             }
 
             viewer.LoadScene(canvas, bounds, viewWidth, viewHeight, scale, margin);
@@ -1561,6 +1431,97 @@ namespace CADRecognition
             Cursor = System.Windows.Input.Cursors.Arrow;
             ReleaseMouseCapture();
             e.Handled = true;
+        }
+    }
+
+    public enum CadPreviewShapeKind
+    {
+        Line,
+        Circle,
+        Arc,
+        Polyline
+    }
+
+    public sealed class CadPreviewShape
+    {
+        public CadPreviewShapeKind Kind { get; init; }
+        public IReadOnlyList<(double X, double Y)> Points { get; init; } = [];
+        public bool IsClosed { get; init; }
+
+        public Geometry? ToGeometry(Func<double, double, System.Windows.Point> map)
+        {
+            if (Points.Count < 2)
+            {
+                return null;
+            }
+
+            var geo = new StreamGeometry();
+            using (var g = geo.Open())
+            {
+                g.BeginFigure(map(Points[0].X, Points[0].Y), false, IsClosed);
+                g.PolyLineTo(Points.Skip(1).Select(p => map(p.X, p.Y)).ToList(), true, false);
+            }
+            geo.Freeze();
+            return geo;
+        }
+    }
+
+    public static class CadPreviewGeometry
+    {
+        public static IEnumerable<CadPreviewShape> BuildPreviewShapes(
+            DxfDocument doc,
+            Func<Polyline2D, int, IReadOnlyList<(double X, double Y)>> expandPolyline,
+            Func<Arc, int, IReadOnlyList<(double X, double Y)>> sampleArc)
+        {
+            foreach (var line in doc.Entities.Lines)
+            {
+                yield return new CadPreviewShape
+                {
+                    Kind = CadPreviewShapeKind.Line,
+                    Points = [(line.StartPoint.X, line.StartPoint.Y), (line.EndPoint.X, line.EndPoint.Y)]
+                };
+            }
+
+            foreach (var circle in doc.Entities.Circles)
+            {
+                yield return new CadPreviewShape
+                {
+                    Kind = CadPreviewShapeKind.Circle,
+                    Points = sampleArc(new Arc(circle.Center, circle.Radius, 0, 360), 72),
+                    IsClosed = true
+                };
+            }
+
+            foreach (var poly in doc.Entities.Polylines2D)
+            {
+                var pts = expandPolyline(poly, 24);
+                if (pts.Count < 2)
+                {
+                    continue;
+                }
+
+                yield return new CadPreviewShape
+                {
+                    Kind = CadPreviewShapeKind.Polyline,
+                    Points = pts,
+                    IsClosed = poly.IsClosed
+                };
+            }
+
+            foreach (var arc in doc.Entities.Arcs)
+            {
+                var pts = sampleArc(arc, 32);
+                if (pts.Count < 2)
+                {
+                    continue;
+                }
+
+                yield return new CadPreviewShape
+                {
+                    Kind = CadPreviewShapeKind.Arc,
+                    Points = pts
+                };
+            }
         }
     }
 
@@ -2228,7 +2189,7 @@ namespace CADRecognition
                 (c.Center.X + c.Radius, c.Center.Y + c.Radius)
             }));
             points.AddRange(doc.Entities.Polylines2D.SelectMany(pl => ExpandPolyline2D(pl, 16)));
-            points.AddRange(doc.Entities.Arcs.SelectMany(a => SampleArc(a, 24)));
+            points.AddRange(doc.Entities.Arcs.SelectMany(a => SampleArc(a, 72)));
 
             if (points.Count == 0)
             {
