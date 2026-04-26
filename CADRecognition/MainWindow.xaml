@@ -48,6 +48,13 @@
                 <Button Content="导入模具图纸(可多选)" Click="ImportMoldsDxf_Click" Margin="0,0,6,0" />
                 <Button Content="一键识别匹配" Click="Recognize_Click" Margin="0,0,12,0" />
                 <Button Content="导出" Click="Export_Click" Margin="0,0,6,0" />
+                <TextBlock Text="板宽：" Foreground="#DDDDDD" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                <TextBox x:Name="BoardWidthTextBox"
+                         Width="88"
+                         Height="24"
+                         Text="0"
+                         VerticalContentAlignment="Center"
+                         Margin="0,0,16,0"/>
                 <CheckBox x:Name="CompactAnnoCheckBox"
                           Content="简洁标注"
                           IsChecked="False"

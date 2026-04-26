@@ -690,6 +690,7 @@ namespace CADRecognition
         private string? _projectFile;
         private DxfDocument? _projectDoc;
         private bool _compactAnnotation = false;
+        private double _boardWidth = 0;
 
         public MainWindow()
         {
@@ -723,6 +724,43 @@ namespace CADRecognition
             }
         }
 
+        private void SetDefaultBoardWidthFromProject()
+        {
+            if (_projectDoc is null || BoardWidthTextBox is null)
+            {
+                return;
+            }
+
+            var bounds = DxfAnalyzer.ExtractProject(_projectDoc).OuterRectangle;
+            var defaultWidth = Math.Max(0, Math.Round(bounds.Height / 2.0, MidpointRounding.AwayFromZero));
+            _boardWidth = defaultWidth;
+            BoardWidthTextBox.Text = defaultWidth.ToString("0", CultureInfo.InvariantCulture);
+        }
+
+        private double ReadBoardWidth()
+        {
+            if (BoardWidthTextBox is null)
+            {
+                return _boardWidth;
+            }
+
+            var text = BoardWidthTextBox.Text?.Trim();
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                return _boardWidth;
+            }
+
+            if (double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out var value) ||
+                double.TryParse(text, NumberStyles.Float, CultureInfo.CurrentCulture, out value))
+            {
+                _boardWidth = Math.Max(0, value);
+                return _boardWidth;
+            }
+
+            StatusText.Text = "板宽输入无效，请输入数字。";
+            return _boardWidth;
+        }
+
         private void ImportProjectDxf_Click(object sender, RoutedEventArgs e)
         {
             var dialog = new WinOpenFileDialog
@@ -750,6 +788,7 @@ namespace CADRecognition
 
             ProjectFileText.Text = System.IO.Path.GetFileName(_projectFile);
             RefreshFileList();
+            SetDefaultBoardWidthFromProject();
             RenderPreview(_projectDoc, _projectFile, withAnnotation: false);
             StatusText.Text = removedProjectLines > 0
                 ? $"工程 DXF 已加载，已去重重叠线段 {removedProjectLines} 条。"
@@ -881,6 +920,7 @@ namespace CADRecognition
             var project = DxfAnalyzer.ExtractProject(_projectDoc);
             _lastProjectProfile = project;
             _lastOuterContourPoints = DxfAnalyzer.ExtractOuterContourForDebug(_projectDoc);
+            ReadBoardWidth();
 
             _selectedM01File = ResolveSelectedM01File();
             var orderedFiles = _moldFiles
@@ -931,19 +971,27 @@ namespace CADRecognition
             model.FormingLength = 0;
             model.FormingWidth = 0;
             model.FormingThickness = 0;
-            model.Stage1PunchCount = _positionRows.Count;
-            model.Stage2PunchCount = 0;
-            model.Spare2 = 0;
+            var boardWidth = ReadBoardWidth();
             model.PlateLength = _lastProjectProfile?.OuterRectangle.Width ?? 0;
-            model.PlateWidth = _lastProjectProfile?.OuterRectangle.Height ?? 0;
+            model.PlateWidth = boardWidth > 0
+                ? boardWidth
+                : (_lastProjectProfile?.OuterRectangle.Height ?? 0);
             model.PlateThickness = 0;
+            model.Spare2 = 0;
             model.Spare3 = 0;
             model.Spare4 = 0;
             model.CustomContent = string.Empty;
 
-            var boundary = GetRecognitionBoundary();
-            var stage1Rows = SplitRowsByBoundary(_positionRows, boundary, true).ToList();
-            var stage2Rows = SplitRowsByBoundary(_positionRows, boundary, false).ToList();
+            var boundaryWidth = model.PlateWidth > 0 ? model.PlateWidth : (_lastProjectProfile?.OuterRectangle.Height ?? 0);
+            var stage2Rows = boundaryWidth > 0
+                ? _positionRows.Where(r => r.PosX <= boundaryWidth).OrderBy(r => r.PosY).ThenBy(r => r.PosX).ToList()
+                : _positionRows.OrderBy(r => r.PosY).ThenBy(r => r.PosX).ToList();
+            var stage1Rows = boundaryWidth > 0
+                ? _positionRows.Where(r => r.PosX > boundaryWidth).OrderBy(r => r.PosY).ThenBy(r => r.PosX).ToList()
+                : [];
+
+            model.Stage1PunchCount = stage1Rows.Count;
+            model.Stage2PunchCount = stage2Rows.Count;
             model.Stage1DiagramCoordinates = stage1Rows.Select(r => new TcpCoordinateRow { X = r.PosX, Y = r.PosY }).ToList();
             model.Stage2DiagramCoordinates = stage2Rows.Select(r => new TcpCoordinateRow { X = r.PosX, Y = r.PosY }).ToList();
             model.Stage1PositionMoldIds = stage1Rows.Select(r => r.MoldId).ToList();
@@ -1123,7 +1171,8 @@ namespace CADRecognition
                     _lastProjectProfile?.OuterRectangle,
                     _lastOuterContourPoints,
                     _lastMatchResult?.GuidePaths,
-                    _lastProjectProfile?.CornerCandidates);
+                    _lastProjectProfile?.CornerCandidates,
+                    _boardWidth);
 
                 if (_lastMatchResult is not null)
                 {
@@ -1136,7 +1185,7 @@ namespace CADRecognition
             }
             else
             {
-                _viewer.RenderCornerContours(null, null, null, null);
+                _viewer.RenderCornerContours(null, null, null, null, null);
                 _viewer.RenderAnnotations([], []);
             }
             PreviewHintText.Visibility = Visibility.Collapsed;
@@ -1476,7 +1525,8 @@ namespace CADRecognition
             RectBounds? rect,
             IReadOnlyList<(double X, double Y)>? outerContourPoints,
             IReadOnlyList<CornerStepPath>? cornerPaths,
-            IReadOnlyList<HoleFeature>? cornerHints)
+            IReadOnlyList<HoleFeature>? cornerHints,
+            double boardWidth)
         {
             _zoneCanvas.Children.Clear();
             if (rect is null)
@@ -1499,6 +1549,28 @@ namespace CADRecognition
             Canvas.SetLeft(rectBox, Math.Min(r1.X, r2.X));
             Canvas.SetTop(rectBox, Math.Min(r1.Y, r2.Y));
             _zoneCanvas.Children.Add(rectBox);
+
+            if (boardWidth > 0)
+            {
+                var expandedLeft = boardWidth * 0.9;
+                var expandedRight = boardWidth * 1.1;
+                var leftPt = ModelToCanvas(expandedLeft, rect.MinY);
+                var rightPt = ModelToCanvas(expandedRight, rect.MinY);
+                var topPt = ModelToCanvas(expandedLeft, rect.MaxY);
+                var bottomPt = ModelToCanvas(expandedRight, rect.MaxY);
+                var boardLine = new WpfRectangle
+                {
+                    Width = Math.Abs(rightPt.X - leftPt.X),
+                    Height = Math.Abs(bottomPt.Y - topPt.Y),
+                    Stroke = new SolidColorBrush(WpfColor.FromArgb(255, 255, 0, 0)),
+                    StrokeThickness = 1.0,
+                    StrokeDashArray = new DoubleCollection([6, 4]),
+                    Fill = WpfBrushes.Transparent
+                };
+                Canvas.SetLeft(boardLine, Math.Min(leftPt.X, rightPt.X));
+                Canvas.SetTop(boardLine, Math.Min(topPt.Y, bottomPt.Y));
+                _zoneCanvas.Children.Add(boardLine);
+            }
 
             // 2) 画当前识别到的真实外轮廓（红色）
             if (outerContourPoints is not null && outerContourPoints.Count >= 2)
