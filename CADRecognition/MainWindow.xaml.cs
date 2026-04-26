@@ -1640,7 +1640,7 @@ namespace CADRecognition
                     _markCanvas.Children.Add(mark);
                 }
 
-                var shouldShowLabel = !_compactMode && ass.MoldId > 0;
+                var shouldShowLabel = !_compactMode && ass.MoldId > 0 && !ass.Hole.HoleType.StartsWith("Contour", StringComparison.Ordinal) && !ass.Hole.HoleType.StartsWith("EdgePartial:", StringComparison.Ordinal) && !ass.Hole.HoleType.StartsWith("EdgeNotch:", StringComparison.Ordinal);
 
                 if (shouldShowLabel)
                 {
