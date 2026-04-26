@@ -8,7 +8,7 @@ namespace CADRecognition
     public sealed class TcpExportModel
     {
         public string ProgramName { get; set; } = string.Empty;
-        public string ProgramNo { get; set; } = string.Empty;
+        public int ProgramNo { get; set; }
         public int LeftRightDoor { get; set; }
         public int Material { get; set; }
         public int Type { get; set; }

@@ -126,7 +126,7 @@ namespace CADRecognition
         {
             _isUpdatingView = true;
             ProgramNameTextBox.Text = Model.ProgramName;
-            ProgramNoTextBox.Text = Model.ProgramName;
+            ProgramNoTextBox.Text = Model.ProgramNo.ToString();
             LeftRightDoorTextBox.Text = Model.LeftRightDoor.ToString();
             MaterialTextBox.Text = Model.Material.ToString();
             TypeTextBox.Text = Model.Type.ToString();
@@ -253,7 +253,7 @@ namespace CADRecognition
         private void UpdateModelFromRows()
         {
             Model.ProgramName = ProgramNameTextBox.Text?.Trim() ?? string.Empty;
-            Model.ProgramNo = ProgramNoTextBox.Text?.Trim() ?? string.Empty;
+            Model.ProgramNo = ParseInt(ProgramNoTextBox.Text);
             Model.LeftRightDoor = ParseInt(LeftRightDoorTextBox.Text);
             Model.Material = ParseInt(MaterialTextBox.Text);
             Model.Type = ParseInt(TypeTextBox.Text);
