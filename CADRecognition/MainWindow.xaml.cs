@@ -861,20 +861,14 @@ namespace CADRecognition
                 Stage1MoldComboBox.ItemsSource = _stage1MoldFiles.Select(System.IO.Path.GetFileName).ToList();
                 _selectedStage1File = _stage1MoldFiles.FirstOrDefault();
                 Stage1MoldComboBox.SelectedIndex = _selectedStage1File is null ? -1 : 0;
-                if (_selectedStage1File is not null)
-                {
-                    BuildMoldPreview(_selectedStage1File);
-                }
+                RefreshMoldPreviewList(1);
             }
             else
             {
                 Stage2MoldComboBox.ItemsSource = _stage2MoldFiles.Select(System.IO.Path.GetFileName).ToList();
                 _selectedStage2File = _stage2MoldFiles.FirstOrDefault();
                 Stage2MoldComboBox.SelectedIndex = _selectedStage2File is null ? -1 : 0;
-                if (_selectedStage2File is not null)
-                {
-                    BuildMoldPreview(_selectedStage2File);
-                }
+                RefreshMoldPreviewList(2);
             }
 
             MoldCountText.Text = $"{_stage1MoldFiles.Count}/{_stage2MoldFiles.Count}";
@@ -1338,6 +1332,26 @@ namespace CADRecognition
             _viewer.FocusHole(row.AbsX, row.AbsY, row.MoldId, targetZoom: 4.0);
             await _viewer.BlinkFocusAsync(row.AbsX, row.AbsY, row.MoldId);
             StatusText.Text = $"已放大定位孔位 #{row.Index}（{row.MoldCode}），角候选={row.IsCornerCandidate}，边缘孔={row.IsEdgeHole}，Top3={row.TopCandidates}";
+        }
+
+        private void RefreshMoldPreviewList(int stageId)
+        {
+            var moldRows = stageId == 1 ? _stage1MoldRows : _stage2MoldRows;
+            moldRows.Clear();
+            var files = stageId == 1 ? _stage1MoldFiles : _stage2MoldFiles;
+            foreach (var file in files)
+            {
+                _ = BuildMoldPreview(file);
+                moldRows.Add(new MoldRow
+                {
+                    MoldPreview = _moldPreviewCache.TryGetValue(file, out var preview) ? preview : null,
+                    MoldCode = $"M{(stageId == 1 ? 1 : 101):D2}",
+                    MoldName = System.IO.Path.GetFileNameWithoutExtension(file),
+                    UsedCount = 0,
+                    MatchType = stageId == 1 ? "台1" : "台2",
+                    Remark = System.IO.Path.GetFileName(file)
+                });
+            }
         }
 
         private ImageSource? BuildMoldPreview(string path)
