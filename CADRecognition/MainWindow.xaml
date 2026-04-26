@@ -44,11 +44,9 @@
 
         <Border Grid.Row="0" Grid.ColumnSpan="3" Background="#2A2A2A" Padding="8" CornerRadius="4">
             <StackPanel Orientation="Horizontal">
-                <Button Content="导入工程图纸" Click="ImportProjectDxf_Click" Margin="0,0,6,0" />
-                <Button Content="导入台1模具" Click="ImportStage1MoldDxf_Click" Margin="0,0,6,0" />
-                <Button Content="导入台2模具" Click="ImportStage2MoldDxf_Click" Margin="0,0,6,0" />
-                <Button Content="一键识别匹配" Click="Recognize_Click" Margin="0,0,12,0" />
-                <Button Content="导出" Click="Export_Click" Margin="0,0,6,0" />
+                <Button Content="导入工程图纸" Click="ImportProjectDxf_Click" Margin="0,0,15,0" />
+                <Button Content="一键识别匹配" Click="Recognize_Click" Margin="0,0,15,0" />
+                <Button Content="导出数据" Click="Export_Click" Margin="0,0,15,0" />
                 <TextBlock Text="板宽：" Foreground="#DDDDDD" VerticalAlignment="Center" Margin="0,0,4,0"/>
                 <TextBox x:Name="BoardWidthTextBox"
                          Width="88"
@@ -108,11 +106,17 @@
 
             <Border Grid.Row="0" Grid.Column="0" Background="#252525" CornerRadius="4" Padding="8" Margin="0,0,4,8" Height="360">
                 <DockPanel>
-                    <TextBlock DockPanel.Dock="Top" Text="台1模具" FontWeight="SemiBold" Foreground="#FFFFFF" Margin="0,0,0,6" />
-                    <StackPanel DockPanel.Dock="Top" Orientation="Vertical" Margin="0,0,0,8">
-                        <TextBlock Text="导入与选择" Foreground="#FFFFFF" VerticalAlignment="Center" Margin="0,0,0,4"/>
-                        <ComboBox x:Name="Stage1MoldComboBox" Height="24" Margin="0,0,0,6"/>
-                        <TextBlock x:Name="Stage1MoldSummaryText" Foreground="#9CDCFE" TextWrapping="Wrap"/>
+                    <Grid DockPanel.Dock="Top" Margin="0,0,0,8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0" Text="台1模具" FontWeight="SemiBold" Foreground="#FFFFFF" VerticalAlignment="Center" />
+                        <Button Grid.Column="1" Content="导入模具" Click="ImportStage1MoldDxf_Click" HorizontalAlignment="Right" />
+                    </Grid>
+                    <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,8">
+                        <TextBlock Text="模具选择" Foreground="#FFFFFF" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                        <ComboBox x:Name="Stage1MoldComboBox" Width="190" Height="24" />
                     </StackPanel>
                     <WrapPanel x:Name="Stage1LegendPanel" DockPanel.Dock="Top" Margin="0,0,0,8"/>
                     <DataGrid x:Name="Stage1MoldGrid"
@@ -142,11 +146,11 @@
                                     </DataTemplate>
                                 </DataGridTemplateColumn.CellTemplate>
                             </DataGridTemplateColumn>
-                            <DataGridTextColumn Binding="{Binding MoldCode}" Header="模具编号" Width="*"/>
-                            <DataGridTextColumn Binding="{Binding MoldName}" Header="模具名称" Width="*"/>
-                            <DataGridTextColumn Binding="{Binding UsedCount}" Header="使用次数" Width="*"/>
-                            <DataGridTextColumn Binding="{Binding MatchType}" Header="匹配类型" Width="*"/>
-                            <DataGridTextColumn Binding="{Binding Remark}" Header="备注" Width="*"/>
+                            <DataGridTextColumn Binding="{Binding MoldCode}" Header="编号" Width="*"/>
+                            <DataGridTextColumn Binding="{Binding MoldName}" Header="名称" Width="*"/>
+                            <DataGridTextColumn Binding="{Binding UsedCount}" Header="次数" Width="*"/>
+                            <DataGridTextColumn Binding="{Binding MatchType}" Header="匹配类型" Width="*" Visibility="Hidden"/>
+                            <DataGridTextColumn Binding="{Binding Remark}" Header="备注" Width="*" Visibility="Hidden"/>
                         </DataGrid.Columns>
                     </DataGrid>
                 </DockPanel>
@@ -154,11 +158,17 @@
 
             <Border Grid.Row="0" Grid.Column="1" Background="#252525" CornerRadius="4" Padding="8" Margin="4,0,0,8" Height="360">
                 <DockPanel>
-                    <TextBlock DockPanel.Dock="Top" Text="台2模具" FontWeight="SemiBold" Foreground="#FFFFFF" Margin="0,0,0,6" />
-                    <StackPanel DockPanel.Dock="Top" Orientation="Vertical" Margin="0,0,0,8">
-                        <TextBlock Text="导入与选择" Foreground="#FFFFFF" VerticalAlignment="Center" Margin="0,0,0,4"/>
-                        <ComboBox x:Name="Stage2MoldComboBox" Height="24" Margin="0,0,0,6"/>
-                        <TextBlock x:Name="Stage2MoldSummaryText" Foreground="#9CDCFE" TextWrapping="Wrap"/>
+                    <Grid DockPanel.Dock="Top" Margin="0,0,0,8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0" Text="台2模具" FontWeight="SemiBold" Foreground="#FFFFFF" VerticalAlignment="Center" />
+                        <Button Grid.Column="1" Content="导入模具" Click="ImportStage2MoldDxf_Click" HorizontalAlignment="Right" />
+                    </Grid>
+                    <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,8">
+                        <TextBlock Text="模具选择" Foreground="#FFFFFF" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                        <ComboBox x:Name="Stage2MoldComboBox" Width="190" Height="24" />
                     </StackPanel>
                     <WrapPanel x:Name="Stage2LegendPanel" DockPanel.Dock="Top" Margin="0,0,0,8"/>
                     <DataGrid x:Name="Stage2MoldGrid"
@@ -188,11 +198,11 @@
                                     </DataTemplate>
                                 </DataGridTemplateColumn.CellTemplate>
                             </DataGridTemplateColumn>
-                            <DataGridTextColumn Binding="{Binding MoldCode}" Header="模具编号" Width="*"/>
-                            <DataGridTextColumn Binding="{Binding MoldName}" Header="模具名称" Width="*"/>
-                            <DataGridTextColumn Binding="{Binding UsedCount}" Header="使用次数" Width="*"/>
-                            <DataGridTextColumn Binding="{Binding MatchType}" Header="匹配类型" Width="*"/>
-                            <DataGridTextColumn Binding="{Binding Remark}" Header="备注" Width="*"/>
+                            <DataGridTextColumn Binding="{Binding MoldCode}" Header="编号" Width="*"/>
+                            <DataGridTextColumn Binding="{Binding MoldName}" Header="名称" Width="*"/>
+                            <DataGridTextColumn Binding="{Binding UsedCount}" Header="次数" Width="*"/>
+                            <DataGridTextColumn Binding="{Binding MatchType}" Header="匹配类型" Width="*" Visibility="Hidden"/>
+                            <DataGridTextColumn Binding="{Binding Remark}" Header="备注" Width="*" Visibility="Hidden"/>
                         </DataGrid.Columns>
                     </DataGrid>
                 </DockPanel>
@@ -227,7 +237,7 @@
                                   ColumnHeaderStyle="{StaticResource HighContrastDataGridHeaderStyle}">
                             <DataGrid.Columns>
                                 <DataGridTextColumn Binding="{Binding Index}" Header="序号" Width="*"/>
-                                <DataGridTextColumn Binding="{Binding HoleType}" Header="孔型" Width="2*"/>
+                                <DataGridTextColumn Binding="{Binding HoleType}" Header="孔型" Width="2*" Visibility="Hidden"/>
                                 <DataGridTextColumn Binding="{Binding MoldCode}" Header="模具" Width="*"/>
                                 <DataGridTextColumn Binding="{Binding PosX}" Header="X" Width="*"/>
                                 <DataGridTextColumn Binding="{Binding PosY}" Header="Y" Width="*"/>
@@ -257,7 +267,7 @@
                                   ColumnHeaderStyle="{StaticResource HighContrastDataGridHeaderStyle}">
                             <DataGrid.Columns>
                                 <DataGridTextColumn Binding="{Binding Index}" Header="序号" Width="*"/>
-                                <DataGridTextColumn Binding="{Binding HoleType}" Header="孔型" Width="2*"/>
+                                <DataGridTextColumn Binding="{Binding HoleType}" Header="孔型" Width="2*" Visibility="Hidden"/>
                                 <DataGridTextColumn Binding="{Binding MoldCode}" Header="模具" Width="*"/>
                                 <DataGridTextColumn Binding="{Binding PosX}" Header="X" Width="*"/>
                                 <DataGridTextColumn Binding="{Binding PosY}" Header="Y" Width="*"/>

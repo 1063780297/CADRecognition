@@ -861,18 +861,20 @@ namespace CADRecognition
                 Stage1MoldComboBox.ItemsSource = _stage1MoldFiles.Select(System.IO.Path.GetFileName).ToList();
                 _selectedStage1File = _stage1MoldFiles.FirstOrDefault();
                 Stage1MoldComboBox.SelectedIndex = _selectedStage1File is null ? -1 : 0;
-                Stage1MoldSummaryText.Text = _stage1MoldFiles.Count == 0
-                    ? "未导入"
-                    : $"已导入 {_stage1MoldFiles.Count} 张，默认：{System.IO.Path.GetFileName(_selectedStage1File!)}";
+                if (_selectedStage1File is not null)
+                {
+                    BuildMoldPreview(_selectedStage1File);
+                }
             }
             else
             {
                 Stage2MoldComboBox.ItemsSource = _stage2MoldFiles.Select(System.IO.Path.GetFileName).ToList();
                 _selectedStage2File = _stage2MoldFiles.FirstOrDefault();
                 Stage2MoldComboBox.SelectedIndex = _selectedStage2File is null ? -1 : 0;
-                Stage2MoldSummaryText.Text = _stage2MoldFiles.Count == 0
-                    ? "未导入"
-                    : $"已导入 {_stage2MoldFiles.Count} 张，默认：{System.IO.Path.GetFileName(_selectedStage2File!)}";
+                if (_selectedStage2File is not null)
+                {
+                    BuildMoldPreview(_selectedStage2File);
+                }
             }
 
             MoldCountText.Text = $"{_stage1MoldFiles.Count}/{_stage2MoldFiles.Count}";
@@ -985,14 +987,18 @@ namespace CADRecognition
                 project.CornerCandidates,
                 project.EdgeCandidates,
                 project.CornerStepPaths,
-                project.ContourPaths);
+                project.ContourPaths,
+                project.Stage1ContourPaths,
+                []);
             var stage2Project = new ProjectProfile(
                 project.OuterRectangle,
                 project.Holes.Where(h => h.Centroid.Y >= splitY).ToList(),
                 project.CornerCandidates,
                 project.EdgeCandidates,
                 project.CornerStepPaths,
-                project.ContourPaths);
+                project.ContourPaths,
+                [],
+                project.Stage2ContourPaths);
 
             _selectedStage1File = ResolveSelectedMoldFile(Stage1MoldComboBox, _stage1MoldFiles);
             _selectedStage2File = ResolveSelectedMoldFile(Stage2MoldComboBox, _stage2MoldFiles);
@@ -1009,8 +1015,8 @@ namespace CADRecognition
             _lastMolds = stage1Molds.Concat(stage2Molds).ToList();
 
             var matcher = new MoldMatcher();
-            var stage1Result = matcher.Match(stage1Project, stage1Molds);
-            var stage2Result = matcher.Match(stage2Project, stage2Molds);
+            var stage1Result = matcher.Match(stage1Project, stage1Molds, isStage1: true);
+            var stage2Result = matcher.Match(stage2Project, stage2Molds, isStage1: false);
             _lastMatchResult = new MatchResult(stage1Result.HoleAssignments.Concat(stage2Result.HoleAssignments).ToList(), stage1Result.GuidePaths ?? stage2Result.GuidePaths);
             RenderStageResult(stage1Result, stage1Molds, isStage1: true);
             RenderStageResult(stage2Result, stage2Molds, isStage1: false);
@@ -2203,6 +2209,37 @@ namespace CADRecognition
             var cornerCandidates = ExtractCornerMissingFeatures(doc, outer);
             var cornerStepPaths = ExtractCornerStepPaths(doc, outer);
             var contourPaths = ExtractContourDifferencePaths(doc, outer);
+            var splitY = outer.MinY + outer.Height * 0.5;
+            var stage1ContourPaths = new List<CornerStepPath>();
+            var stage2ContourPaths = new List<CornerStepPath>();
+            foreach (var path in contourPaths)
+            {
+                if (path.Points is null || path.Points.Count == 0)
+                {
+                    continue;
+                }
+
+                var avgY = path.Points.Average(p => p.Y);
+                var minY = path.Points.Min(p => p.Y);
+                var maxY = path.Points.Max(p => p.Y);
+                var crosses = minY < splitY && maxY >= splitY;
+                if (!crosses)
+                {
+                    (avgY < splitY ? stage1ContourPaths : stage2ContourPaths).Add(path);
+                    continue;
+                }
+
+                var stage1Count = path.Points.Count(p => p.Y < splitY);
+                var stage2Count = path.Points.Count - stage1Count;
+                if (stage1Count >= stage2Count)
+                {
+                    stage1ContourPaths.Add(path);
+                }
+                else
+                {
+                    stage2ContourPaths.Add(path);
+                }
+            }
 
             var maxHoleArea = Math.Max(outer.Area * 0.2, 1.0);
             var innerHoles = holes
@@ -2231,7 +2268,9 @@ namespace CADRecognition
                 cornerCandidates,
                 edgeCandidates,
                 cornerStepPaths,
-                contourPaths);
+                contourPaths,
+                stage1ContourPaths,
+                stage2ContourPaths);
         }
 
         private static IReadOnlyList<CornerStepPath> ExtractCornerStepPaths(DxfDocument doc, RectBounds outer)
@@ -3670,8 +3709,9 @@ namespace CADRecognition
         // 内孔严格匹配阈值（保留严格性，但允许CAD提取误差）
         private const double StrictAreaRatioMin = 0.95;
         private const double StrictAreaRatioMax = 1.05;
+        private const double ImpossibleMatchScoreThreshold = 0.95;
 
-        public MatchResult Match(ProjectProfile project, IReadOnlyList<MoldProfile> molds)
+        public MatchResult Match(ProjectProfile project, IReadOnlyList<MoldProfile> molds, bool isStage1)
         {
             var rows = new List<HoleAssignment>();
             var guidePaths = new List<CornerStepPath>();
@@ -3696,7 +3736,7 @@ namespace CADRecognition
             }
 
             // M01：沿“青色差集线的外偏移路径”做连续冲压。
-            var contourStamps = GenerateContinuousContourStampCenters(project, mold1, guidePaths);
+            var contourStamps = GenerateContinuousContourStampCenters(project, mold1, guidePaths, isStage1);
             foreach (var s in contourStamps)
             {
                 rows.Add(new HoleAssignment(
@@ -3722,46 +3762,53 @@ namespace CADRecognition
                         return features
                             .Where(f => IsShapeFamilyCompatible(hole, f))
                             .Select(f =>
-                        {
-                            var areaRatio = hole.Area / Math.Max(f.Area, 1e-6);
-                            var perimRatio = hole.Perimeter / Math.Max(f.Perimeter, 1e-6);
-                            var signature = SignatureDistance(hole.Signature, f.Signature);
-                            var typeMatch = IsSameShapeType(hole, f);
-
-                            // 宽高顺序无关：用长边/短边比。
-                            var hLong = Math.Max(hole.Width, hole.Height);
-                            var hShort = Math.Max(Math.Min(hole.Width, hole.Height), 1e-6);
-                            var fLong = Math.Max(f.Width, f.Height);
-                            var fShort = Math.Max(Math.Min(f.Width, f.Height), 1e-6);
-                            var longRatio = hLong / Math.Max(fLong, 1e-6);
-                            var shortRatio = hShort / Math.Max(fShort, 1e-6);
-
-                            var strict = typeMatch
-                                && areaRatio >= 0.94 && areaRatio <= 1.06
-                                && perimRatio >= 0.94 && perimRatio <= 1.06
-                                && longRatio >= 0.94 && longRatio <= 1.06
-                                && shortRatio >= 0.94 && shortRatio <= 1.06
-                                && signature <= 0.22;
-
-                            var score = Math.Abs(areaRatio - 1.0)
-                                        + Math.Abs(perimRatio - 1.0)
-                                        + Math.Abs(longRatio - 1.0)
-                                        + Math.Abs(shortRatio - 1.0)
-                                        + signature * 0.5;
-
-                            return new
                             {
-                                MoldId = m.MoldId,
-                                AreaRatio = areaRatio,
-                                PerimRatio = perimRatio,
-                                LongRatio = longRatio,
-                                ShortRatio = shortRatio,
-                                Signature = signature,
-                                TypeMatch = typeMatch,
-                                Strict = strict,
-                                Score = score
-                            };
-                        });
+                                var areaRatio = hole.Area / Math.Max(f.Area, 1e-6);
+                                var perimRatio = hole.Perimeter / Math.Max(f.Perimeter, 1e-6);
+                                var signature = SignatureDistance(hole.Signature, f.Signature);
+                                var typeMatch = IsSameShapeType(hole, f);
+
+                                var hLong = Math.Max(hole.Width, hole.Height);
+                                var hShort = Math.Max(Math.Min(hole.Width, hole.Height), 1e-6);
+                                var fLong = Math.Max(f.Width, f.Height);
+                                var fShort = Math.Max(Math.Min(f.Width, f.Height), 1e-6);
+                                var longRatio = hLong / Math.Max(fLong, 1e-6);
+                                var shortRatio = hShort / Math.Max(fShort, 1e-6);
+
+                                var strict = typeMatch
+                                    && areaRatio >= 0.94 && areaRatio <= 1.06
+                                    && perimRatio >= 0.94 && perimRatio <= 1.06
+                                    && longRatio >= 0.94 && longRatio <= 1.06
+                                    && shortRatio >= 0.94 && shortRatio <= 1.06
+                                    && signature <= 0.22;
+
+                                var score = Math.Abs(areaRatio - 1.0)
+                                            + Math.Abs(perimRatio - 1.0)
+                                            + Math.Abs(longRatio - 1.0)
+                                            + Math.Abs(shortRatio - 1.0)
+                                            + signature * 0.5;
+                                var impossible = !typeMatch
+                                               || areaRatio < 0.45 || areaRatio > 1.8
+                                               || perimRatio < 0.55 || perimRatio > 1.55
+                                               || longRatio < 0.55 || longRatio > 1.55
+                                               || shortRatio < 0.55 || shortRatio > 1.55
+                                               || signature > 0.65
+                                               || score > ImpossibleMatchScoreThreshold;
+
+                                return new
+                                {
+                                    MoldId = m.MoldId,
+                                    AreaRatio = areaRatio,
+                                    PerimRatio = perimRatio,
+                                    LongRatio = longRatio,
+                                    ShortRatio = shortRatio,
+                                    Signature = signature,
+                                    TypeMatch = typeMatch,
+                                    Strict = strict,
+                                    Impossible = impossible,
+                                    Score = score
+                                };
+                            });
                     })
                     .OrderBy(x => x.Score)
                     .ToList();
@@ -3774,11 +3821,16 @@ namespace CADRecognition
                 var strictPass = ranked.Where(x => x.Strict).OrderBy(x => x.Score).ToList();
                 if (strictPass.Count == 0)
                 {
-                    // 兜底：不允许出现 M00。仅在同类族内按几何综合分数最小选一个。
-                    var fallback = ranked
+                    var viable = ranked.Where(x => !x.Impossible).ToList();
+                    if (viable.Count == 0)
+                    {
+                        continue;
+                    }
+
+                    var fallback = viable
                         .Where(x => x.TypeMatch)
                         .OrderBy(x => x.Score)
-                        .FirstOrDefault() ?? ranked.OrderBy(x => x.Score).First();
+                        .FirstOrDefault() ?? viable.OrderBy(x => x.Score).First();
 
                     var debugTop = string.Join(" | ", ranked.Take(3).Select(r =>
                         $"M{r.MoldId:D2}:A={r.AreaRatio:F3},P={r.PerimRatio:F3},L={r.LongRatio:F3},S={r.ShortRatio:F3},Sig={r.Signature:F3},T={r.TypeMatch}"));
@@ -3873,9 +3925,10 @@ namespace CADRecognition
             return Math.Sqrt(sum / keep);
         }
 
-        private static IReadOnlyList<HoleFeature> GenerateContinuousContourStampCenters(ProjectProfile project, MoldProfile mold1, List<CornerStepPath> guidePaths)
+        private static IReadOnlyList<HoleFeature> GenerateContinuousContourStampCenters(ProjectProfile project, MoldProfile mold1, List<CornerStepPath> guidePaths, bool isStage1)
         {
-            if (project.ContourPaths is null || project.ContourPaths.Count == 0)
+            var contourPaths = isStage1 ? project.Stage1ContourPaths : project.Stage2ContourPaths;
+            if (contourPaths is null || contourPaths.Count == 0)
             {
                 return [];
             }
@@ -3902,7 +3955,7 @@ namespace CADRecognition
             var moldStep = Math.Max(EstimateOutlineStep(outline) * 0.55, 2.5);
             var points = new List<HoleFeature>();
 
-            foreach (var contourPath in project.ContourPaths)
+            foreach (var contourPath in contourPaths)
             {
                 var pts = contourPath.Points;
                 if (pts is null || pts.Count < 2)
@@ -4827,5 +4880,5 @@ namespace CADRecognition
             return result;
         }
     }
-
 }
+

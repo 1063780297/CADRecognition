@@ -8,7 +8,9 @@ namespace CADRecognition
         IReadOnlyList<HoleFeature> CornerCandidates,
         IReadOnlyList<EdgeCandidate> EdgeCandidates,
         IReadOnlyList<CornerStepPath> CornerStepPaths,
-        IReadOnlyList<CornerStepPath> ContourPaths);
+        IReadOnlyList<CornerStepPath> ContourPaths,
+        IReadOnlyList<CornerStepPath> Stage1ContourPaths,
+        IReadOnlyList<CornerStepPath> Stage2ContourPaths);
 
     public sealed record MoldProfile(
         int MoldId,
