@@ -5,6 +5,7 @@ using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Globalization;
 using System.IO;
+using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Windows;
 using System.Windows.Controls;
@@ -51,13 +52,19 @@ namespace CADRecognition
             editor.LoadFile(path);
 
             var image = editor.Image;
-            if (image?.CurrentLayout?.Entities == null || image.CurrentLayout.Entities.Count == 0)
+            if (image is null)
             {
-                throw new InvalidOperationException("DWG 读取成功但未解析出实体，请检查图纸版本或 CADImport 运行库。");
+                throw new InvalidOperationException("DWG 读取失败：CADImport 未返回图像对象。请确认图纸版本和运行库支持。");
+            }
+
+            var entities = ExtractAllImportEntities(image).ToList();
+            if (entities.Count == 0)
+            {
+                throw new InvalidOperationException("DWG 读取成功，但未解析出任何实体。请检查图纸是否包含有效模型空间内容或 CADImport 是否支持该图纸结构。");
             }
 
             var doc = new DxfDocument();
-            foreach (var entity in image.CurrentLayout.Entities.Cast<object>())
+            foreach (var entity in entities)
             {
                 AddImportedEntity(doc, entity);
             }
@@ -70,29 +77,192 @@ namespace CADRecognition
             return doc;
         }
 
+        private sealed class ReferenceComparer : IEqualityComparer<object>
+        {
+            public new bool Equals(object? x, object? y) => ReferenceEquals(x, y);
+            public int GetHashCode(object obj) => RuntimeHelpers.GetHashCode(obj);
+        }
+
+        private static IEnumerable<object> ExtractAllImportEntities(object image)
+        {
+            var seen = new HashSet<object>(new ReferenceComparer());
+            var result = new List<object>();
+
+            void AddRange(IEnumerable<object> source)
+            {
+                foreach (var item in source)
+                {
+                    if (item is null || !seen.Add(item))
+                    {
+                        continue;
+                    }
+
+                    result.Add(item);
+                }
+            }
+
+            var currentLayout = image.GetType().GetProperty("CurrentLayout")?.GetValue(image);
+            if (currentLayout is not null)
+            {
+                AddRange(ExtractLayoutEntities(currentLayout));
+                AddRange(ExtractBlockEntities(currentLayout.GetType().GetProperty("PaperSpaceBlock")?.GetValue(currentLayout)));
+            }
+
+            var layoutsValue = image.GetType().GetProperty("Layouts")?.GetValue(image);
+            if (layoutsValue is System.Collections.IEnumerable enumerable && layoutsValue is not string)
+            {
+                foreach (var layout in enumerable.Cast<object>())
+                {
+                    AddRange(ExtractLayoutEntities(layout));
+                    AddRange(ExtractBlockEntities(layout.GetType().GetProperty("PaperSpaceBlock")?.GetValue(layout)));
+                }
+            }
+
+            var imageLayout = image.GetType().GetProperty("Layout")?.GetValue(image);
+            if (imageLayout is not null)
+            {
+                AddRange(ExtractLayoutEntities(imageLayout));
+                AddRange(ExtractBlockEntities(imageLayout.GetType().GetProperty("PaperSpaceBlock")?.GetValue(imageLayout)));
+            }
+
+            return result;
+        }
+
+        private static IEnumerable<object> ExtractLayoutEntities(object? layout)
+        {
+            if (layout is null)
+            {
+                return Enumerable.Empty<object>();
+            }
+
+            var layoutType = layout.GetType();
+            var entitiesProp = layoutType.GetProperty("Entities") ?? layoutType.GetProperty("EntityList") ?? layoutType.GetProperty("Items");
+            var value = entitiesProp?.GetValue(layout);
+            if (value is null)
+            {
+                var countProp = layoutType.GetProperty("Count");
+                if (countProp?.GetValue(layout) is int count && count > 0)
+                {
+                    var itemProp = layoutType.GetProperty("Item");
+                    if (itemProp is not null)
+                    {
+                        var items = new List<object>();
+                        for (var i = 0; i < count; i++)
+                        {
+                            try
+                            {
+                                var item = itemProp.GetValue(layout, new object[] { i });
+                                if (item is not null)
+                                {
+                                    items.Add(item);
+                                }
+                            }
+                            catch
+                            {
+                            }
+                        }
+
+                        return items;
+                    }
+                }
+
+                return Enumerable.Empty<object>();
+            }
+
+            if (value is System.Collections.IEnumerable enumerable && value is not string)
+            {
+                return enumerable.Cast<object>().Where(x => x is not null);
+            }
+
+            return Enumerable.Empty<object>();
+        }
+
+        private static IEnumerable<object> ExtractBlockEntities(object? block)
+        {
+            if (block is null)
+            {
+                return Enumerable.Empty<object>();
+            }
+
+            var blockType = block.GetType();
+            var entitiesProp = blockType.GetProperty("Entities") ?? blockType.GetProperty("Items");
+            var value = entitiesProp?.GetValue(block);
+            if (value is System.Collections.IEnumerable enumerable && value is not string)
+            {
+                return enumerable.Cast<object>().Where(x => x is not null);
+            }
+
+            return Enumerable.Empty<object>();
+        }
+
         private static void AddImportedEntity(DxfDocument doc, object entity)
         {
             switch (entity)
             {
+                case CADEllipse ellipse:
+                    AddEllipseAsPolyline(doc, ellipse);
+                    break;
+
                 case CADLine line:
-                    doc.Entities.Add(new Line(
-                        new Vector3(line.Point.X, line.Point.Y, 0),
-                        new Vector3(line.Point1.X, line.Point1.Y, 0)));
+                    AddLine(doc, ToPoint(line.Point), ToPoint(line.Point1));
+                    break;
+
+                case CAD2DLine line2D:
+                    AddLine(doc, ToPoint(line2D.StartPoint), ToPoint(line2D.EndPoint));
                     break;
 
                 case CADArc arc:
-                    doc.Entities.Add(CreateArcFromImportedArc(arc));
+                    AddArc(doc, arc);
                     break;
 
                 case CADCircle circle:
-                    doc.Entities.Add(new Circle(
-                        new Vector3(circle.Point.X, circle.Point.Y, 0),
-                        circle.Radius));
+                    AddCircle(doc, circle.Point.X, circle.Point.Y, circle.Radius);
+                    break;
+
+                case CADLWPolyLine lwPoly:
+                    AddPolyline(doc, ExpandCadLwPolyline(lwPoly), IsClosedLike(lwPoly));
+                    break;
+
+                case CADPolyLine polyLine when polyLine.GetType() == typeof(CADPolyLine):
+                    AddPolyline(doc, ExtractPoints(polyLine), IsClosedLike(polyLine));
+                    break;
+
+                case CAD2DPolyline poly2D:
+                    AddPolyline(doc, ExtractPoints(poly2D), IsClosedLike(poly2D));
+                    break;
+
+                case CADInsert insert:
+                    foreach (var nested in ExtractInsertEntities(insert))
+                    {
+                        AddImportedEntity(doc, nested);
+                    }
                     break;
             }
         }
 
-        private static Arc CreateArcFromImportedArc(CADArc arc)
+        private static void AddLine(DxfDocument doc, (double X, double Y) start, (double X, double Y) end)
+        {
+            if (DistanceSquared(start, end) <= 1e-12)
+            {
+                return;
+            }
+
+            doc.Entities.Add(new Line(
+                new Vector3(start.X, start.Y, 0),
+                new Vector3(end.X, end.Y, 0)));
+        }
+
+        private static void AddCircle(DxfDocument doc, double x, double y, double radius)
+        {
+            if (radius <= 0)
+            {
+                return;
+            }
+
+            doc.Entities.Add(new Circle(new Vector3(x, y, 0), radius));
+        }
+
+        private static void AddArc(DxfDocument doc, CADArc arc)
         {
             var center = new Vector3(arc.Point.X, arc.Point.Y, 0);
             var radius = Convert.ToDouble(arc.Radius, CultureInfo.InvariantCulture);
@@ -103,7 +273,8 @@ namespace CADRecognition
 
             if (!startAngle.HasValue || !endAngle.HasValue || radius <= 0)
             {
-                return new Arc(center, Math.Max(radius, 1), 0, 360);
+                AddCircle(doc, center.X, center.Y, Math.Max(radius, 1));
+                return;
             }
 
             var start = NormalizeDeg(startAngle.Value);
@@ -116,10 +287,299 @@ namespace CADRecognition
 
             if (sweep >= 359.999)
             {
-                return new Arc(center, radius, 0, 360);
+                AddCircle(doc, center.X, center.Y, radius);
+                return;
             }
 
-            return new Arc(center, radius, start, start + sweep);
+            doc.Entities.Add(new Arc(center, radius, start, start + sweep));
+        }
+
+        private static void AddEllipseAsPolyline(DxfDocument doc, CADEllipse ellipse)
+        {
+            var pts = SampleEllipse(ellipse, 64);
+            AddPolyline(doc, pts, IsClosedLike(ellipse));
+        }
+
+        private static void AddPolyline(DxfDocument doc, IReadOnlyList<(double X, double Y)> points, bool closed)
+        {
+            if (points.Count < 2)
+            {
+                return;
+            }
+
+            var cleaned = points
+                .Where((p, i) => i == 0 || DistanceSquared(points[i - 1], p) > 1e-12)
+                .ToList();
+            if (cleaned.Count < 2)
+            {
+                return;
+            }
+
+            if (closed && DistanceSquared(cleaned[0], cleaned[^1]) > 1e-12)
+            {
+                cleaned.Add(cleaned[0]);
+            }
+
+            var pl = new Polyline2D();
+            pl.IsClosed = closed;
+            foreach (var p in cleaned)
+            {
+                pl.Vertexes.Add(new Polyline2DVertex(new Vector2(p.X, p.Y)));
+            }
+            doc.Entities.Add(pl);
+        }
+
+        private static (double X, double Y) ToPoint(CAD2DPoint p)
+        {
+            return (p.X, p.Y);
+        }
+
+        private static (double X, double Y) ToPoint(DPoint p)
+        {
+            return (p.X, p.Y);
+        }
+
+        private static (double X, double Y) ToPoint(object p)
+        {
+            if (p is DPoint dp)
+            {
+                return (dp.X, dp.Y);
+            }
+
+            var xProp = p.GetType().GetProperty("X");
+            var yProp = p.GetType().GetProperty("Y");
+            if (xProp?.GetValue(p) is not null && yProp?.GetValue(p) is not null)
+            {
+                return (Convert.ToDouble(xProp.GetValue(p), CultureInfo.InvariantCulture), Convert.ToDouble(yProp.GetValue(p), CultureInfo.InvariantCulture));
+            }
+
+            return (0, 0);
+        }
+
+        private static IReadOnlyList<(double X, double Y)> ExtractPoints(CADLWPolyLine poly)
+        {
+            return ExtractVertices(poly);
+        }
+
+        private static IReadOnlyList<(double X, double Y)> ExtractPoints(CADPolyLine poly)
+        {
+            return ExtractVertices(poly);
+        }
+
+        private static IReadOnlyList<(double X, double Y)> ExtractPoints(CAD2DPolyline poly)
+        {
+            return ExtractVertices(poly);
+        }
+
+        private static IReadOnlyList<(double X, double Y)> ExpandCadLwPolyline(CADLWPolyLine poly)
+        {
+            var vertices = GetCadVertices(poly);
+            if (vertices.Count < 2)
+            {
+                return [];
+            }
+
+            var closed = IsClosedLike(poly);
+            var result = new List<(double X, double Y)>();
+            var segCount = closed ? vertices.Count : vertices.Count - 1;
+
+            for (var i = 0; i < segCount; i++)
+            {
+                var curr = vertices[i];
+                var next = vertices[(i + 1) % vertices.Count];
+                var p0 = ToPoint(curr.Point);
+                var p1 = ToPoint(next.Point);
+                var bulge = curr.Bulge;
+
+                if (result.Count == 0)
+                {
+                    result.Add(p0);
+                }
+                else if (!AreSamePoint(result[^1], p0))
+                {
+                    result.Add(p0);
+                }
+
+                if (Math.Abs(bulge) < 1e-9)
+                {
+                    if (!AreSamePoint(result[^1], p1))
+                    {
+                        result.Add(p1);
+                    }
+                    continue;
+                }
+
+                var arcPts = SampleBulgeArc(p0, p1, bulge, 32);
+                for (var k = 1; k < arcPts.Count; k++)
+                {
+                    if (!AreSamePoint(result[^1], arcPts[k]))
+                    {
+                        result.Add(arcPts[k]);
+                    }
+                }
+            }
+
+            if (closed && result.Count > 1 && !AreSamePoint(result[0], result[^1]))
+            {
+                result.Add(result[0]);
+            }
+
+            return result;
+        }
+
+        private static IReadOnlyList<(double X, double Y)> ExtractVertices(object poly)
+        {
+            var pts = new List<(double X, double Y)>();
+            foreach (var v in GetCadVertices(poly))
+            {
+                pts.Add(ToPoint(v.Point));
+            }
+            return pts;
+        }
+
+        private static List<CADVertex> GetCadVertices(object poly)
+        {
+            var vertsProp = poly.GetType().GetProperty("Vertexes") ?? poly.GetType().GetProperty("Vertices") ?? poly.GetType().GetProperty("Points");
+            if (vertsProp?.GetValue(poly) is not System.Collections.IEnumerable verts)
+            {
+                return [];
+            }
+
+            return verts.Cast<object>()
+                .OfType<CADVertex>()
+                .ToList();
+        }
+
+        private static bool AreSamePoint((double X, double Y) a, (double X, double Y) b)
+        {
+            return Math.Abs(a.X - b.X) <= 1e-9 && Math.Abs(a.Y - b.Y) <= 1e-9;
+        }
+
+        private static bool IsClosedLike(object poly)
+        {
+            var prop = poly.GetType().GetProperty("IsClosed") ?? poly.GetType().GetProperty("Closed");
+            if (prop?.GetValue(poly) is bool b)
+            {
+                return b;
+            }
+
+            var points = poly.GetType().GetProperty("Vertexes")?.GetValue(poly) as System.Collections.IEnumerable;
+            if (points is null)
+            {
+                return false;
+            }
+
+            var list = points.Cast<object>().ToList();
+            if (list.Count < 3)
+            {
+                return false;
+            }
+
+            var first = GetPointFromVertex(list[0]);
+            var last = GetPointFromVertex(list[^1]);
+            return DistanceSquared(first, last) <= 1e-6;
+        }
+
+        private static (double X, double Y) GetPointFromVertex(object vertex)
+        {
+            if (vertex is CADVertex cv)
+            {
+                return ToPoint(cv.Point);
+            }
+
+            var xProp = vertex.GetType().GetProperty("X");
+            var yProp = vertex.GetType().GetProperty("Y");
+            if (xProp?.GetValue(vertex) is not null && yProp?.GetValue(vertex) is not null)
+            {
+                return (Convert.ToDouble(xProp.GetValue(vertex), CultureInfo.InvariantCulture), Convert.ToDouble(yProp.GetValue(vertex), CultureInfo.InvariantCulture));
+            }
+
+            var posProp = vertex.GetType().GetProperty("Position");
+            var pos = posProp?.GetValue(vertex);
+            xProp = pos?.GetType().GetProperty("X");
+            yProp = pos?.GetType().GetProperty("Y");
+            return (Convert.ToDouble(xProp?.GetValue(pos), CultureInfo.InvariantCulture), Convert.ToDouble(yProp?.GetValue(pos), CultureInfo.InvariantCulture));
+        }
+
+        private static IEnumerable<object> ExtractInsertEntities(CADInsert insert)
+        {
+            var items = new List<object>();
+
+            var entitiesProp = insert.GetType().GetProperty("Entities") ?? insert.GetType().GetProperty("Items") ?? insert.GetType().GetProperty("Block")?.PropertyType.GetProperty("Entities");
+            var value = entitiesProp?.GetValue(insert) ?? insert.GetType().GetProperty("Block")?.GetValue(insert)?.GetType().GetProperty("Entities")?.GetValue(insert.GetType().GetProperty("Block")?.GetValue(insert));
+            if (value is System.Collections.IEnumerable enumerable && value is not string)
+            {
+                items.AddRange(enumerable.Cast<object>().Where(x => x is not null));
+            }
+
+            return items;
+        }
+
+        private static IReadOnlyList<(double X, double Y)> SampleEllipse(CADEllipse ellipse, int segments)
+        {
+            var pts = new List<(double X, double Y)>(segments + 1);
+            var center = ToPoint(ellipse.Point);
+            var major = ToPoint(ellipse.RadPt);
+            var rx = Math.Sqrt(major.X * major.X + major.Y * major.Y);
+            var ry = Math.Max(rx * Math.Max(Math.Abs(ellipse.Ratio), 0.1), 1e-6);
+            if (rx <= 1e-9)
+            {
+                rx = Math.Max(Math.Abs(ellipse.Radius), 1e-6);
+            }
+
+            var rot = Math.Atan2(major.Y, major.X);
+            var cosR = Math.Cos(rot);
+            var sinR = Math.Sin(rot);
+
+            for (var i = 0; i <= segments; i++)
+            {
+                var t = (double)i / segments * 2 * Math.PI;
+                var x = rx * Math.Cos(t);
+                var y = ry * Math.Sin(t);
+                pts.Add((center.X + x * cosR - y * sinR, center.Y + x * sinR + y * cosR));
+            }
+            return pts;
+        }
+
+        private static IReadOnlyList<(double X, double Y)> SampleBulgeArc((double X, double Y) p0, (double X, double Y) p1, double bulge, int segments)
+        {
+            var dx = p1.X - p0.X;
+            var dy = p1.Y - p0.Y;
+            var chord = Math.Sqrt(dx * dx + dy * dy);
+            if (chord <= 1e-12)
+            {
+                return [p0, p1];
+            }
+
+            var theta = 4.0 * Math.Atan(bulge);
+            var radius = chord * (1.0 + bulge * bulge) / (4.0 * Math.Abs(bulge));
+            var mx = (p0.X + p1.X) * 0.5;
+            var my = (p0.Y + p1.Y) * 0.5;
+            var nx = -dy / chord;
+            var ny = dx / chord;
+            var halfChord = chord * 0.5;
+            var h = Math.Sqrt(Math.Max(0, radius * radius - halfChord * halfChord));
+            var sign = bulge >= 0 ? 1.0 : -1.0;
+            var cx = mx + sign * nx * h;
+            var cy = my + sign * ny * h;
+
+            var start = Math.Atan2(p0.Y - cy, p0.X - cx);
+            var end = start + theta;
+            var pts = new List<(double X, double Y)>(segments + 1);
+            for (var i = 0; i <= segments; i++)
+            {
+                var t = (double)i / segments;
+                var a = start + (end - start) * t;
+                pts.Add((cx + radius * Math.Cos(a), cy + radius * Math.Sin(a)));
+            }
+            return pts;
+        }
+
+        private static double DistanceSquared((double X, double Y) a, (double X, double Y) b)
+        {
+            var dx = a.X - b.X;
+            var dy = a.Y - b.Y;
+            return dx * dx + dy * dy;
         }
 
         private static double? TryGetArcAngle(object arc, params string[] names)
