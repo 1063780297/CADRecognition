@@ -1005,7 +1005,7 @@ namespace CADRecognition
                 : _stage2MoldFiles.Where(f => string.Equals(f, _selectedStage2File, StringComparison.OrdinalIgnoreCase)).Concat(_stage2MoldFiles.Where(f => !string.Equals(f, _selectedStage2File, StringComparison.OrdinalIgnoreCase))).ToList();
 
             var stage1Molds = stage1Files.Select((f, idx) => DxfAnalyzer.ExtractMold(1 + idx, f)).ToList();
-            var stage2Molds = stage2Files.Select((f, idx) => DxfAnalyzer.ExtractMold(101 + idx, f)).ToList();
+            var stage2Molds = stage2Files.Select((f, idx) => DxfAnalyzer.ExtractMold(1 + idx, f)).ToList();
             _lastMolds = stage1Molds.Concat(stage2Molds).ToList();
 
             var matcher = new MoldMatcher();
@@ -1072,11 +1072,17 @@ namespace CADRecognition
             model.Stage2PunchCount = stage2Rows.Count;
             model.Stage1DiagramCoordinates = stage1Rows.Select(r => new TcpCoordinateRow { X = r.PosX, Y = r.PosY }).ToList();
             model.Stage2DiagramCoordinates = stage2Rows.Select(r => new TcpCoordinateRow { X = r.PosX, Y = r.PosY }).ToList();
-            model.Stage1PositionMoldIds = stage1Rows.Select(r => r.MoldId).ToList();
-            model.Stage2PositionMoldIds = stage2Rows.Select(r => r.MoldId).ToList();
-            model.Stage1PunchMoldIds = stage1Rows.Select(r => r.MoldId).ToList();
-            model.Stage2PunchMoldIds = stage2Rows.Select(r => r.MoldId).ToList();
+            model.Stage1PositionMoldIds = stage1Rows.Select(r => ToStationMoldCode(r.MoldId, "M")).ToList();
+            model.Stage2PositionMoldIds = stage2Rows.Select(r => ToStationMoldCode(r.MoldId, "N")).ToList();
+            model.Stage1PunchMoldIds = stage1Rows.Select(r => ToStationMoldCode(r.MoldId, "M")).ToList();
+            model.Stage2PunchMoldIds = stage2Rows.Select(r => ToStationMoldCode(r.MoldId, "N")).ToList();
             return model;
+        }
+
+        private static string ToStationMoldCode(int moldId, string prefix)
+        {
+            if (moldId <= 0) return string.Empty;
+            return $"{prefix}{moldId:D2}";
         }
 
         private RectBounds GetRecognitionBoundary()
@@ -1124,13 +1130,14 @@ namespace CADRecognition
                 .GroupBy(x => x.MoldId)
                 .ToDictionary(g => g.Key, g => g.Count());
 
+            var moldPrefix = isStage1 ? "M" : "N";
             foreach (var mold in molds.OrderBy(x => x.MoldId))
             {
                 useCounter.TryGetValue(mold.MoldId, out var count);
                 moldRows.Add(new MoldRow
                 {
                     MoldPreview = BuildMoldPreview(mold.FilePath),
-                    MoldCode = $"M{mold.MoldId:D2}",
+                    MoldCode = $"{moldPrefix}{mold.MoldId:D2}",
                     MoldName = System.IO.Path.GetFileNameWithoutExtension(mold.FilePath),
                     UsedCount = count,
                     MatchType = mold.MoldId == 1 ? "角落连续冲压" : "单次冲压",
@@ -1150,7 +1157,7 @@ namespace CADRecognition
                     Index = index++,
                     HoleType = row.Hole.HoleType,
                     MoldId = row.MoldId,
-                    MoldCode = row.MoldId > 0 ? $"M{row.MoldId:D2}" : "未匹配",
+                    MoldCode = row.MoldId > 0 ? $"{(isStage1 ? "M" : "N")}{row.MoldId:D2}" : "未匹配",
                     PosX = Math.Round(row.Hole.Centroid.X - _lastProjectProfile!.OuterRectangle.MinX, 0),
                     PosY = Math.Round(isStage1 ? row.Hole.Centroid.Y - _lastProjectProfile!.OuterRectangle.MinY : row.Hole.Centroid.Y - (_lastProjectProfile!.OuterRectangle.MinY + ReadBoardWidth()), 0),
                     AbsX = row.Hole.Centroid.X,
@@ -1165,7 +1172,7 @@ namespace CADRecognition
             }
         }
 
-        private void RenderLegend(IReadOnlyList<MoldProfile> molds)
+        private void RenderLegend(IReadOnlyList<MoldProfile> molds, bool isStage1)
         {
             Stage1LegendPanel.Children.Clear();
             Stage2LegendPanel.Children.Clear();
@@ -1191,9 +1198,10 @@ namespace CADRecognition
                     Margin = new Thickness(0, 0, 6, 0),
                     CornerRadius = new CornerRadius(2)
                 });
+                var legendPrefix = isStage1 ? "M" : "N";
                 panel.Children.Add(new TextBlock
                 {
-                    Text = $"M{mold.MoldId:D2}",
+                    Text = $"{legendPrefix}{mold.MoldId:D2}",
                     Foreground = WpfBrushes.White,
                     FontSize = 9,
                     VerticalAlignment = VerticalAlignment.Center
@@ -1283,17 +1291,17 @@ namespace CADRecognition
 
                 if (withAnnotation && _lastMatchResult is not null)
                 {
-                    _viewer.RenderAnnotations(_lastMatchResult.HoleAssignments, _lastMolds);
+                    _viewer.RenderAnnotations(_lastMatchResult.HoleAssignments, _lastMolds, _lastProjectProfile.OuterRectangle.MinY + _boardWidth);
                 }
                 else
                 {
-                    _viewer.RenderAnnotations([], []);
+                    _viewer.RenderAnnotations([], [], null);
                 }
             }
             else
             {
                 _viewer.RenderCornerContours(null, null, null, null, 0, null);
-                _viewer.RenderAnnotations([], []);
+                _viewer.RenderAnnotations([], [], null);
             }
             PreviewHintText.Visibility = Visibility.Collapsed;
         }
@@ -1315,7 +1323,7 @@ namespace CADRecognition
 
         private void PositionGrid_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
         {
-            if (PositionGrid.SelectedItem is not PositionRow row)
+            if (sender is not System.Windows.Controls.DataGrid grid || grid.SelectedItem is not PositionRow row)
             {
                 return;
             }
@@ -1325,7 +1333,7 @@ namespace CADRecognition
 
         private async void PositionGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e)
         {
-            if (PositionGrid.SelectedItem is not PositionRow row)
+            if (sender is not System.Windows.Controls.DataGrid grid || grid.SelectedItem is not PositionRow row)
             {
                 return;
             }
@@ -1345,7 +1353,7 @@ namespace CADRecognition
                 moldRows.Add(new MoldRow
                 {
                     MoldPreview = _moldPreviewCache.TryGetValue(file, out var preview) ? preview : null,
-                    MoldCode = $"M{(stageId == 1 ? 1 : 101):D2}",
+                    MoldCode = stageId == 1 ? "M01" : "N01",
                     MoldName = System.IO.Path.GetFileNameWithoutExtension(file),
                     UsedCount = 0,
                     MatchType = stageId == 1 ? "台1" : "台2",
@@ -1555,11 +1563,13 @@ namespace CADRecognition
             ResetView();
         }
 
-        public void RenderAnnotations(IReadOnlyList<HoleAssignment> assignments, IReadOnlyList<MoldProfile> molds)
+        public void RenderAnnotations(IReadOnlyList<HoleAssignment> assignments, IReadOnlyList<MoldProfile> molds, double? splitY)
         {
             _markCanvas.Children.Clear();
             _focusRing = null;
-            var moldMap = molds.ToDictionary(m => m.MoldId, m => m);
+            var moldMap = molds
+                .GroupBy(m => m.MoldId)
+                .ToDictionary(g => g.Key, g => g.First());
 
             foreach (var ass in assignments)
             {
@@ -1630,13 +1640,14 @@ namespace CADRecognition
                     _markCanvas.Children.Add(mark);
                 }
 
-                var shouldShowLabel = !_compactMode && ass.MoldId != 1;
+                var shouldShowLabel = !_compactMode && ass.MoldId > 0;
 
                 if (shouldShowLabel)
                 {
+                    var prefix = splitY.HasValue && ass.Hole.Centroid.Y >= splitY.Value ? "N" : "M";
                     var text = new TextBlock
                     {
-                        Text = $"M{ass.MoldId:D2}",
+                        Text = $"{prefix}{ass.MoldId:D2}",
                         Foreground = brush,
                         FontWeight = FontWeights.SemiBold,
                         FontSize = 7
@@ -3868,7 +3879,7 @@ namespace CADRecognition
                     "单次冲压",
                     IsAnyCornerZone(hole, project.OuterRectangle),
                     IsNearOuterEdge(hole, project.OuterRectangle),
-                    string.Join(" | ", strictPass.Take(3).Select(r => $"M{r.MoldId:D2}:{r.Score:F3}")),
+                    string.Join(" | ", strictPass.Take(3).Select(r => $"{(isStage1 ? "M" : "N")}{r.MoldId:D2}:{r.Score:F3}")),
                     $"A={pick.AreaRatio:F3},P={pick.PerimRatio:F3}"));
             }
 
@@ -4720,8 +4731,9 @@ namespace CADRecognition
             return 0.12 * dw + 0.12 * dh + 0.16 * da + 0.1 * dp + 0.15 * dr + 0.1 * ds;
         }
 
-        private static string BuildTopCandidates(HoleFeature hole, IEnumerable<MoldProfile> molds, RectBounds rect, int topN)
+        private static string BuildTopCandidates(HoleFeature hole, IEnumerable<MoldProfile> molds, RectBounds rect, int topN, bool isStage1)
         {
+            var prefix = isStage1 ? "M" : "N";
             var tops = molds
                 .Select(m => new
                 {
@@ -4730,12 +4742,13 @@ namespace CADRecognition
                 })
                 .OrderBy(x => x.Score)
                 .Take(topN)
-                .Select(x => $"M{x.MoldId:D2}:{x.Score:F3}");
+                .Select(x => $"{prefix}{x.MoldId:D2}:{x.Score:F3}");
             return string.Join(" | ", tops);
         }
 
-        private static string BuildTopCandidatesByAreaRatio(HoleFeature hole, IEnumerable<MoldProfile> molds, int topN)
+        private static string BuildTopCandidatesByAreaRatio(HoleFeature hole, IEnumerable<MoldProfile> molds, int topN, bool isStage1)
         {
+            var prefix = isStage1 ? "M" : "N";
             var tops = molds
                 .SelectMany(m =>
                 {
@@ -4750,7 +4763,7 @@ namespace CADRecognition
                 .OrderBy(x => Math.Abs(x.AreaRatio - 1.0))
                 .ThenBy(x => x.Signature)
                 .Take(topN)
-                .Select(x => $"M{x.MoldId:D2}:{x.AreaRatio:F3}");
+                .Select(x => $"{prefix}{x.MoldId:D2}:{x.AreaRatio:F3}");
             return string.Join(" | ", tops);
         }
 

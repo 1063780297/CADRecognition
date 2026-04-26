@@ -24,11 +24,11 @@ namespace CADRecognition
         public double Spare3 { get; set; }
         public int Spare4 { get; set; }
         public List<TcpCoordinateRow> Stage1DiagramCoordinates { get; set; } = [];
-        public List<int> Stage1PositionMoldIds { get; set; } = [];
-        public List<int> Stage1PunchMoldIds { get; set; } = [];
+        public List<string> Stage1PositionMoldIds { get; set; } = [];
+        public List<string> Stage1PunchMoldIds { get; set; } = [];
         public List<TcpCoordinateRow> Stage2DiagramCoordinates { get; set; } = [];
-        public List<int> Stage2PositionMoldIds { get; set; } = [];
-        public List<int> Stage2PunchMoldIds { get; set; } = [];
+        public List<string> Stage2PositionMoldIds { get; set; } = [];
+        public List<string> Stage2PunchMoldIds { get; set; } = [];
         public string CustomContent { get; set; } = string.Empty;
     }
 

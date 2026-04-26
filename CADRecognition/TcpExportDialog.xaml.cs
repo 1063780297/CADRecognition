@@ -98,13 +98,13 @@ namespace CADRecognition
         {
             _stage1Rows.Clear();
             _stage2Rows.Clear();
-            foreach (var row in BuildStageRows(Model.Stage1DiagramCoordinates, Model.Stage1PositionMoldIds, Model.Stage1PunchMoldIds)) _stage1Rows.Add(row);
-            foreach (var row in BuildStageRows(Model.Stage2DiagramCoordinates, Model.Stage2PositionMoldIds, Model.Stage2PunchMoldIds)) _stage2Rows.Add(row);
+            foreach (var row in BuildStageRows(Model.Stage1DiagramCoordinates, Model.Stage1PositionMoldIds, Model.Stage1PunchMoldIds, "M")) _stage1Rows.Add(row);
+            foreach (var row in BuildStageRows(Model.Stage2DiagramCoordinates, Model.Stage2PositionMoldIds, Model.Stage2PunchMoldIds, "N")) _stage2Rows.Add(row);
             Stage1Grid.ItemsSource = _stage1Rows;
             Stage2Grid.ItemsSource = _stage2Rows;
         }
 
-        private static ObservableCollection<TcpGridRow> BuildStageRows(IReadOnlyList<TcpCoordinateRow> coords, IReadOnlyList<int> pos, IReadOnlyList<int> punch)
+        private static ObservableCollection<TcpGridRow> BuildStageRows(IReadOnlyList<TcpCoordinateRow> coords, IReadOnlyList<string> pos, IReadOnlyList<string> punch, string stagePrefix)
         {
             var count = Math.Max(coords.Count, Math.Max(pos.Count, punch.Count));
             var result = new ObservableCollection<TcpGridRow>();
@@ -115,8 +115,8 @@ namespace CADRecognition
                     RowIndex = i + 1,
                     X = i < coords.Count ? coords[i].X.ToString("0.###") : string.Empty,
                     Y = i < coords.Count ? coords[i].Y.ToString("0.###") : string.Empty,
-                    PositionMoldId = i < pos.Count ? pos[i].ToString() : string.Empty,
-                    PunchMoldId = i < punch.Count ? punch[i].ToString() : string.Empty
+                    PositionMoldId = i < pos.Count ? MapMoldId(pos[i], stagePrefix) : string.Empty,
+                    PunchMoldId = i < punch.Count ? MapMoldId(punch[i], stagePrefix) : string.Empty
                 });
             }
             return result;
@@ -188,6 +188,14 @@ namespace CADRecognition
             _customContentStore.Values[key] = value?.Trim() ?? string.Empty;
         }
 
+        private static string MapMoldId(string? value, string stagePrefix)
+        {
+            var text = value?.Trim();
+            if (string.IsNullOrWhiteSpace(text)) return string.Empty;
+            if (int.TryParse(text, out var number)) return $"{stagePrefix}{number}";
+            return text;
+        }
+
         private static TcpCustomContentStore LoadCustomContentStore(string filePath)
         {
             try
@@ -244,6 +252,14 @@ namespace CADRecognition
             }
         }
 
+        private void SyncStageMoldIds()
+        {
+            Model.Stage1PositionMoldIds = _stage1Rows.Select(row => MapMoldId(row.PositionMoldId, "M")).ToList();
+            Model.Stage1PunchMoldIds = _stage1Rows.Select(row => MapMoldId(row.PunchMoldId, "M")).ToList();
+            Model.Stage2PositionMoldIds = _stage2Rows.Select(row => MapMoldId(row.PositionMoldId, "N")).ToList();
+            Model.Stage2PunchMoldIds = _stage2Rows.Select(row => MapMoldId(row.PunchMoldId, "N")).ToList();
+        }
+
         private void OnFieldChanged()
         {
             UpdateModelFromRows();
@@ -254,6 +270,7 @@ namespace CADRecognition
         {
             Model.ProgramName = ProgramNameTextBox.Text?.Trim() ?? string.Empty;
             Model.ProgramNo = ProgramNameTextBox.Text?.Trim() ?? string.Empty;
+            SyncStageMoldIds();
             Model.LeftRightDoor = ParseInt(LeftRightDoorTextBox.Text);
             Model.Material = ParseInt(MaterialTextBox.Text);
             Model.Type = ParseInt(TypeTextBox.Text);
@@ -273,7 +290,22 @@ namespace CADRecognition
             SaveCustomContentStore();
         }
 
-        private async void SendTcp_Click(object sender, RoutedEventArgs e)
+        private async void SendStage1Tcp_Click(object sender, RoutedEventArgs e)
+        {
+            await SendTcpAsync(BuildExportModel(sendStage1: true, sendStage2: false));
+        }
+
+        private async void SendStage2Tcp_Click(object sender, RoutedEventArgs e)
+        {
+            await SendTcpAsync(BuildExportModel(sendStage1: false, sendStage2: true));
+        }
+
+        private async void SendAllTcp_Click(object sender, RoutedEventArgs e)
+        {
+            await SendTcpAsync(BuildExportModel(sendStage1: true, sendStage2: true));
+        }
+
+        private async System.Threading.Tasks.Task SendTcpAsync(object payload)
         {
             try
             {
@@ -286,13 +318,53 @@ namespace CADRecognition
                 }
 
                 SaveTcpHistory(host ?? string.Empty, portText ?? string.Empty);
-                await _tcpCommService.SendJsonAsync(host ?? string.Empty, port, Model);
+                await _tcpCommService.SendJsonAsync(host ?? string.Empty, port, payload);
                 StatusTextBlock.Text = $"TCP 已发送到 {host}:{port}。";
             }
             catch (Exception ex)
             {
                 StatusTextBlock.Text = $"TCP 发送失败：{ex.Message}";
             }
+        }
+
+        private TcpExportModel BuildExportModel(bool sendStage1, bool sendStage2)
+        {
+            return new TcpExportModel
+            {
+                ProgramName = Model.ProgramName,
+                ProgramNo = Model.ProgramNo,
+                LeftRightDoor = Model.LeftRightDoor,
+                Material = Model.Material,
+                Type = Model.Type,
+                FormingLength = Model.FormingLength,
+                FormingWidth = Model.FormingWidth,
+                FormingThickness = Model.FormingThickness,
+                Stage1PunchCount = sendStage1 ? Model.Stage1PunchCount : 0,
+                Stage2PunchCount = sendStage2 ? Model.Stage2PunchCount : 0,
+                Spare2 = Model.Spare2,
+                PlateLength = Model.PlateLength,
+                PlateWidth = Model.PlateWidth,
+                PlateThickness = Model.PlateThickness,
+                Spare3 = Model.Spare3,
+                Spare4 = Model.Spare4,
+                Stage1DiagramCoordinates = sendStage1 ? CloneCoordinates(Model.Stage1DiagramCoordinates) : [],
+                Stage1PositionMoldIds = sendStage1 ? CloneStrings(Model.Stage1PositionMoldIds) : [],
+                Stage1PunchMoldIds = sendStage1 ? CloneStrings(Model.Stage1PunchMoldIds) : [],
+                Stage2DiagramCoordinates = sendStage2 ? CloneCoordinates(Model.Stage2DiagramCoordinates) : [],
+                Stage2PositionMoldIds = sendStage2 ? CloneStrings(Model.Stage2PositionMoldIds) : [],
+                Stage2PunchMoldIds = sendStage2 ? CloneStrings(Model.Stage2PunchMoldIds) : [],
+                CustomContent = Model.CustomContent
+            };
+        }
+
+        private static List<TcpCoordinateRow> CloneCoordinates(IReadOnlyList<TcpCoordinateRow> source)
+        {
+            return source.Select(item => new TcpCoordinateRow { X = item.X, Y = item.Y }).ToList();
+        }
+
+        private static List<string> CloneStrings(IReadOnlyList<string> source)
+        {
+            return source.ToList();
         }
 
         private static int ParseInt(string? text) => int.TryParse(text, out var value) ? value : 0;

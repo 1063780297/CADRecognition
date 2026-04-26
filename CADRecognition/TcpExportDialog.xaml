@@ -225,6 +225,7 @@
                     <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
                 <TextBlock x:Name="StatusTextBlock" VerticalAlignment="Center" HorizontalAlignment="Center" FontWeight="Bold" Grid.Column="0" Text="数据准备就绪"/>
                 <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" Margin="8,0,0,0">
@@ -236,9 +237,11 @@
                     <ComboBox x:Name="TcpPortComboBox" Width="54" Height="22" IsEditable="True"/>
                 </StackPanel>
                 <Button Grid.Column="5" Content="调用" Width="80" Margin="4,2" Click="Export_Click" Visibility="Hidden"/>
-                <Button Grid.Column="6" Content="发送" Width="80" Margin="4,2" Click="SendTcp_Click"/>
-                <Button Grid.Column="7" Content="取消" Width="80" Margin="4,2" Click="Cancel_Click"/>
-                <Button Grid.Column="8" Content="关闭" Width="80" Margin="4,2" Click="Close_Click"/>
+                <Button Grid.Column="6" Content="台1数据发送" Width="100" Margin="4,2" Click="SendStage1Tcp_Click"/>
+                <Button Grid.Column="7" Content="台2数据发送" Width="100" Margin="4,2" Click="SendStage2Tcp_Click"/>
+                <Button Grid.Column="8" Content="数据发送" Width="90" Margin="4,2" Click="SendAllTcp_Click"/>
+                <Button Grid.Column="9" Content="取消" Width="80" Margin="4,2" Click="Cancel_Click"/>
+                <Button Grid.Column="10" Content="关闭" Width="80" Margin="4,2" Click="Close_Click"/>
             </Grid>
         </Border>
     </Grid>
