@@ -20,6 +20,7 @@ namespace CADRecognition
         public int Spare2 { get; set; }
         public double PlateLength { get; set; }
         public double PlateWidth { get; set; }
+        public double PlateWidth2 { get; set; }
         public double PlateThickness { get; set; }
         public double Spare3 { get; set; }
         public int Spare4 { get; set; }

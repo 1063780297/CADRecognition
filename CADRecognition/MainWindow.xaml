@@ -27,6 +27,11 @@
             <Setter Property="FontWeight" Value="SemiBold"/>
             <Setter Property="Background" Value="#1C2F46"/>
             <Setter Property="Padding" Value="2"/>
+            <Style.Resources>
+                <Style TargetType="TextBlock">
+                    <Setter Property="Foreground" Value="#FFFFFF"/>
+                </Style>
+            </Style.Resources>
         </Style>
     </Window.Resources>
 

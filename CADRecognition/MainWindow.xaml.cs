@@ -25,6 +25,7 @@ using WpfLine = System.Windows.Shapes.Line;
 using WpfRectangle = System.Windows.Shapes.Rectangle;
 using CADImport;
 using Path = System.Windows.Shapes.Path;
+using Brushes = System.Windows.Media.Brushes;
 
 namespace CADRecognition
 {
@@ -1050,8 +1051,8 @@ namespace CADRecognition
             model.FormingThickness = 0;
             var boardWidth = ReadBoardWidth();
             model.PlateLength = _lastProjectProfile?.OuterRectangle.Width ?? 0;
-            model.PlateWidth = boardWidth > 0
-                ? boardWidth
+            model.PlateWidth = _lastProjectProfile?.OuterRectangle.Height ?? 0;
+            model.PlateWidth2 = boardWidth > 0 ? boardWidth
                 : (_lastProjectProfile?.OuterRectangle.Height ?? 0);
             model.PlateThickness = 0;
             model.Spare2 = 0;
@@ -1059,7 +1060,7 @@ namespace CADRecognition
             model.Spare4 = 0;
             model.CustomContent = string.Empty;
 
-            var boundaryWidth = model.PlateWidth > 0 ? model.PlateWidth : (_lastProjectProfile?.OuterRectangle.Height ?? 0);
+            var boundaryWidth = model.PlateWidth2 > 0 ? model.PlateWidth2 : (_lastProjectProfile?.OuterRectangle.Height ?? 0);
             var stage1Rows = _stage1PositionRows.OrderBy(r => r.PosY).ThenBy(r => r.PosX).ToList();
             var stage2Rows = _stage2PositionRows.OrderBy(r => r.PosY).ThenBy(r => r.PosX).ToList();
             if (stage1Rows.Count == 0 && stage2Rows.Count == 0 && boundaryWidth > 0)
@@ -1159,7 +1160,7 @@ namespace CADRecognition
                     MoldId = row.MoldId,
                     MoldCode = row.MoldId > 0 ? $"{(isStage1 ? "M" : "N")}{row.MoldId:D2}" : "未匹配",
                     PosX = Math.Round(row.Hole.Centroid.X - _lastProjectProfile!.OuterRectangle.MinX, 0),
-                    PosY = Math.Round(isStage1 ? row.Hole.Centroid.Y - _lastProjectProfile!.OuterRectangle.MinY : row.Hole.Centroid.Y - (_lastProjectProfile!.OuterRectangle.MinY + ReadBoardWidth()), 0),
+                    PosY = Math.Round(row.Hole.Centroid.Y - _lastProjectProfile!.OuterRectangle.MinY, 0),
                     AbsX = row.Hole.Centroid.X,
                     AbsY = row.Hole.Centroid.Y,
                     PositionRelation = isStage1 ? "台1区域" : "台2区域",
@@ -1222,58 +1223,45 @@ namespace CADRecognition
         {
             FileTreeView.Items.Clear();
 
-            var root = new TreeViewItem
-            {
-                Header = "图纸列表",
-                IsExpanded = true
-            };
+            var root = CreateFileTreeItem("图纸列表", isExpanded: true);
 
-            var projectNode = new TreeViewItem
-            {
-                Header = "工程图",
-                IsExpanded = true
-            };
+            var projectNode = CreateFileTreeItem("工程图", isExpanded: true);
             if (!string.IsNullOrWhiteSpace(_projectFile))
             {
-                projectNode.Items.Add(new TreeViewItem
-                {
-                    Header = System.IO.Path.GetFileName(_projectFile),
-                    Tag = _projectFile
-                });
+                projectNode.Items.Add(CreateFileTreeItem(System.IO.Path.GetFileName(_projectFile), _projectFile));
             }
 
-            var stage1Node = new TreeViewItem
-            {
-                Header = "台1模具",
-                IsExpanded = true
-            };
+            var stage1Node = CreateFileTreeItem("台1模具", isExpanded: true);
             foreach (var file in _stage1MoldFiles)
             {
-                stage1Node.Items.Add(new TreeViewItem
-                {
-                    Header = System.IO.Path.GetFileName(file),
-                    Tag = file
-                });
+                stage1Node.Items.Add(CreateFileTreeItem(System.IO.Path.GetFileName(file), file));
             }
 
-            var stage2Node = new TreeViewItem
-            {
-                Header = "台2模具",
-                IsExpanded = true
-            };
+            var stage2Node = CreateFileTreeItem("台2模具", isExpanded: true);
             foreach (var file in _stage2MoldFiles)
             {
-                stage2Node.Items.Add(new TreeViewItem
-                {
-                    Header = System.IO.Path.GetFileName(file),
-                    Tag = file
-                });
+                stage2Node.Items.Add(CreateFileTreeItem(System.IO.Path.GetFileName(file), file));
             }
 
             root.Items.Add(projectNode);
             root.Items.Add(stage1Node);
             root.Items.Add(stage2Node);
             FileTreeView.Items.Add(root);
+        }
+
+        private static TreeViewItem CreateFileTreeItem(string text, string? tag = null, bool isExpanded = false)
+        {
+            return new TreeViewItem
+            {
+                Header = new TextBlock
+                {
+                    Text = text,
+                    Foreground = Brushes.White
+                },
+                Tag = tag,
+                IsExpanded = isExpanded,
+                Foreground = Brushes.White
+            };
         }
 
         private void RenderPreview(DxfDocument doc, string? path, bool withAnnotation)
