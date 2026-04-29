@@ -1119,6 +1119,19 @@ namespace CADRecognition
             }
         }
 
+        private static string BuildMoldSizeText(HoleFeature feature)
+        {
+            var width = Math.Round(feature.Width, 0, MidpointRounding.AwayFromZero);
+            var height = Math.Round(feature.Height, 0, MidpointRounding.AwayFromZero);
+            if (MoldMatcher.IsCircleLike(feature))
+            {
+                var dia = Math.Round((feature.Width + feature.Height) / 2.0, 0, MidpointRounding.AwayFromZero);
+                return $"φ{dia:0}";
+            }
+
+            return $"{width:0}*{height:0}";
+        }
+
         private void RenderStageResult(MatchResult result, IReadOnlyList<MoldProfile> molds, bool isStage1)
         {
             var moldRows = isStage1 ? _stage1MoldRows : _stage2MoldRows;
@@ -1139,7 +1152,7 @@ namespace CADRecognition
                 {
                     MoldPreview = BuildMoldPreview(mold.FilePath),
                     MoldCode = $"{moldPrefix}{mold.MoldId:D2}",
-                    MoldName = System.IO.Path.GetFileNameWithoutExtension(mold.FilePath),
+                    MoldName = BuildMoldSizeText(mold.Feature),
                     UsedCount = count,
                     MatchType = mold.MoldId == 1 ? "角落连续冲压" : "单次冲压",
                     Remark = mold.MoldId == 1 ? "仅四角孔洞" : "普通孔洞"
@@ -1335,18 +1348,28 @@ namespace CADRecognition
             var moldRows = stageId == 1 ? _stage1MoldRows : _stage2MoldRows;
             moldRows.Clear();
             var files = stageId == 1 ? _stage1MoldFiles : _stage2MoldFiles;
+            var prefix = stageId == 1 ? "M" : "N";
+            var index = 1;
             foreach (var file in files)
             {
                 _ = BuildMoldPreview(file);
+                var moldName = System.IO.Path.GetFileNameWithoutExtension(file);
+                if (_documentCache.TryGetValue(file, out var doc))
+                {
+                    var feature = DxfAnalyzer.ExtractMold(0, file).Feature;
+                    moldName = BuildMoldSizeText(feature);
+                }
+
                 moldRows.Add(new MoldRow
                 {
                     MoldPreview = _moldPreviewCache.TryGetValue(file, out var preview) ? preview : null,
-                    MoldCode = stageId == 1 ? "M01" : "N01",
-                    MoldName = System.IO.Path.GetFileNameWithoutExtension(file),
+                    MoldCode = $"{prefix}{index:D2}",
+                    MoldName = moldName,
                     UsedCount = 0,
                     MatchType = stageId == 1 ? "台1" : "台2",
                     Remark = System.IO.Path.GetFileName(file)
                 });
+                index++;
             }
         }
 
@@ -4802,7 +4825,7 @@ namespace CADRecognition
             return true;
         }
 
-        private static bool IsCircleLike(HoleFeature f)
+        public  static bool IsCircleLike(HoleFeature f)
         {
             if (f.HoleType.ContainsIgnoreCase("Circle"))
             {

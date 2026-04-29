@@ -152,7 +152,7 @@
                                 </DataGridTemplateColumn.CellTemplate>
                             </DataGridTemplateColumn>
                             <DataGridTextColumn Binding="{Binding MoldCode}" Header="编号" Width="*"/>
-                            <DataGridTextColumn Binding="{Binding MoldName}" Header="名称" Width="*"/>
+                            <DataGridTextColumn Binding="{Binding MoldName}" Header="尺寸" Width="*"/>
                             <DataGridTextColumn Binding="{Binding UsedCount}" Header="次数" Width="*"/>
                             <DataGridTextColumn Binding="{Binding MatchType}" Header="匹配类型" Width="*" Visibility="Hidden"/>
                             <DataGridTextColumn Binding="{Binding Remark}" Header="备注" Width="*" Visibility="Hidden"/>
@@ -204,7 +204,7 @@
                                 </DataGridTemplateColumn.CellTemplate>
                             </DataGridTemplateColumn>
                             <DataGridTextColumn Binding="{Binding MoldCode}" Header="编号" Width="*"/>
-                            <DataGridTextColumn Binding="{Binding MoldName}" Header="名称" Width="*"/>
+                            <DataGridTextColumn Binding="{Binding MoldName}" Header="尺寸" Width="*"/>
                             <DataGridTextColumn Binding="{Binding UsedCount}" Header="次数" Width="*"/>
                             <DataGridTextColumn Binding="{Binding MatchType}" Header="匹配类型" Width="*" Visibility="Hidden"/>
                             <DataGridTextColumn Binding="{Binding Remark}" Header="备注" Width="*" Visibility="Hidden"/>
