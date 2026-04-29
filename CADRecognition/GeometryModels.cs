@@ -8,7 +8,9 @@ namespace CADRecognition
         IReadOnlyList<HoleFeature> CornerCandidates,
         IReadOnlyList<EdgeCandidate> EdgeCandidates,
         IReadOnlyList<CornerStepPath> CornerStepPaths,
-        IReadOnlyList<CornerStepPath> ContourPaths);
+        IReadOnlyList<CornerStepPath> ContourPaths,
+        IReadOnlyList<CornerStepPath> Stage1ContourPaths,
+        IReadOnlyList<CornerStepPath> Stage2ContourPaths);
 
     public sealed record MoldProfile(
         int MoldId,
@@ -85,6 +87,8 @@ namespace CADRecognition
         public string MoldCode { get; set; } = string.Empty;
         public double PosX { get; set; }
         public double PosY { get; set; }
+        public double AbsX { get; set; }
+        public double AbsY { get; set; }
         public string PositionRelation { get; set; } = string.Empty;
         public string IsCornerCandidate { get; set; } = string.Empty;
         public string IsEdgeHole { get; set; } = string.Empty;

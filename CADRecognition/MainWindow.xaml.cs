@@ -5,10 +5,12 @@ using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Globalization;
 using System.IO;
+using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
+using ComboBox = System.Windows.Controls.ComboBox;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
@@ -22,6 +24,8 @@ using WpfEllipse = System.Windows.Shapes.Ellipse;
 using WpfLine = System.Windows.Shapes.Line;
 using WpfRectangle = System.Windows.Shapes.Rectangle;
 using CADImport;
+using Path = System.Windows.Shapes.Path;
+using Brushes = System.Windows.Media.Brushes;
 
 namespace CADRecognition
 {
@@ -39,12 +43,9 @@ namespace CADRecognition
         public static DxfDocument Load(string path)
         {
             var ext = System.IO.Path.GetExtension(path);
-            if (string.Equals(ext, ".dwg", StringComparison.OrdinalIgnoreCase))
-            {
-                return LoadDwg(path);
-            }
-
-            return DxfDocument.Load(path);
+            return string.Equals(ext, ".dwg", StringComparison.OrdinalIgnoreCase)
+                ? LoadDwg(path)
+                : DxfDocument.Load(path);
         }
 
         private static DxfDocument LoadDwg(string path)
@@ -53,45 +54,601 @@ namespace CADRecognition
             editor.LoadFile(path);
 
             var image = editor.Image;
-            if (image?.CurrentLayout?.Entities == null || image.CurrentLayout.Entities.Count == 0)
+            if (image is null)
             {
-                throw new InvalidOperationException("DWG 读取成功但未解析出实体，请检查图纸版本或CADImport运行库。");
+                throw new InvalidOperationException("DWG 读取失败：CADImport 未返回图像对象。请确认图纸版本和运行库支持。");
+            }
+
+            var entities = ExtractAllImportEntities(image).ToList();
+            if (entities.Count == 0)
+            {
+                throw new InvalidOperationException("DWG 读取成功，但未解析出任何实体。请检查图纸是否包含有效模型空间内容或 CADImport 是否支持该图纸结构。");
             }
 
             var doc = new DxfDocument();
-
-            foreach (var e in image.CurrentLayout.Entities.Cast<object>())
+            foreach (var entity in entities)
             {
-                if (e is CADLine ln)
-                {
-                    doc.Entities.Add(new Line(
-                        new Vector3(ln.Point.X, ln.Point.Y, 0),
-                        new Vector3(ln.Point1.X, ln.Point1.Y, 0)));
-                    continue;
-                }
+                AddImportedEntity(doc, entity);
+            }
 
-                if (e is CADCircle cc)
-                {
-                    doc.Entities.Add(new Circle(
-                        new Vector3(cc.Point.X, cc.Point.Y, 0),
-                        cc.Radius));
-                    continue;
-                }
-
-                if (e is CADArc ca)
-                {
-                    var start = NormalizeDeg(ca.StartParam * 180.0 / Math.PI);
-                    var end = NormalizeDeg(ca.EndParam * 180.0 / Math.PI);
-                    doc.Entities.Add(new Arc(
-                        new Vector3(ca.Point.X, ca.Point.Y, 0),
-                        ca.Radius,
-                        start,
-                        end));
-                    continue;
-                }
+            if (doc.Entities == null)
+            {
+                throw new InvalidOperationException("DWG 已打开，但未转换出可绘制的 DXF 几何实体。请检查图纸内容或 CADImport 支持范围。");
             }
 
             return doc;
+        }
+
+        private sealed class ReferenceComparer : IEqualityComparer<object>
+        {
+            public new bool Equals(object? x, object? y) => ReferenceEquals(x, y);
+            public int GetHashCode(object obj) => RuntimeHelpers.GetHashCode(obj);
+        }
+
+        private static IEnumerable<object> ExtractAllImportEntities(object image)
+        {
+            var seen = new HashSet<object>(new ReferenceComparer());
+            var result = new List<object>();
+
+            void AddRange(IEnumerable<object> source)
+            {
+                foreach (var item in source)
+                {
+                    if (item is null || !seen.Add(item))
+                    {
+                        continue;
+                    }
+
+                    result.Add(item);
+                }
+            }
+
+            var currentLayout = image.GetType().GetProperty("CurrentLayout")?.GetValue(image);
+            if (currentLayout is not null)
+            {
+                AddRange(ExtractLayoutEntities(currentLayout));
+                AddRange(ExtractBlockEntities(currentLayout.GetType().GetProperty("PaperSpaceBlock")?.GetValue(currentLayout)));
+            }
+
+            var layoutsValue = image.GetType().GetProperty("Layouts")?.GetValue(image);
+            if (layoutsValue is System.Collections.IEnumerable enumerable && layoutsValue is not string)
+            {
+                foreach (var layout in enumerable.Cast<object>())
+                {
+                    AddRange(ExtractLayoutEntities(layout));
+                    AddRange(ExtractBlockEntities(layout.GetType().GetProperty("PaperSpaceBlock")?.GetValue(layout)));
+                }
+            }
+
+            var imageLayout = image.GetType().GetProperty("Layout")?.GetValue(image);
+            if (imageLayout is not null)
+            {
+                AddRange(ExtractLayoutEntities(imageLayout));
+                AddRange(ExtractBlockEntities(imageLayout.GetType().GetProperty("PaperSpaceBlock")?.GetValue(imageLayout)));
+            }
+
+            return result;
+        }
+
+        private static IEnumerable<object> ExtractLayoutEntities(object? layout)
+        {
+            if (layout is null)
+            {
+                return Enumerable.Empty<object>();
+            }
+
+            var layoutType = layout.GetType();
+            var entitiesProp = layoutType.GetProperty("Entities") ?? layoutType.GetProperty("EntityList") ?? layoutType.GetProperty("Items");
+            var value = entitiesProp?.GetValue(layout);
+            if (value is null)
+            {
+                var countProp = layoutType.GetProperty("Count");
+                if (countProp?.GetValue(layout) is int count && count > 0)
+                {
+                    var itemProp = layoutType.GetProperty("Item");
+                    if (itemProp is not null)
+                    {
+                        var items = new List<object>();
+                        for (var i = 0; i < count; i++)
+                        {
+                            try
+                            {
+                                var item = itemProp.GetValue(layout, new object[] { i });
+                                if (item is not null)
+                                {
+                                    items.Add(item);
+                                }
+                            }
+                            catch
+                            {
+                            }
+                        }
+
+                        return items;
+                    }
+                }
+
+                return Enumerable.Empty<object>();
+            }
+
+            if (value is System.Collections.IEnumerable enumerable && value is not string)
+            {
+                return enumerable.Cast<object>().Where(x => x is not null);
+            }
+
+            return Enumerable.Empty<object>();
+        }
+
+        private static IEnumerable<object> ExtractBlockEntities(object? block)
+        {
+            if (block is null)
+            {
+                return Enumerable.Empty<object>();
+            }
+
+            var blockType = block.GetType();
+            var entitiesProp = blockType.GetProperty("Entities") ?? blockType.GetProperty("Items");
+            var value = entitiesProp?.GetValue(block);
+            if (value is System.Collections.IEnumerable enumerable && value is not string)
+            {
+                return enumerable.Cast<object>().Where(x => x is not null);
+            }
+
+            return Enumerable.Empty<object>();
+        }
+
+        private static void AddImportedEntity(DxfDocument doc, object entity)
+        {
+            switch (entity)
+            {
+                case CADEllipse ellipse:
+                    AddEllipseAsPolyline(doc, ellipse);
+                    break;
+
+                case CADLine line:
+                    AddLine(doc, ToPoint(line.Point), ToPoint(line.Point1));
+                    break;
+
+                case CAD2DLine line2D:
+                    AddLine(doc, ToPoint(line2D.StartPoint), ToPoint(line2D.EndPoint));
+                    break;
+
+                case CADArc arc:
+                    AddArc(doc, arc);
+                    break;
+
+                case CADCircle circle:
+                    AddCircle(doc, circle.Point.X, circle.Point.Y, circle.Radius);
+                    break;
+
+                case CADLWPolyLine lwPoly:
+                    AddPolyline(doc, ExpandCadLwPolyline(lwPoly), IsClosedLike(lwPoly));
+                    break;
+
+                case CADPolyLine polyLine when polyLine.GetType() == typeof(CADPolyLine):
+                    AddPolyline(doc, ExtractPoints(polyLine), IsClosedLike(polyLine));
+                    break;
+
+                case CAD2DPolyline poly2D:
+                    AddPolyline(doc, ExtractPoints(poly2D), IsClosedLike(poly2D));
+                    break;
+
+                case CADInsert insert:
+                    foreach (var nested in ExtractInsertEntities(insert))
+                    {
+                        AddImportedEntity(doc, nested);
+                    }
+                    break;
+            }
+        }
+
+        private static void AddLine(DxfDocument doc, (double X, double Y) start, (double X, double Y) end)
+        {
+            if (DistanceSquared(start, end) <= 1e-12)
+            {
+                return;
+            }
+
+            doc.Entities.Add(new Line(
+                new Vector3(start.X, start.Y, 0),
+                new Vector3(end.X, end.Y, 0)));
+        }
+
+        private static void AddCircle(DxfDocument doc, double x, double y, double radius)
+        {
+            if (radius <= 0)
+            {
+                return;
+            }
+
+            doc.Entities.Add(new Circle(new Vector3(x, y, 0), radius));
+        }
+
+        private static void AddArc(DxfDocument doc, CADArc arc)
+        {
+            var center = new Vector3(arc.Point.X, arc.Point.Y, 0);
+            var radius = Convert.ToDouble(arc.Radius, CultureInfo.InvariantCulture);
+            var startAngle = TryGetArcAngle(arc, "StartParam", "StartAngle", "Start")
+                ?? TryGetAngleFromPoint(center.X, center.Y, arc, "StartPoint", "FromPoint", "P1");
+            var endAngle = TryGetArcAngle(arc, "EndParam", "EndAngle", "End")
+                ?? TryGetAngleFromPoint(center.X, center.Y, arc, "EndPoint", "ToPoint", "P2");
+
+            if (!startAngle.HasValue || !endAngle.HasValue || radius <= 0)
+            {
+                AddCircle(doc, center.X, center.Y, Math.Max(radius, 1));
+                return;
+            }
+
+            var start = NormalizeDeg(startAngle.Value);
+            var end = NormalizeDeg(endAngle.Value);
+            var sweep = NormalizeSweep(start, end);
+            if (sweep <= 0.0)
+            {
+                sweep += 360.0;
+            }
+
+            if (sweep >= 359.999)
+            {
+                AddCircle(doc, center.X, center.Y, radius);
+                return;
+            }
+
+            doc.Entities.Add(new Arc(center, radius, start, start + sweep));
+        }
+
+        private static void AddEllipseAsPolyline(DxfDocument doc, CADEllipse ellipse)
+        {
+            var pts = SampleEllipse(ellipse, 64);
+            AddPolyline(doc, pts, IsClosedLike(ellipse));
+        }
+
+        private static void AddPolyline(DxfDocument doc, IReadOnlyList<(double X, double Y)> points, bool closed)
+        {
+            if (points.Count < 2)
+            {
+                return;
+            }
+
+            var cleaned = points
+                .Where((p, i) => i == 0 || DistanceSquared(points[i - 1], p) > 1e-12)
+                .ToList();
+            if (cleaned.Count < 2)
+            {
+                return;
+            }
+
+            if (closed && DistanceSquared(cleaned[0], cleaned[^1]) > 1e-12)
+            {
+                cleaned.Add(cleaned[0]);
+            }
+
+            var pl = new Polyline2D();
+            pl.IsClosed = closed;
+            foreach (var p in cleaned)
+            {
+                pl.Vertexes.Add(new Polyline2DVertex(new Vector2(p.X, p.Y)));
+            }
+            doc.Entities.Add(pl);
+        }
+
+        private static (double X, double Y) ToPoint(CAD2DPoint p)
+        {
+            return (p.X, p.Y);
+        }
+
+        private static (double X, double Y) ToPoint(DPoint p)
+        {
+            return (p.X, p.Y);
+        }
+
+        private static (double X, double Y) ToPoint(object p)
+        {
+            if (p is DPoint dp)
+            {
+                return (dp.X, dp.Y);
+            }
+
+            var xProp = p.GetType().GetProperty("X");
+            var yProp = p.GetType().GetProperty("Y");
+            if (xProp?.GetValue(p) is not null && yProp?.GetValue(p) is not null)
+            {
+                return (Convert.ToDouble(xProp.GetValue(p), CultureInfo.InvariantCulture), Convert.ToDouble(yProp.GetValue(p), CultureInfo.InvariantCulture));
+            }
+
+            return (0, 0);
+        }
+
+        private static IReadOnlyList<(double X, double Y)> ExtractPoints(CADLWPolyLine poly)
+        {
+            return ExtractVertices(poly);
+        }
+
+        private static IReadOnlyList<(double X, double Y)> ExtractPoints(CADPolyLine poly)
+        {
+            return ExtractVertices(poly);
+        }
+
+        private static IReadOnlyList<(double X, double Y)> ExtractPoints(CAD2DPolyline poly)
+        {
+            return ExtractVertices(poly);
+        }
+
+        private static IReadOnlyList<(double X, double Y)> ExpandCadLwPolyline(CADLWPolyLine poly)
+        {
+            var vertices = GetCadVertices(poly);
+            if (vertices.Count < 2)
+            {
+                return [];
+            }
+
+            var closed = IsClosedLike(poly);
+            var result = new List<(double X, double Y)>();
+            var segCount = closed ? vertices.Count : vertices.Count - 1;
+
+            for (var i = 0; i < segCount; i++)
+            {
+                var curr = vertices[i];
+                var next = vertices[(i + 1) % vertices.Count];
+                var p0 = ToPoint(curr.Point);
+                var p1 = ToPoint(next.Point);
+                var bulge = curr.Bulge;
+
+                if (result.Count == 0)
+                {
+                    result.Add(p0);
+                }
+                else if (!AreSamePoint(result[^1], p0))
+                {
+                    result.Add(p0);
+                }
+
+                if (Math.Abs(bulge) < 1e-9)
+                {
+                    if (!AreSamePoint(result[^1], p1))
+                    {
+                        result.Add(p1);
+                    }
+                    continue;
+                }
+
+                var arcPts = SampleBulgeArc(p0, p1, bulge, 32);
+                for (var k = 1; k < arcPts.Count; k++)
+                {
+                    if (!AreSamePoint(result[^1], arcPts[k]))
+                    {
+                        result.Add(arcPts[k]);
+                    }
+                }
+            }
+
+            if (closed && result.Count > 1 && !AreSamePoint(result[0], result[^1]))
+            {
+                result.Add(result[0]);
+            }
+
+            return result;
+        }
+
+        private static IReadOnlyList<(double X, double Y)> ExtractVertices(object poly)
+        {
+            var pts = new List<(double X, double Y)>();
+            foreach (var v in GetCadVertices(poly))
+            {
+                pts.Add(ToPoint(v.Point));
+            }
+            return pts;
+        }
+
+        private static List<CADVertex> GetCadVertices(object poly)
+        {
+            var vertsProp = poly.GetType().GetProperty("Vertexes") ?? poly.GetType().GetProperty("Vertices") ?? poly.GetType().GetProperty("Points");
+            if (vertsProp?.GetValue(poly) is not System.Collections.IEnumerable verts)
+            {
+                return [];
+            }
+
+            return verts.Cast<object>()
+                .OfType<CADVertex>()
+                .ToList();
+        }
+
+        private static bool AreSamePoint((double X, double Y) a, (double X, double Y) b)
+        {
+            return Math.Abs(a.X - b.X) <= 1e-9 && Math.Abs(a.Y - b.Y) <= 1e-9;
+        }
+
+        private static bool IsClosedLike(object poly)
+        {
+            var prop = poly.GetType().GetProperty("IsClosed") ?? poly.GetType().GetProperty("Closed");
+            if (prop?.GetValue(poly) is bool b)
+            {
+                return b;
+            }
+
+            var points = poly.GetType().GetProperty("Vertexes")?.GetValue(poly) as System.Collections.IEnumerable;
+            if (points is null)
+            {
+                return false;
+            }
+
+            var list = points.Cast<object>().ToList();
+            if (list.Count < 3)
+            {
+                return false;
+            }
+
+            var first = GetPointFromVertex(list[0]);
+            var last = GetPointFromVertex(list[^1]);
+            return DistanceSquared(first, last) <= 1e-6;
+        }
+
+        private static (double X, double Y) GetPointFromVertex(object vertex)
+        {
+            if (vertex is CADVertex cv)
+            {
+                return ToPoint(cv.Point);
+            }
+
+            var xProp = vertex.GetType().GetProperty("X");
+            var yProp = vertex.GetType().GetProperty("Y");
+            if (xProp?.GetValue(vertex) is not null && yProp?.GetValue(vertex) is not null)
+            {
+                return (Convert.ToDouble(xProp.GetValue(vertex), CultureInfo.InvariantCulture), Convert.ToDouble(yProp.GetValue(vertex), CultureInfo.InvariantCulture));
+            }
+
+            var posProp = vertex.GetType().GetProperty("Position");
+            var pos = posProp?.GetValue(vertex);
+            xProp = pos?.GetType().GetProperty("X");
+            yProp = pos?.GetType().GetProperty("Y");
+            return (Convert.ToDouble(xProp?.GetValue(pos), CultureInfo.InvariantCulture), Convert.ToDouble(yProp?.GetValue(pos), CultureInfo.InvariantCulture));
+        }
+
+        private static IEnumerable<object> ExtractInsertEntities(CADInsert insert)
+        {
+            var items = new List<object>();
+
+            var entitiesProp = insert.GetType().GetProperty("Entities") ?? insert.GetType().GetProperty("Items") ?? insert.GetType().GetProperty("Block")?.PropertyType.GetProperty("Entities");
+            var value = entitiesProp?.GetValue(insert) ?? insert.GetType().GetProperty("Block")?.GetValue(insert)?.GetType().GetProperty("Entities")?.GetValue(insert.GetType().GetProperty("Block")?.GetValue(insert));
+            if (value is System.Collections.IEnumerable enumerable && value is not string)
+            {
+                items.AddRange(enumerable.Cast<object>().Where(x => x is not null));
+            }
+
+            return items;
+        }
+
+        private static IReadOnlyList<(double X, double Y)> SampleEllipse(CADEllipse ellipse, int segments)
+        {
+            var pts = new List<(double X, double Y)>(segments + 1);
+            var center = ToPoint(ellipse.Point);
+            var major = ToPoint(ellipse.RadPt);
+            var rx = Math.Sqrt(major.X * major.X + major.Y * major.Y);
+            var ry = Math.Max(rx * Math.Max(Math.Abs(ellipse.Ratio), 0.1), 1e-6);
+            if (rx <= 1e-9)
+            {
+                rx = Math.Max(Math.Abs(ellipse.Radius), 1e-6);
+            }
+
+            var rot = Math.Atan2(major.Y, major.X);
+            var cosR = Math.Cos(rot);
+            var sinR = Math.Sin(rot);
+
+            for (var i = 0; i <= segments; i++)
+            {
+                var t = (double)i / segments * 2 * Math.PI;
+                var x = rx * Math.Cos(t);
+                var y = ry * Math.Sin(t);
+                pts.Add((center.X + x * cosR - y * sinR, center.Y + x * sinR + y * cosR));
+            }
+            return pts;
+        }
+
+        private static IReadOnlyList<(double X, double Y)> SampleBulgeArc((double X, double Y) p0, (double X, double Y) p1, double bulge, int segments)
+        {
+            var dx = p1.X - p0.X;
+            var dy = p1.Y - p0.Y;
+            var chord = Math.Sqrt(dx * dx + dy * dy);
+            if (chord <= 1e-12)
+            {
+                return [p0, p1];
+            }
+
+            var theta = 4.0 * Math.Atan(bulge);
+            var radius = chord * (1.0 + bulge * bulge) / (4.0 * Math.Abs(bulge));
+            var mx = (p0.X + p1.X) * 0.5;
+            var my = (p0.Y + p1.Y) * 0.5;
+            var nx = -dy / chord;
+            var ny = dx / chord;
+            var halfChord = chord * 0.5;
+            var h = Math.Sqrt(Math.Max(0, radius * radius - halfChord * halfChord));
+            var sign = bulge >= 0 ? 1.0 : -1.0;
+            var cx = mx + sign * nx * h;
+            var cy = my + sign * ny * h;
+
+            var start = Math.Atan2(p0.Y - cy, p0.X - cx);
+            var end = start + theta;
+            var pts = new List<(double X, double Y)>(segments + 1);
+            for (var i = 0; i <= segments; i++)
+            {
+                var t = (double)i / segments;
+                var a = start + (end - start) * t;
+                pts.Add((cx + radius * Math.Cos(a), cy + radius * Math.Sin(a)));
+            }
+            return pts;
+        }
+
+        private static double DistanceSquared((double X, double Y) a, (double X, double Y) b)
+        {
+            var dx = a.X - b.X;
+            var dy = a.Y - b.Y;
+            return dx * dx + dy * dy;
+        }
+
+        private static double? TryGetArcAngle(object arc, params string[] names)
+        {
+            foreach (var name in names)
+            {
+                var prop = arc.GetType().GetProperty(name);
+                if (prop?.GetValue(arc) is null)
+                {
+                    continue;
+                }
+
+                var value = prop.GetValue(arc);
+                if (value is double d)
+                {
+                    return NormalizeDeg(d * (Math.Abs(d) > 2.0 * Math.PI ? 1.0 : 180.0 / Math.PI));
+                }
+
+                if (value is float f)
+                {
+                    var dv = (double)f;
+                    return NormalizeDeg(dv * (Math.Abs(dv) > 2.0 * Math.PI ? 1.0 : 180.0 / Math.PI));
+                }
+
+                try
+                {
+                    var dv = Convert.ToDouble(value, CultureInfo.InvariantCulture);
+                    return NormalizeDeg(dv * (Math.Abs(dv) > 2.0 * Math.PI ? 1.0 : 180.0 / Math.PI));
+                }
+                catch
+                {
+                }
+            }
+
+            return null;
+        }
+
+        private static double? TryGetAngleFromPoint(double cx, double cy, object arc, params string[] names)
+        {
+            foreach (var name in names)
+            {
+                var prop = arc.GetType().GetProperty(name);
+                if (prop?.GetValue(arc) is null)
+                {
+                    continue;
+                }
+
+                var value = prop.GetValue(arc);
+                var xProp = value?.GetType().GetProperty("X");
+                var yProp = value?.GetType().GetProperty("Y");
+                if (xProp?.GetValue(value) is null || yProp?.GetValue(value) is null)
+                {
+                    continue;
+                }
+
+                try
+                {
+                    var x = Convert.ToDouble(xProp.GetValue(value), CultureInfo.InvariantCulture);
+                    var y = Convert.ToDouble(yProp.GetValue(value), CultureInfo.InvariantCulture);
+                    return NormalizeDeg(Math.Atan2(y - cy, x - cx) * 180.0 / Math.PI);
+                }
+                catch
+                {
+                }
+            }
+
+            return null;
         }
 
         private static double NormalizeDeg(double degree)
@@ -100,6 +657,21 @@ namespace CADRecognition
             if (d < 0) d += 360.0;
             return d;
         }
+
+        private static double NormalizeSweep(double startDeg, double endDeg)
+        {
+            var sweep = endDeg - startDeg;
+            while (sweep < 0)
+            {
+                sweep += 360.0;
+            }
+            while (sweep > 360.0)
+            {
+                sweep -= 360.0;
+            }
+            return sweep;
+        }
+
     }
 
     public partial class MainWindow : Window, INotifyPropertyChanged
@@ -108,10 +680,14 @@ namespace CADRecognition
         private readonly Dictionary<string, DxfDocument> _documentCache = [];
         private readonly Dictionary<string, ImageSource> _moldPreviewCache = [];
         private readonly InteractiveDxfPreview _viewer = new();
-        private readonly ObservableCollection<MoldRow> _moldRows = [];
-        private readonly ObservableCollection<PositionRow> _positionRows = [];
-        private readonly List<string> _moldFiles = [];
-        private string? _selectedM01File;
+        private readonly ObservableCollection<MoldRow> _stage1MoldRows = [];
+        private readonly ObservableCollection<MoldRow> _stage2MoldRows = [];
+        private readonly ObservableCollection<PositionRow> _stage1PositionRows = [];
+        private readonly ObservableCollection<PositionRow> _stage2PositionRows = [];
+        private readonly List<string> _stage1MoldFiles = [];
+        private readonly List<string> _stage2MoldFiles = [];
+        private string? _selectedStage1File;
+        private string? _selectedStage2File;
         private MatchResult? _lastMatchResult;
         private ProjectProfile? _lastProjectProfile;
         private List<MoldProfile> _lastMolds = [];
@@ -119,7 +695,8 @@ namespace CADRecognition
 
         private string? _projectFile;
         private DxfDocument? _projectDoc;
-        private bool _compactAnnotation = true;
+        private bool _compactAnnotation = false;
+        private double _boardWidth = 0;
 
         public MainWindow()
         {
@@ -132,8 +709,10 @@ namespace CADRecognition
             FileTreeView.Items.Clear();
         }
 
-        public ObservableCollection<MoldRow> MoldRows => _moldRows;
-        public ObservableCollection<PositionRow> PositionRows => _positionRows;
+        public ObservableCollection<MoldRow> Stage1MoldRows => _stage1MoldRows;
+        public ObservableCollection<MoldRow> Stage2MoldRows => _stage2MoldRows;
+        public ObservableCollection<PositionRow> Stage1PositionRows => _stage1PositionRows;
+        public ObservableCollection<PositionRow> Stage2PositionRows => _stage2PositionRows;
 
         public event PropertyChangedEventHandler? PropertyChanged;
 
@@ -150,6 +729,62 @@ namespace CADRecognition
             if (_projectDoc is not null)
             {
                 RenderPreview(_projectDoc, _projectFile, withAnnotation: _lastMatchResult is not null);
+            }
+        }
+
+        private void SetDefaultBoardWidthFromProject()
+        {
+            if (_projectDoc is null || BoardWidthTextBox is null)
+            {
+                return;
+            }
+
+            var bounds = DxfAnalyzer.ExtractProject(_projectDoc).OuterRectangle;
+            var defaultWidth = Math.Max(0, Math.Round(bounds.Height / 2.0, MidpointRounding.AwayFromZero));
+            _boardWidth = defaultWidth;
+            BoardWidthTextBox.Text = defaultWidth.ToString("0", CultureInfo.InvariantCulture);
+        }
+
+        private double ReadBoardWidth()
+        {
+            if (BoardWidthTextBox is null)
+            {
+                return _boardWidth;
+            }
+
+            var text = BoardWidthTextBox.Text?.Trim();
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                return _boardWidth;
+            }
+
+            if (double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out var value) ||
+                double.TryParse(text, NumberStyles.Float, CultureInfo.CurrentCulture, out value))
+            {
+                _boardWidth = Math.Max(0, value);
+                return _boardWidth;
+            }
+
+            StatusText.Text = "板宽输入无效，请输入数字。";
+            return _boardWidth;
+        }
+
+        private void BoardWidthTextBox_TextChanged(object sender, TextChangedEventArgs e)
+        {
+            var width = ReadBoardWidth();
+            if (_projectDoc is not null && !string.IsNullOrWhiteSpace(_projectFile))
+            {
+                RenderPreview(_projectDoc, _projectFile, withAnnotation: _lastMatchResult is not null);
+            }
+            else if (_lastProjectProfile is not null)
+            {
+                _viewer.RenderCornerContours(
+                    _lastProjectProfile.OuterRectangle,
+                    _lastOuterContourPoints,
+                    _lastMatchResult?.GuidePaths,
+                    _lastProjectProfile.CornerCandidates,
+                    width,
+                    _lastProjectProfile.OuterRectangle.MinY + width);
             }
         }
 
@@ -172,21 +807,35 @@ namespace CADRecognition
 
             // 导入新工程时清空上一张图纸的识别/标注展示状态。
             _lastMatchResult = null;
-            _lastProjectProfile = null;
-            _lastOuterContourPoints = [];
-            _moldRows.Clear();
-            _positionRows.Clear();
-            LegendPanel.Children.Clear();
+            _lastProjectProfile = DxfAnalyzer.ExtractProject(_projectDoc);
+            _lastOuterContourPoints = DxfAnalyzer.ExtractOuterContourForDebug(_projectDoc);
+            _stage1MoldRows.Clear();
+            _stage2MoldRows.Clear();
+            _stage1PositionRows.Clear();
+            _stage2PositionRows.Clear();
+            Stage1LegendPanel.Children.Clear();
+            Stage2LegendPanel.Children.Clear();
 
             ProjectFileText.Text = System.IO.Path.GetFileName(_projectFile);
             RefreshFileList();
+            SetDefaultBoardWidthFromProject();
             RenderPreview(_projectDoc, _projectFile, withAnnotation: false);
             StatusText.Text = removedProjectLines > 0
                 ? $"工程 DXF 已加载，已去重重叠线段 {removedProjectLines} 条。"
                 : "工程 DXF 已加载。";
         }
 
-        private void ImportMoldsDxf_Click(object sender, RoutedEventArgs e)
+        private void ImportStage1MoldDxf_Click(object sender, RoutedEventArgs e)
+        {
+            ImportMoldsForStage(1);
+        }
+
+        private void ImportStage2MoldDxf_Click(object sender, RoutedEventArgs e)
+        {
+            ImportMoldsForStage(2);
+        }
+
+        private void ImportMoldsForStage(int stageId)
         {
             var dialog = new WinOpenFileDialog
             {
@@ -198,22 +847,36 @@ namespace CADRecognition
                 return;
             }
 
-            _moldFiles.Clear();
-            _moldFiles.AddRange(dialog.FileNames);
-            foreach (var file in _moldFiles)
+            var targetFiles = stageId == 1 ? _stage1MoldFiles : _stage2MoldFiles;
+            targetFiles.Clear();
+            targetFiles.AddRange(dialog.FileNames);
+            foreach (var file in targetFiles)
             {
                 var moldDoc = LoadCadDocument(file);
                 RemoveDuplicateLines(moldDoc);
                 _documentCache[file] = moldDoc;
             }
 
-            M01MoldComboBox.ItemsSource = _moldFiles.Select(System.IO.Path.GetFileName).ToList();
-            _selectedM01File = _moldFiles.FirstOrDefault();
-            M01MoldComboBox.SelectedIndex = _selectedM01File is null ? -1 : 0;
+            if (stageId == 1)
+            {
+                Stage1MoldComboBox.ItemsSource = _stage1MoldFiles.Select(System.IO.Path.GetFileName).ToList();
+                _selectedStage1File = _stage1MoldFiles.FirstOrDefault();
+                Stage1MoldComboBox.SelectedIndex = _selectedStage1File is null ? -1 : 0;
+                RefreshMoldPreviewList(1);
+            }
+            else
+            {
+                Stage2MoldComboBox.ItemsSource = _stage2MoldFiles.Select(System.IO.Path.GetFileName).ToList();
+                _selectedStage2File = _stage2MoldFiles.FirstOrDefault();
+                Stage2MoldComboBox.SelectedIndex = _selectedStage2File is null ? -1 : 0;
+                RefreshMoldPreviewList(2);
+            }
 
-            MoldCountText.Text = _moldFiles.Count.ToString(CultureInfo.InvariantCulture);
+            MoldCountText.Text = $"{_stage1MoldFiles.Count}/{_stage2MoldFiles.Count}";
             RefreshFileList();
-            StatusText.Text = $"已导入 {_moldFiles.Count} 张模具 CAD 图。";
+            StatusText.Text = stageId == 1
+                ? $"已导入台1模具 {_stage1MoldFiles.Count} 张。"
+                : $"已导入台2模具 {_stage2MoldFiles.Count} 张。";
         }
 
         private DxfDocument LoadCadDocument(string path)
@@ -275,16 +938,16 @@ namespace CADRecognition
             return dup.Count;
         }
 
-        private string? ResolveSelectedM01File()
+        private string? ResolveSelectedMoldFile(ComboBox comboBox, IReadOnlyList<string> files)
         {
-            if (_moldFiles.Count == 0)
+            if (files.Count == 0)
             {
                 return null;
             }
 
-            if (M01MoldComboBox.SelectedItem is string selectedName)
+            if (comboBox.SelectedItem is string selectedName)
             {
-                var matched = _moldFiles.FirstOrDefault(f =>
+                var matched = files.FirstOrDefault(f =>
                     string.Equals(System.IO.Path.GetFileName(f), selectedName, StringComparison.OrdinalIgnoreCase));
                 if (!string.IsNullOrWhiteSpace(matched))
                 {
@@ -292,7 +955,7 @@ namespace CADRecognition
                 }
             }
 
-            return _moldFiles.First();
+            return files.First();
         }
 
         private void Recognize_Click(object sender, RoutedEventArgs e)
@@ -302,53 +965,180 @@ namespace CADRecognition
                 StatusText.Text = "请先导入工程 DXF。";
                 return;
             }
-            if (_moldFiles.Count == 0)
+            if (_stage1MoldFiles.Count == 0 || _stage2MoldFiles.Count == 0)
             {
-                StatusText.Text = "请先导入模具 DXF。";
+                StatusText.Text = "请先分别导入台1模具和台2模具。";
                 return;
             }
 
             var project = DxfAnalyzer.ExtractProject(_projectDoc);
             _lastProjectProfile = project;
             _lastOuterContourPoints = DxfAnalyzer.ExtractOuterContourForDebug(_projectDoc);
+            var boardWidth = ReadBoardWidth();
+            var splitY = project.OuterRectangle.MinY + boardWidth;
+            var stage1Project = new ProjectProfile(
+                project.OuterRectangle,
+                project.Holes.Where(h => h.Centroid.Y < splitY).ToList(),
+                project.CornerCandidates,
+                project.EdgeCandidates,
+                project.CornerStepPaths,
+                project.ContourPaths,
+                project.Stage1ContourPaths,
+                []);
+            var stage2Project = new ProjectProfile(
+                project.OuterRectangle,
+                project.Holes.Where(h => h.Centroid.Y >= splitY).ToList(),
+                project.CornerCandidates,
+                project.EdgeCandidates,
+                project.CornerStepPaths,
+                project.ContourPaths,
+                [],
+                project.Stage2ContourPaths);
 
-            _selectedM01File = ResolveSelectedM01File();
-            var orderedFiles = _moldFiles
-                .OrderBy(f => string.Equals(f, _selectedM01File, StringComparison.OrdinalIgnoreCase) ? 0 : 1)
-                .ThenBy(f => f, StringComparer.OrdinalIgnoreCase)
-                .ToList();
+            _selectedStage1File = ResolveSelectedMoldFile(Stage1MoldComboBox, _stage1MoldFiles);
+            _selectedStage2File = ResolveSelectedMoldFile(Stage2MoldComboBox, _stage2MoldFiles);
 
-            var molds = orderedFiles
-                .Select((f, idx) => DxfAnalyzer.ExtractMold(idx + 1, f))
-                .ToList();
-            _lastMolds = molds;
+            var stage1Files = _selectedStage1File is null
+                ? _stage1MoldFiles.ToList()
+                : _stage1MoldFiles.Where(f => string.Equals(f, _selectedStage1File, StringComparison.OrdinalIgnoreCase)).Concat(_stage1MoldFiles.Where(f => !string.Equals(f, _selectedStage1File, StringComparison.OrdinalIgnoreCase))).ToList();
+            var stage2Files = _selectedStage2File is null
+                ? _stage2MoldFiles.ToList()
+                : _stage2MoldFiles.Where(f => string.Equals(f, _selectedStage2File, StringComparison.OrdinalIgnoreCase)).Concat(_stage2MoldFiles.Where(f => !string.Equals(f, _selectedStage2File, StringComparison.OrdinalIgnoreCase))).ToList();
+
+            var stage1Molds = stage1Files.Select((f, idx) => DxfAnalyzer.ExtractMold(1 + idx, f)).ToList();
+            var stage2Molds = stage2Files.Select((f, idx) => DxfAnalyzer.ExtractMold(1 + idx, f)).ToList();
+            _lastMolds = stage1Molds.Concat(stage2Molds).ToList();
 
             var matcher = new MoldMatcher();
-            var result = matcher.Match(project, molds);
-            _lastMatchResult = result;
-            RenderResult(result, molds);
+            var stage1Result = matcher.Match(stage1Project, stage1Molds, isStage1: true);
+            var stage2Result = matcher.Match(stage2Project, stage2Molds, isStage1: false);
+            _lastMatchResult = new MatchResult(stage1Result.HoleAssignments.Concat(stage2Result.HoleAssignments).ToList(), stage1Result.GuidePaths ?? stage2Result.GuidePaths);
+            RenderStageResult(stage1Result, stage1Molds, isStage1: true);
+            RenderStageResult(stage2Result, stage2Molds, isStage1: false);
             RenderPreview(_projectDoc, _projectFile, withAnnotation: true);
-            StatusText.Text = $"识别完成：外轮廓 {project.OuterRectangle.Width:F2} x {project.OuterRectangle.Height:F2}，孔洞 {result.HoleAssignments.Count} 个。";
+            StatusText.Text = $"识别完成：台1 {stage1Result.HoleAssignments.Count} 个，台2 {stage2Result.HoleAssignments.Count} 个。";
         }
 
-        private void RenderResult(MatchResult result, IReadOnlyList<MoldProfile> molds)
+        private void Export_Click(object sender, RoutedEventArgs e)
         {
-            _moldRows.Clear();
-            _positionRows.Clear();
-            RenderLegend(molds);
+            if (_lastMatchResult is null || _projectFile is null)
+            {
+                StatusText.Text = "请先完成识图后再导出。";
+                return;
+            }
+
+            var dialog = new TcpExportDialog(BuildTcpExportModel())
+            {
+                Owner = this
+            };
+
+            if (dialog.ShowDialog() == true)
+            {
+                StatusText.Text = "已导出并发送 JSON。";
+            }
+        }
+
+        private TcpExportModel BuildTcpExportModel()
+        {
+            var model = new TcpExportModel();
+            model.ProgramName = System.IO.Path.GetFileNameWithoutExtension(_projectFile);
+            model.ProgramNo = System.IO.Path.GetFileNameWithoutExtension(_projectFile);
+            model.LeftRightDoor = 0;
+            model.Material = 0;
+            model.Type = 0;
+            model.FormingLength = 0;
+            model.FormingWidth = 0;
+            model.FormingThickness = 0;
+            var boardWidth = ReadBoardWidth();
+            model.PlateLength = _lastProjectProfile?.OuterRectangle.Width ?? 0;
+            model.PlateWidth = _lastProjectProfile?.OuterRectangle.Height ?? 0;
+            model.PlateWidth2 = boardWidth > 0 ? boardWidth
+                : (_lastProjectProfile?.OuterRectangle.Height ?? 0);
+            model.PlateThickness = 0;
+            model.Spare2 = 0;
+            model.Spare3 = 0;
+            model.Spare4 = 0;
+            model.CustomContent = string.Empty;
+
+            var boundaryWidth = model.PlateWidth2 > 0 ? model.PlateWidth2 : (_lastProjectProfile?.OuterRectangle.Height ?? 0);
+            var stage1Rows = _stage1PositionRows.OrderBy(r => r.PosY).ThenBy(r => r.PosX).ToList();
+            var stage2Rows = _stage2PositionRows.OrderBy(r => r.PosY).ThenBy(r => r.PosX).ToList();
+            if (stage1Rows.Count == 0 && stage2Rows.Count == 0 && boundaryWidth > 0)
+            {
+                stage1Rows = [];
+                stage2Rows = [];
+            }
+
+            model.Stage1PunchCount = stage1Rows.Count;
+            model.Stage2PunchCount = stage2Rows.Count;
+            model.Stage1DiagramCoordinates = stage1Rows.Select(r => new TcpCoordinateRow { X = r.PosX, Y = r.PosY }).ToList();
+            model.Stage2DiagramCoordinates = stage2Rows.Select(r => new TcpCoordinateRow { X = r.PosX, Y = r.PosY }).ToList();
+            model.Stage1PositionMoldIds = stage1Rows.Select(r => ToStationMoldCode(r.MoldId, "M")).ToList();
+            model.Stage2PositionMoldIds = stage2Rows.Select(r => ToStationMoldCode(r.MoldId, "N")).ToList();
+            model.Stage1PunchMoldIds = stage1Rows.Select(r => ToStationMoldCode(r.MoldId, "M")).ToList();
+            model.Stage2PunchMoldIds = stage2Rows.Select(r => ToStationMoldCode(r.MoldId, "N")).ToList();
+            return model;
+        }
+
+        private static string ToStationMoldCode(int moldId, string prefix)
+        {
+            if (moldId <= 0) return string.Empty;
+            return $"{prefix}{moldId:D2}";
+        }
+
+        private RectBounds GetRecognitionBoundary()
+        {
+            if (_lastProjectProfile is not null)
+            {
+                return _lastProjectProfile.OuterRectangle;
+            }
+
+            if (_stage1PositionRows.Count > 0 || _stage2PositionRows.Count > 0)
+            {
+                var all = _stage1PositionRows.Concat(_stage2PositionRows).ToList();
+                var minX = all.Min(x => x.PosX);
+                var minY = all.Min(x => x.PosY);
+                var maxX = all.Max(x => x.PosX);
+                var maxY = all.Max(x => x.PosY);
+                return new RectBounds(minX, minY, maxX, maxY);
+            }
+
+            return new RectBounds(0, 0, 1, 1);
+        }
+
+        private IEnumerable<PositionRow> SplitRowsByBoundary(IEnumerable<PositionRow> rows, RectBounds boundary, bool upperHalf)
+        {
+            var midpoint = boundary.MinY + boundary.Height / 2.0;
+            foreach (var row in rows.OrderBy(x => x.PosY).ThenBy(x => x.PosX))
+            {
+                var isUpper = row.PosY >= midpoint;
+                if (upperHalf == isUpper)
+                {
+                    yield return row;
+                }
+            }
+        }
+
+        private void RenderStageResult(MatchResult result, IReadOnlyList<MoldProfile> molds, bool isStage1)
+        {
+            var moldRows = isStage1 ? _stage1MoldRows : _stage2MoldRows;
+            var positionRows = isStage1 ? _stage1PositionRows : _stage2PositionRows;
+            moldRows.Clear();
+            positionRows.Clear();
 
             var useCounter = result.HoleAssignments
                 .Where(x => !x.Hole.HoleType.StartsWith("EdgeNotch:", StringComparison.Ordinal))
                 .GroupBy(x => x.MoldId)
                 .ToDictionary(g => g.Key, g => g.Count());
 
+            var moldPrefix = isStage1 ? "M" : "N";
             foreach (var mold in molds.OrderBy(x => x.MoldId))
             {
                 useCounter.TryGetValue(mold.MoldId, out var count);
-                _moldRows.Add(new MoldRow
+                moldRows.Add(new MoldRow
                 {
                     MoldPreview = BuildMoldPreview(mold.FilePath),
-                    MoldCode = $"M{mold.MoldId:D2}",
+                    MoldCode = $"{moldPrefix}{mold.MoldId:D2}",
                     MoldName = System.IO.Path.GetFileNameWithoutExtension(mold.FilePath),
                     UsedCount = count,
                     MatchType = mold.MoldId == 1 ? "角落连续冲压" : "单次冲压",
@@ -356,20 +1146,24 @@ namespace CADRecognition
                 });
             }
 
-            var i = 1;
-            foreach (var row in result.HoleAssignments
-                         .Where(x => !x.Hole.HoleType.StartsWith("EdgeNotch:", StringComparison.Ordinal))
-                         .OrderBy(x => x.Hole.Centroid.Y).ThenBy(x => x.Hole.Centroid.X))
+            var index = 1;
+            var rows = result.HoleAssignments
+                .Where(x => !x.Hole.HoleType.StartsWith("EdgeNotch:", StringComparison.Ordinal))
+                .OrderBy(x => x.Hole.Centroid.Y).ThenBy(x => x.Hole.Centroid.X);
+
+            foreach (var row in rows)
             {
-                _positionRows.Add(new PositionRow
+                positionRows.Add(new PositionRow
                 {
-                    Index = i++,
+                    Index = index++,
                     HoleType = row.Hole.HoleType,
                     MoldId = row.MoldId,
-                    MoldCode = row.MoldId > 0 ? $"M{row.MoldId:D2}" : "未匹配",
-                    PosX = Math.Round(row.Hole.Centroid.X, 3),
-                    PosY = Math.Round(row.Hole.Centroid.Y, 3),
-                    PositionRelation = row.PositionRelation,
+                    MoldCode = row.MoldId > 0 ? $"{(isStage1 ? "M" : "N")}{row.MoldId:D2}" : "未匹配",
+                    PosX = Math.Round(row.Hole.Centroid.X - _lastProjectProfile!.OuterRectangle.MinX, 0),
+                    PosY = Math.Round(row.Hole.Centroid.Y - _lastProjectProfile!.OuterRectangle.MinY, 0),
+                    AbsX = row.Hole.Centroid.X,
+                    AbsY = row.Hole.Centroid.Y,
+                    PositionRelation = isStage1 ? "台1区域" : "台2区域",
                     IsCornerCandidate = row.IsCornerCandidate ? "是" : "否",
                     IsEdgeHole = row.IsEdgeHole ? "是" : "否",
                     TopCandidates = row.TopCandidates,
@@ -379,9 +1173,10 @@ namespace CADRecognition
             }
         }
 
-        private void RenderLegend(IReadOnlyList<MoldProfile> molds)
+        private void RenderLegend(IReadOnlyList<MoldProfile> molds, bool isStage1)
         {
-            LegendPanel.Children.Clear();
+            Stage1LegendPanel.Children.Clear();
+            Stage2LegendPanel.Children.Clear();
             foreach (var mold in molds.OrderBy(x => x.MoldId))
             {
                 var color = InteractiveDxfPreview.GetMoldColor(mold.MoldId);
@@ -404,15 +1199,23 @@ namespace CADRecognition
                     Margin = new Thickness(0, 0, 6, 0),
                     CornerRadius = new CornerRadius(2)
                 });
+                var legendPrefix = isStage1 ? "M" : "N";
                 panel.Children.Add(new TextBlock
                 {
-                    Text = $"M{mold.MoldId:D2}",
+                    Text = $"{legendPrefix}{mold.MoldId:D2}",
                     Foreground = WpfBrushes.White,
                     FontSize = 9,
                     VerticalAlignment = VerticalAlignment.Center
                 });
                 chip.Child = panel;
-                LegendPanel.Children.Add(chip);
+                if (mold.MoldId == 1)
+                {
+                    Stage1LegendPanel.Children.Add(chip);
+                }
+                else
+                {
+                    Stage2LegendPanel.Children.Add(chip);
+                }
             }
         }
 
@@ -420,68 +1223,73 @@ namespace CADRecognition
         {
             FileTreeView.Items.Clear();
 
-            var root = new TreeViewItem
-            {
-                Header = "图纸列表",
-                IsExpanded = true
-            };
+            var root = CreateFileTreeItem("图纸列表", isExpanded: true);
 
-            var projectNode = new TreeViewItem
-            {
-                Header = "工程图",
-                IsExpanded = true
-            };
+            var projectNode = CreateFileTreeItem("工程图", isExpanded: true);
             if (!string.IsNullOrWhiteSpace(_projectFile))
             {
-                projectNode.Items.Add(new TreeViewItem
-                {
-                    Header = System.IO.Path.GetFileName(_projectFile),
-                    Tag = _projectFile
-                });
+                projectNode.Items.Add(CreateFileTreeItem(System.IO.Path.GetFileName(_projectFile), _projectFile));
             }
 
-            var moldNode = new TreeViewItem
+            var stage1Node = CreateFileTreeItem("台1模具", isExpanded: true);
+            foreach (var file in _stage1MoldFiles)
             {
-                Header = "模具库",
-                IsExpanded = true
-            };
-            foreach (var file in _moldFiles)
-            {
-                moldNode.Items.Add(new TreeViewItem
-                {
-                    Header = System.IO.Path.GetFileName(file),
-                    Tag = file
-                });
+                stage1Node.Items.Add(CreateFileTreeItem(System.IO.Path.GetFileName(file), file));
             }
+
+            var stage2Node = CreateFileTreeItem("台2模具", isExpanded: true);
+            foreach (var file in _stage2MoldFiles)
+            {
+                stage2Node.Items.Add(CreateFileTreeItem(System.IO.Path.GetFileName(file), file));
+            }
+
             root.Items.Add(projectNode);
-            root.Items.Add(moldNode);
+            root.Items.Add(stage1Node);
+            root.Items.Add(stage2Node);
             FileTreeView.Items.Add(root);
+        }
+
+        private static TreeViewItem CreateFileTreeItem(string text, string? tag = null, bool isExpanded = false)
+        {
+            return new TreeViewItem
+            {
+                Header = new TextBlock
+                {
+                    Text = text,
+                    Foreground = Brushes.White
+                },
+                Tag = tag,
+                IsExpanded = isExpanded,
+                Foreground = Brushes.White
+            };
         }
 
         private void RenderPreview(DxfDocument doc, string? path, bool withAnnotation)
         {
             _previewPlugin.CreatePreview(doc, _viewer);
-            if (withAnnotation && !string.IsNullOrWhiteSpace(path) && path == _projectFile)
+            if (!string.IsNullOrWhiteSpace(path) && path == _projectFile && _lastProjectProfile is not null)
             {
                 _viewer.RenderCornerContours(
-                    _lastProjectProfile?.OuterRectangle,
+                    _lastProjectProfile.OuterRectangle,
                     _lastOuterContourPoints,
-                    _lastMatchResult?.GuidePaths,
-                    _lastProjectProfile?.CornerCandidates);
+                    withAnnotation ? _lastMatchResult?.GuidePaths : null,
+                    _lastProjectProfile.CornerCandidates,
+                    _boardWidth,
+                    _lastProjectProfile.OuterRectangle.MinY + _boardWidth);
 
-                if (_lastMatchResult is not null)
+                if (withAnnotation && _lastMatchResult is not null)
                 {
-                    _viewer.RenderAnnotations(_lastMatchResult.HoleAssignments, _lastMolds);
+                    _viewer.RenderAnnotations(_lastMatchResult.HoleAssignments, _lastMolds, _lastProjectProfile.OuterRectangle.MinY + _boardWidth);
                 }
                 else
                 {
-                    _viewer.RenderAnnotations([], []);
+                    _viewer.RenderAnnotations([], [], null);
                 }
             }
             else
             {
-                _viewer.RenderCornerContours(null, null, null, null);
-                _viewer.RenderAnnotations([], []);
+                _viewer.RenderCornerContours(null, null, null, null, 0, null);
+                _viewer.RenderAnnotations([], [], null);
             }
             PreviewHintText.Visibility = Visibility.Collapsed;
         }
@@ -503,23 +1311,43 @@ namespace CADRecognition
 
         private void PositionGrid_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
         {
-            if (PositionGrid.SelectedItem is not PositionRow row)
+            if (sender is not System.Windows.Controls.DataGrid grid || grid.SelectedItem is not PositionRow row)
             {
                 return;
             }
-            _viewer.FocusHole(row.PosX, row.PosY, row.MoldId);
+            _viewer.FocusHole(row.AbsX, row.AbsY, row.MoldId);
             StatusText.Text = $"已定位孔位 #{row.Index}（{row.MoldCode}），角候选={row.IsCornerCandidate}，边缘孔={row.IsEdgeHole}，Top3={row.TopCandidates}";
         }
 
         private async void PositionGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e)
         {
-            if (PositionGrid.SelectedItem is not PositionRow row)
+            if (sender is not System.Windows.Controls.DataGrid grid || grid.SelectedItem is not PositionRow row)
             {
                 return;
             }
-            _viewer.FocusHole(row.PosX, row.PosY, row.MoldId, targetZoom: 4.0);
-            await _viewer.BlinkFocusAsync(row.PosX, row.PosY, row.MoldId);
+            _viewer.FocusHole(row.AbsX, row.AbsY, row.MoldId, targetZoom: 4.0);
+            await _viewer.BlinkFocusAsync(row.AbsX, row.AbsY, row.MoldId);
             StatusText.Text = $"已放大定位孔位 #{row.Index}（{row.MoldCode}），角候选={row.IsCornerCandidate}，边缘孔={row.IsEdgeHole}，Top3={row.TopCandidates}";
+        }
+
+        private void RefreshMoldPreviewList(int stageId)
+        {
+            var moldRows = stageId == 1 ? _stage1MoldRows : _stage2MoldRows;
+            moldRows.Clear();
+            var files = stageId == 1 ? _stage1MoldFiles : _stage2MoldFiles;
+            foreach (var file in files)
+            {
+                _ = BuildMoldPreview(file);
+                moldRows.Add(new MoldRow
+                {
+                    MoldPreview = _moldPreviewCache.TryGetValue(file, out var preview) ? preview : null,
+                    MoldCode = stageId == 1 ? "M01" : "N01",
+                    MoldName = System.IO.Path.GetFileNameWithoutExtension(file),
+                    UsedCount = 0,
+                    MatchType = stageId == 1 ? "台1" : "台2",
+                    Remark = System.IO.Path.GetFileName(file)
+                });
+            }
         }
 
         private ImageSource? BuildMoldPreview(string path)
@@ -567,40 +1395,22 @@ namespace CADRecognition
                     dc.DrawLine(linePen, Map(l.StartPoint.X, l.StartPoint.Y), Map(l.EndPoint.X, l.EndPoint.Y));
                 }
 
-                foreach (var c in DxfSafe.Circles(doc))
+                foreach (var shape in CadPreviewGeometry.BuildPreviewShapes(doc, DxfAnalyzer.ExpandPolyline2D, DxfAnalyzer.SampleArc))
                 {
-                    var center = Map(c.Center.X, c.Center.Y);
-                    dc.DrawEllipse(null, circlePen, center, c.Radius * scale, c.Radius * scale);
-                }
-
-                foreach (var p in DxfSafe.Polylines2D(doc))
-                {
-                    var pts = DxfAnalyzer.ExpandPolyline2D(p, 12);
-                    if (pts.Count < 2)
+                    var pen = shape.Kind switch
                     {
-                        continue;
-                    }
-                    var geo = new StreamGeometry();
-                    using var g = geo.Open();
-                    g.BeginFigure(Map(pts[0].X, pts[0].Y), false, p.IsClosed);
-                    g.PolyLineTo(pts.Skip(1).Select(t => Map(t.X, t.Y)).ToList(), true, false);
-                    geo.Freeze();
-                    dc.DrawGeometry(null, polyPen, geo);
-                }
+                        CadPreviewShapeKind.Line => linePen,
+                        CadPreviewShapeKind.Circle => circlePen,
+                        CadPreviewShapeKind.Arc => arcPen,
+                        CadPreviewShapeKind.Polyline => polyPen,
+                        _ => linePen
+                    };
 
-                foreach (var a in DxfSafe.Arcs(doc))
-                {
-                    var pts = DxfAnalyzer.SampleArc(a, 18);
-                    if (pts.Count < 2)
+                    var geo = shape.ToGeometry(Map);
+                    if (geo is not null)
                     {
-                        continue;
+                        dc.DrawGeometry(null, pen, geo);
                     }
-                    var geo = new StreamGeometry();
-                    using var g = geo.Open();
-                    g.BeginFigure(Map(pts[0].X, pts[0].Y), false, false);
-                    g.PolyLineTo(pts.Skip(1).Select(t => Map(t.X, t.Y)).ToList(), true, false);
-                    geo.Freeze();
-                    dc.DrawGeometry(null, arcPen, geo);
                 }
             }
 
@@ -639,65 +1449,24 @@ namespace CADRecognition
 
             var unifiedStroke = new SolidColorBrush(WpfColor.FromRgb(144, 238, 144));
 
-            foreach (var line in document.Entities.Lines)
+            foreach (var shape in CadPreviewGeometry.BuildPreviewShapes(document, DxfAnalyzer.ExpandPolyline2D, DxfAnalyzer.SampleArc))
             {
-                canvas.Children.Add(new WpfLine
+                var geometry = shape.ToGeometry((x, y) => new System.Windows.Point(
+                    (x - bounds.MinX) * scale + margin,
+                    viewHeight - ((y - bounds.MinY) * scale + margin)));
+                if (geometry is null)
                 {
-                    X1 = (line.StartPoint.X - bounds.MinX) * scale + margin,
-                    Y1 = viewHeight - ((line.StartPoint.Y - bounds.MinY) * scale + margin),
-                    X2 = (line.EndPoint.X - bounds.MinX) * scale + margin,
-                    Y2 = viewHeight - ((line.EndPoint.Y - bounds.MinY) * scale + margin),
-                    Stroke = unifiedStroke,
-                    StrokeThickness = 1
-                });
-            }
+                    continue;
+                }
 
-            foreach (var circle in document.Entities.Circles)
-            {
-                var r = circle.Radius * scale;
-                var x = (circle.Center.X - bounds.MinX) * scale + margin - r;
-                var y = viewHeight - ((circle.Center.Y - bounds.MinY) * scale + margin) - r;
-                var el = new WpfEllipse
+                var path = new Path
                 {
-                    Width = r * 2,
-                    Height = r * 2,
-                    Stroke = unifiedStroke,
-                    StrokeThickness = 1
-                };
-                Canvas.SetLeft(el, x);
-                Canvas.SetTop(el, y);
-                canvas.Children.Add(el);
-            }
-
-            foreach (var poly in document.Entities.Polylines2D.Where(p => p.IsClosed))
-            {
-                var sampled = DxfAnalyzer.ExpandPolyline2D(poly, 24);
-                var points = new PointCollection(sampled.Select(v =>
-                    new System.Windows.Point(
-                        (v.X - bounds.MinX) * scale + margin,
-                        viewHeight - ((v.Y - bounds.MinY) * scale + margin))));
-                canvas.Children.Add(new Polygon
-                {
-                    Points = points,
+                    Data = geometry,
                     Stroke = unifiedStroke,
                     StrokeThickness = 1,
                     Fill = WpfBrushes.Transparent
-                });
-            }
-
-            foreach (var arc in document.Entities.Arcs)
-            {
-                var sampled = DxfAnalyzer.SampleArc(arc, 32);
-                var points = new PointCollection(sampled.Select(p =>
-                    new System.Windows.Point(
-                        (p.X - bounds.MinX) * scale + margin,
-                        viewHeight - ((p.Y - bounds.MinY) * scale + margin))));
-                canvas.Children.Add(new Polyline
-                {
-                    Points = points,
-                    Stroke = unifiedStroke,
-                    StrokeThickness = 1
-                });
+                };
+                canvas.Children.Add(path);
             }
 
             viewer.LoadScene(canvas, bounds, viewWidth, viewHeight, scale, margin);
@@ -782,11 +1551,13 @@ namespace CADRecognition
             ResetView();
         }
 
-        public void RenderAnnotations(IReadOnlyList<HoleAssignment> assignments, IReadOnlyList<MoldProfile> molds)
+        public void RenderAnnotations(IReadOnlyList<HoleAssignment> assignments, IReadOnlyList<MoldProfile> molds, double? splitY)
         {
             _markCanvas.Children.Clear();
             _focusRing = null;
-            var moldMap = molds.ToDictionary(m => m.MoldId, m => m);
+            var moldMap = molds
+                .GroupBy(m => m.MoldId)
+                .ToDictionary(g => g.Key, g => g.First());
 
             foreach (var ass in assignments)
             {
@@ -857,13 +1628,14 @@ namespace CADRecognition
                     _markCanvas.Children.Add(mark);
                 }
 
-                var shouldShowLabel = !_compactMode && ass.MoldId != 1;
+                var shouldShowLabel = !_compactMode && ass.MoldId > 0 && !ass.Hole.HoleType.StartsWith("Contour", StringComparison.Ordinal) && !ass.Hole.HoleType.StartsWith("EdgePartial:", StringComparison.Ordinal) && !ass.Hole.HoleType.StartsWith("EdgeNotch:", StringComparison.Ordinal);
 
                 if (shouldShowLabel)
                 {
+                    var prefix = splitY.HasValue && ass.Hole.Centroid.Y >= splitY.Value ? "N" : "M";
                     var text = new TextBlock
                     {
-                        Text = $"M{ass.MoldId:D2}",
+                        Text = $"{prefix}{ass.MoldId:D2}",
                         Foreground = brush,
                         FontWeight = FontWeights.SemiBold,
                         FontSize = 7
@@ -879,7 +1651,9 @@ namespace CADRecognition
             RectBounds? rect,
             IReadOnlyList<(double X, double Y)>? outerContourPoints,
             IReadOnlyList<CornerStepPath>? cornerPaths,
-            IReadOnlyList<HoleFeature>? cornerHints)
+            IReadOnlyList<HoleFeature>? cornerHints,
+            double boardWidth,
+            double? splitY = null)
         {
             _zoneCanvas.Children.Clear();
             if (rect is null)
@@ -902,6 +1676,23 @@ namespace CADRecognition
             Canvas.SetLeft(rectBox, Math.Min(r1.X, r2.X));
             Canvas.SetTop(rectBox, Math.Min(r1.Y, r2.Y));
             _zoneCanvas.Children.Add(rectBox);
+
+            if (boardWidth > 0 && splitY.HasValue)
+            {
+                var splitLeft = ModelToCanvas(rect.MinX, splitY.Value);
+                var splitRight = ModelToCanvas(rect.MaxX, splitY.Value);
+                var threshold = new WpfLine
+                {
+                    X1 = splitLeft.X,
+                    Y1 = splitLeft.Y,
+                    X2 = splitRight.X,
+                    Y2 = splitRight.Y,
+                    Stroke = new SolidColorBrush(WpfColor.FromArgb(255, 255, 0, 0)),
+                    StrokeThickness = 1.2,
+                    StrokeDashArray = new DoubleCollection([8, 4, 2, 4])
+                };
+                _zoneCanvas.Children.Add(threshold);
+            }
 
             // 2) 画当前识别到的真实外轮廓（红色）
             if (outerContourPoints is not null && outerContourPoints.Count >= 2)
@@ -1297,6 +2088,97 @@ namespace CADRecognition
         }
     }
 
+    public enum CadPreviewShapeKind
+    {
+        Line,
+        Circle,
+        Arc,
+        Polyline
+    }
+
+    public sealed class CadPreviewShape
+    {
+        public CadPreviewShapeKind Kind { get; init; }
+        public IReadOnlyList<(double X, double Y)> Points { get; init; } = [];
+        public bool IsClosed { get; init; }
+
+        public Geometry? ToGeometry(Func<double, double, System.Windows.Point> map)
+        {
+            if (Points.Count < 2)
+            {
+                return null;
+            }
+
+            var geo = new StreamGeometry();
+            using (var g = geo.Open())
+            {
+                g.BeginFigure(map(Points[0].X, Points[0].Y), false, IsClosed);
+                g.PolyLineTo(Points.Skip(1).Select(p => map(p.X, p.Y)).ToList(), true, false);
+            }
+            geo.Freeze();
+            return geo;
+        }
+    }
+
+    public static class CadPreviewGeometry
+    {
+        public static IEnumerable<CadPreviewShape> BuildPreviewShapes(
+            DxfDocument doc,
+            Func<Polyline2D, int, IReadOnlyList<(double X, double Y)>> expandPolyline,
+            Func<Arc, int, IReadOnlyList<(double X, double Y)>> sampleArc)
+        {
+            foreach (var line in doc.Entities.Lines)
+            {
+                yield return new CadPreviewShape
+                {
+                    Kind = CadPreviewShapeKind.Line,
+                    Points = [(line.StartPoint.X, line.StartPoint.Y), (line.EndPoint.X, line.EndPoint.Y)]
+                };
+            }
+
+            foreach (var circle in doc.Entities.Circles)
+            {
+                yield return new CadPreviewShape
+                {
+                    Kind = CadPreviewShapeKind.Circle,
+                    Points = sampleArc(new Arc(circle.Center, circle.Radius, 0, 360), 72),
+                    IsClosed = true
+                };
+            }
+
+            foreach (var poly in doc.Entities.Polylines2D)
+            {
+                var pts = expandPolyline(poly, 24);
+                if (pts.Count < 2)
+                {
+                    continue;
+                }
+
+                yield return new CadPreviewShape
+                {
+                    Kind = CadPreviewShapeKind.Polyline,
+                    Points = pts,
+                    IsClosed = poly.IsClosed
+                };
+            }
+
+            foreach (var arc in doc.Entities.Arcs)
+            {
+                var pts = sampleArc(arc, 32);
+                if (pts.Count < 2)
+                {
+                    continue;
+                }
+
+                yield return new CadPreviewShape
+                {
+                    Kind = CadPreviewShapeKind.Arc,
+                    Points = pts
+                };
+            }
+        }
+    }
+
     public static class DxfAnalyzer
     {
         private const int SignatureSamples = 72;
@@ -1328,7 +2210,7 @@ namespace CADRecognition
                 candidates.Add(feature);
             }
 
-            var outline = ExtractMoldOutline(doc, feature.Centroid);
+            var outline = ExtractMoldOutline(doc);
             return new MoldProfile(moldId, path, feature, outline, candidates);
         }
 
@@ -1340,6 +2222,37 @@ namespace CADRecognition
             var cornerCandidates = ExtractCornerMissingFeatures(doc, outer);
             var cornerStepPaths = ExtractCornerStepPaths(doc, outer);
             var contourPaths = ExtractContourDifferencePaths(doc, outer);
+            var splitY = outer.MinY + outer.Height * 0.5;
+            var stage1ContourPaths = new List<CornerStepPath>();
+            var stage2ContourPaths = new List<CornerStepPath>();
+            foreach (var path in contourPaths)
+            {
+                if (path.Points is null || path.Points.Count == 0)
+                {
+                    continue;
+                }
+
+                var avgY = path.Points.Average(p => p.Y);
+                var minY = path.Points.Min(p => p.Y);
+                var maxY = path.Points.Max(p => p.Y);
+                var crosses = minY < splitY && maxY >= splitY;
+                if (!crosses)
+                {
+                    (avgY < splitY ? stage1ContourPaths : stage2ContourPaths).Add(path);
+                    continue;
+                }
+
+                var stage1Count = path.Points.Count(p => p.Y < splitY);
+                var stage2Count = path.Points.Count - stage1Count;
+                if (stage1Count >= stage2Count)
+                {
+                    stage1ContourPaths.Add(path);
+                }
+                else
+                {
+                    stage2ContourPaths.Add(path);
+                }
+            }
 
             var maxHoleArea = Math.Max(outer.Area * 0.2, 1.0);
             var innerHoles = holes
@@ -1368,7 +2281,9 @@ namespace CADRecognition
                 cornerCandidates,
                 edgeCandidates,
                 cornerStepPaths,
-                contourPaths);
+                contourPaths,
+                stage1ContourPaths,
+                stage2ContourPaths);
         }
 
         private static IReadOnlyList<CornerStepPath> ExtractCornerStepPaths(DxfDocument doc, RectBounds outer)
@@ -1961,7 +2876,7 @@ namespace CADRecognition
                 (c.Center.X + c.Radius, c.Center.Y + c.Radius)
             }));
             points.AddRange(doc.Entities.Polylines2D.SelectMany(pl => ExpandPolyline2D(pl, 16)));
-            points.AddRange(doc.Entities.Arcs.SelectMany(a => SampleArc(a, 24)));
+            points.AddRange(doc.Entities.Arcs.SelectMany(a => SampleArc(a, 72)));
 
             if (points.Count == 0)
             {
@@ -2265,7 +3180,9 @@ namespace CADRecognition
                         }
                         if (s1.Equals(end))
                         {
-                            chain.AddRange(seg.Reverse().Skip(1));
+                            var reversed = seg.ToArray();
+                            Array.Reverse(reversed);
+                            chain.AddRange(reversed.Skip(1));
                             used[idx] = true;
                             advanced = true;
                             break;
@@ -2647,7 +3564,7 @@ namespace CADRecognition
                 signature);
         }
 
-        private static List<(double X, double Y)> ExtractMoldOutline(DxfDocument doc, (double X, double Y) referenceCenter)
+        private static List<(double X, double Y)> ExtractMoldOutline(DxfDocument doc)
         {
             var pts = CollectGeometryPoints(doc);
             if (pts.Count < 2)
@@ -2655,8 +3572,7 @@ namespace CADRecognition
                 return [];
             }
 
-            // 关键修复：轮廓坐标要以“模具自身几何中心”为原点。
-            // 之前用特征中心(referenceCenter)会在特征不居中时导致整块 M01 偏移。
+            // 模具轮廓仍以“模具中心”为原点；后续显示/定位时再按图纸左下角计算绝对位置。
             var minX = pts.Min(p => p.X);
             var maxX = pts.Max(p => p.X);
             var minY = pts.Min(p => p.Y);
@@ -2806,8 +3722,9 @@ namespace CADRecognition
         // 内孔严格匹配阈值（保留严格性，但允许CAD提取误差）
         private const double StrictAreaRatioMin = 0.95;
         private const double StrictAreaRatioMax = 1.05;
+        private const double ImpossibleMatchScoreThreshold = 0.95;
 
-        public MatchResult Match(ProjectProfile project, IReadOnlyList<MoldProfile> molds)
+        public MatchResult Match(ProjectProfile project, IReadOnlyList<MoldProfile> molds, bool isStage1)
         {
             var rows = new List<HoleAssignment>();
             var guidePaths = new List<CornerStepPath>();
@@ -2832,7 +3749,7 @@ namespace CADRecognition
             }
 
             // M01：沿“青色差集线的外偏移路径”做连续冲压。
-            var contourStamps = GenerateContinuousContourStampCenters(project, mold1, guidePaths);
+            var contourStamps = GenerateContinuousContourStampCenters(project, mold1, guidePaths, isStage1);
             foreach (var s in contourStamps)
             {
                 rows.Add(new HoleAssignment(
@@ -2858,46 +3775,53 @@ namespace CADRecognition
                         return features
                             .Where(f => IsShapeFamilyCompatible(hole, f))
                             .Select(f =>
-                        {
-                            var areaRatio = hole.Area / Math.Max(f.Area, 1e-6);
-                            var perimRatio = hole.Perimeter / Math.Max(f.Perimeter, 1e-6);
-                            var signature = SignatureDistance(hole.Signature, f.Signature);
-                            var typeMatch = IsSameShapeType(hole, f);
-
-                            // 宽高顺序无关：用长边/短边比。
-                            var hLong = Math.Max(hole.Width, hole.Height);
-                            var hShort = Math.Max(Math.Min(hole.Width, hole.Height), 1e-6);
-                            var fLong = Math.Max(f.Width, f.Height);
-                            var fShort = Math.Max(Math.Min(f.Width, f.Height), 1e-6);
-                            var longRatio = hLong / Math.Max(fLong, 1e-6);
-                            var shortRatio = hShort / Math.Max(fShort, 1e-6);
-
-                            var strict = typeMatch
-                                && areaRatio >= 0.94 && areaRatio <= 1.06
-                                && perimRatio >= 0.94 && perimRatio <= 1.06
-                                && longRatio >= 0.94 && longRatio <= 1.06
-                                && shortRatio >= 0.94 && shortRatio <= 1.06
-                                && signature <= 0.22;
-
-                            var score = Math.Abs(areaRatio - 1.0)
-                                        + Math.Abs(perimRatio - 1.0)
-                                        + Math.Abs(longRatio - 1.0)
-                                        + Math.Abs(shortRatio - 1.0)
-                                        + signature * 0.5;
-
-                            return new
                             {
-                                MoldId = m.MoldId,
-                                AreaRatio = areaRatio,
-                                PerimRatio = perimRatio,
-                                LongRatio = longRatio,
-                                ShortRatio = shortRatio,
-                                Signature = signature,
-                                TypeMatch = typeMatch,
-                                Strict = strict,
-                                Score = score
-                            };
-                        });
+                                var areaRatio = hole.Area / Math.Max(f.Area, 1e-6);
+                                var perimRatio = hole.Perimeter / Math.Max(f.Perimeter, 1e-6);
+                                var signature = SignatureDistance(hole.Signature, f.Signature);
+                                var typeMatch = IsSameShapeType(hole, f);
+
+                                var hLong = Math.Max(hole.Width, hole.Height);
+                                var hShort = Math.Max(Math.Min(hole.Width, hole.Height), 1e-6);
+                                var fLong = Math.Max(f.Width, f.Height);
+                                var fShort = Math.Max(Math.Min(f.Width, f.Height), 1e-6);
+                                var longRatio = hLong / Math.Max(fLong, 1e-6);
+                                var shortRatio = hShort / Math.Max(fShort, 1e-6);
+
+                                var strict = typeMatch
+                                    && areaRatio >= 0.94 && areaRatio <= 1.06
+                                    && perimRatio >= 0.94 && perimRatio <= 1.06
+                                    && longRatio >= 0.94 && longRatio <= 1.06
+                                    && shortRatio >= 0.94 && shortRatio <= 1.06
+                                    && signature <= 0.22;
+
+                                var score = Math.Abs(areaRatio - 1.0)
+                                            + Math.Abs(perimRatio - 1.0)
+                                            + Math.Abs(longRatio - 1.0)
+                                            + Math.Abs(shortRatio - 1.0)
+                                            + signature * 0.5;
+                                var impossible = !typeMatch
+                                               || areaRatio < 0.45 || areaRatio > 1.8
+                                               || perimRatio < 0.55 || perimRatio > 1.55
+                                               || longRatio < 0.55 || longRatio > 1.55
+                                               || shortRatio < 0.55 || shortRatio > 1.55
+                                               || signature > 0.65
+                                               || score > ImpossibleMatchScoreThreshold;
+
+                                return new
+                                {
+                                    MoldId = m.MoldId,
+                                    AreaRatio = areaRatio,
+                                    PerimRatio = perimRatio,
+                                    LongRatio = longRatio,
+                                    ShortRatio = shortRatio,
+                                    Signature = signature,
+                                    TypeMatch = typeMatch,
+                                    Strict = strict,
+                                    Impossible = impossible,
+                                    Score = score
+                                };
+                            });
                     })
                     .OrderBy(x => x.Score)
                     .ToList();
@@ -2910,11 +3834,16 @@ namespace CADRecognition
                 var strictPass = ranked.Where(x => x.Strict).OrderBy(x => x.Score).ToList();
                 if (strictPass.Count == 0)
                 {
-                    // 兜底：不允许出现 M00。仅在同类族内按几何综合分数最小选一个。
-                    var fallback = ranked
+                    var viable = ranked.Where(x => !x.Impossible).ToList();
+                    if (viable.Count == 0)
+                    {
+                        continue;
+                    }
+
+                    var fallback = viable
                         .Where(x => x.TypeMatch)
                         .OrderBy(x => x.Score)
-                        .FirstOrDefault() ?? ranked.OrderBy(x => x.Score).First();
+                        .FirstOrDefault() ?? viable.OrderBy(x => x.Score).First();
 
                     var debugTop = string.Join(" | ", ranked.Take(3).Select(r =>
                         $"M{r.MoldId:D2}:A={r.AreaRatio:F3},P={r.PerimRatio:F3},L={r.LongRatio:F3},S={r.ShortRatio:F3},Sig={r.Signature:F3},T={r.TypeMatch}"));
@@ -2938,96 +3867,8 @@ namespace CADRecognition
                     "单次冲压",
                     IsAnyCornerZone(hole, project.OuterRectangle),
                     IsNearOuterEdge(hole, project.OuterRectangle),
-                    string.Join(" | ", strictPass.Take(3).Select(r => $"M{r.MoldId:D2}:{r.Score:F3}")),
+                    string.Join(" | ", strictPass.Take(3).Select(r => $"{(isStage1 ? "M" : "N")}{r.MoldId:D2}:{r.Score:F3}")),
                     $"A={pick.AreaRatio:F3},P={pick.PerimRatio:F3}"));
-            }
-
-            // Edge partial stamping：每条边最多保留一个“最佳局部冲压”，避免同一孔被重复打两次。
-            foreach (var sideGroup in project.EdgeCandidates.GroupBy(c => c.Side))
-            {
-                var sideBest = sideGroup
-                    .Select(cand =>
-                    {
-                        var overlapThreshold = Math.Max(Math.Min(cand.Width, cand.Height) * 0.6, 25.0);
-                        var overlapsRealHole = holePool.Any(h =>
-                        {
-                            var dx = h.Centroid.X - cand.Centroid.X;
-                            var dy = h.Centroid.Y - cand.Centroid.Y;
-                            return Math.Sqrt(dx * dx + dy * dy) <= overlapThreshold;
-                        });
-                        if (overlapsRealHole)
-                        {
-                            return null;
-                        }
-
-                        var best = nonCornerMolds
-                            .Select(m =>
-                            {
-                                var chamfer = TrimmedChamferScore(m.OutlinePoints, cand.Points, out var placement);
-                                if (double.IsInfinity(chamfer))
-                                {
-                                    return null;
-                                }
-
-                                // 边缘局部冲压优先“同类形状 + 足够尺寸”的模具，避免误选小圆模(M16)。
-                                var candHoleType = cand.Points.Count >= 10 ? "Polyline" : "OpenPolyline";
-                                var pseudoCand = new HoleFeature(
-                                    candHoleType,
-                                    cand.Centroid,
-                                    cand.Width,
-                                    cand.Height,
-                                    Math.Max(cand.Width * cand.Height * 0.45, 1.0),
-                                    Math.Max(cand.Perimeter, 1.0),
-                                    0,
-                                    cand.Signature);
-                                var typeMatch = IsSameShapeType(pseudoCand, m.Feature) ? 0.0 : 0.5;
-                                var sig = SignatureDistance(cand.Signature, m.Feature.Signature);
-                                var wRatio = cand.Width / Math.Max(m.Feature.Width, 1e-6);
-                                var hRatio = cand.Height / Math.Max(m.Feature.Height, 1e-6);
-                                var sizePenalty = (wRatio > 1.05 || hRatio > 1.05) ? 1.2 : 0.0;
-                                var smallMoldPenalty = (m.Feature.Width < cand.Width * 0.75 || m.Feature.Height < cand.Height * 0.75) ? 1.5 : 0.0;
-
-                                var score = chamfer + sig * 0.9 + typeMatch + sizePenalty + smallMoldPenalty;
-                                return new { m.MoldId, Score = score, Placement = placement };
-                            })
-                            .Where(x => x is not null)
-                            .Select(x => x!)
-                            .OrderBy(x => x.Score)
-                            .FirstOrDefault();
-                        if (best is null || double.IsInfinity(best.Score))
-                        {
-                            return null;
-                        }
-
-                        var placementHole = new HoleFeature(
-                            $"EdgePartial:{cand.Side}",
-                            best.Placement,
-                            cand.Width,
-                            cand.Height,
-                            Math.Max(cand.Width * cand.Height * 0.45, 1.0),
-                            Math.Max(cand.Perimeter, 1.0),
-                            0,
-                            cand.Signature);
-
-                        return new { Hole = placementHole, best.MoldId, best.Score };
-                    })
-                    .Where(x => x is not null)
-                    .Select(x => x!)
-                    .OrderBy(x => x.Score)
-                    .FirstOrDefault();
-
-                if (sideBest is null)
-                {
-                    continue;
-                }
-
-                rows.Add(new HoleAssignment(
-                    sideBest.Hole,
-                    sideBest.MoldId,
-                    "边缘局部冲压",
-                    false,
-                    true,
-                    BuildTopCandidates(sideBest.Hole, nonCornerMolds, project.OuterRectangle, 3)));
             }
 
             var cleaned = DeduplicateAssignments(rows);
@@ -3097,9 +3938,10 @@ namespace CADRecognition
             return Math.Sqrt(sum / keep);
         }
 
-        private static IReadOnlyList<HoleFeature> GenerateContinuousContourStampCenters(ProjectProfile project, MoldProfile mold1, List<CornerStepPath> guidePaths)
+        private static IReadOnlyList<HoleFeature> GenerateContinuousContourStampCenters(ProjectProfile project, MoldProfile mold1, List<CornerStepPath> guidePaths, bool isStage1)
         {
-            if (project.ContourPaths is null || project.ContourPaths.Count == 0)
+            var contourPaths = isStage1 ? project.Stage1ContourPaths : project.Stage2ContourPaths;
+            if (contourPaths is null || contourPaths.Count == 0)
             {
                 return [];
             }
@@ -3126,7 +3968,7 @@ namespace CADRecognition
             var moldStep = Math.Max(EstimateOutlineStep(outline) * 0.55, 2.5);
             var points = new List<HoleFeature>();
 
-            foreach (var contourPath in project.ContourPaths)
+            foreach (var contourPath in contourPaths)
             {
                 var pts = contourPath.Points;
                 if (pts is null || pts.Count < 2)
@@ -3773,28 +4615,38 @@ namespace CADRecognition
                 return source;
             }
 
-            var result = new List<HoleAssignment>();
+            var bestByHole = new Dictionary<string, HoleAssignment>(StringComparer.Ordinal);
             foreach (var row in source)
             {
-                var dup = result.Any(existing =>
+                var key = BuildHoleKey(row.Hole);
+                if (!bestByHole.TryGetValue(key, out var current))
                 {
-                    if (existing.MoldId != row.MoldId)
-                    {
-                        return false;
-                    }
+                    bestByHole[key] = row;
+                    continue;
+                }
 
-                    var dx = existing.Hole.Centroid.X - row.Hole.Centroid.X;
-                    var dy = existing.Hole.Centroid.Y - row.Hole.Centroid.Y;
-                    return Math.Sqrt(dx * dx + dy * dy) <= 1e-6;
-                });
-
-                if (!dup)
+                var currentScore = AssignmentPriority(current);
+                var newScore = AssignmentPriority(row);
+                if (newScore < currentScore)
                 {
-                    result.Add(row);
+                    bestByHole[key] = row;
                 }
             }
 
-            return result;
+            return bestByHole.Values.ToList();
+        }
+
+        private static string BuildHoleKey(HoleFeature hole)
+        {
+            return $"{Math.Round(hole.Centroid.X, 4):F4}|{Math.Round(hole.Centroid.Y, 4):F4}|{Math.Round(hole.Width, 4):F4}|{Math.Round(hole.Height, 4):F4}|{hole.HoleType}";
+        }
+
+        private static double AssignmentPriority(HoleAssignment row)
+        {
+            var moldPenalty = row.MoldId == 1 ? 0.0 : 1.0;
+            var edgePenalty = row.Hole.HoleType.StartsWith("EdgePartial:", StringComparison.Ordinal) ? 0.4 : 0.0;
+            var cornerBonus = row.IsCornerCandidate ? -0.1 : 0.0;
+            return moldPenalty + edgePenalty + cornerBonus;
         }
 
         private static bool IsInCornerMissingZone(HoleFeature hole, RectBounds rect, RectCorner corner)
@@ -3867,8 +4719,9 @@ namespace CADRecognition
             return 0.12 * dw + 0.12 * dh + 0.16 * da + 0.1 * dp + 0.15 * dr + 0.1 * ds;
         }
 
-        private static string BuildTopCandidates(HoleFeature hole, IEnumerable<MoldProfile> molds, RectBounds rect, int topN)
+        private static string BuildTopCandidates(HoleFeature hole, IEnumerable<MoldProfile> molds, RectBounds rect, int topN, bool isStage1)
         {
+            var prefix = isStage1 ? "M" : "N";
             var tops = molds
                 .Select(m => new
                 {
@@ -3877,12 +4730,13 @@ namespace CADRecognition
                 })
                 .OrderBy(x => x.Score)
                 .Take(topN)
-                .Select(x => $"M{x.MoldId:D2}:{x.Score:F3}");
+                .Select(x => $"{prefix}{x.MoldId:D2}:{x.Score:F3}");
             return string.Join(" | ", tops);
         }
 
-        private static string BuildTopCandidatesByAreaRatio(HoleFeature hole, IEnumerable<MoldProfile> molds, int topN)
+        private static string BuildTopCandidatesByAreaRatio(HoleFeature hole, IEnumerable<MoldProfile> molds, int topN, bool isStage1)
         {
+            var prefix = isStage1 ? "M" : "N";
             var tops = molds
                 .SelectMany(m =>
                 {
@@ -3897,7 +4751,7 @@ namespace CADRecognition
                 .OrderBy(x => Math.Abs(x.AreaRatio - 1.0))
                 .ThenBy(x => x.Signature)
                 .Take(topN)
-                .Select(x => $"M{x.MoldId:D2}:{x.AreaRatio:F3}");
+                .Select(x => $"{prefix}{x.MoldId:D2}:{x.AreaRatio:F3}");
             return string.Join(" | ", tops);
         }
 
@@ -3995,7 +4849,9 @@ namespace CADRecognition
             }
 
             var forward = MinCyclicRmse(a, b);
-            var mirrored = MinCyclicRmse(a, b.Reverse().ToArray());
+            var mirroredSource = b.ToArray();
+            Array.Reverse(mirroredSource);
+            var mirrored = MinCyclicRmse(a, mirroredSource);
             return Math.Min(forward, mirrored);
         }
 
@@ -4039,5 +4895,5 @@ namespace CADRecognition
             return result;
         }
     }
-
 }
+
