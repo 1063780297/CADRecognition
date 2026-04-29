@@ -2233,7 +2233,10 @@ namespace CADRecognition
                 candidates.Add(feature);
             }
 
-            var outline = ExtractMoldOutline(doc);
+            // M01 连续冲压路径依赖“模具本体中心”来保证边缘贴合；
+            // 其余模具采用特征中心以保证单孔定位不偏移。
+            var useBodyCenter = moldId == 1;
+            var outline = ExtractMoldOutline(doc, feature.Centroid, useBodyCenter);
             return new MoldProfile(moldId, path, feature, outline, candidates);
         }
 
@@ -3587,7 +3590,7 @@ namespace CADRecognition
                 signature);
         }
 
-        private static List<(double X, double Y)> ExtractMoldOutline(DxfDocument doc)
+        private static List<(double X, double Y)> ExtractMoldOutline(DxfDocument doc, (double X, double Y) anchor, bool useBodyCenter)
         {
             var pts = CollectGeometryPoints(doc);
             if (pts.Count < 2)
@@ -3595,13 +3598,24 @@ namespace CADRecognition
                 return [];
             }
 
-            // 模具轮廓仍以“模具中心”为原点；后续显示/定位时再按图纸左下角计算绝对位置。
-            var minX = pts.Min(p => p.X);
-            var maxX = pts.Max(p => p.X);
-            var minY = pts.Min(p => p.Y);
-            var maxY = pts.Max(p => p.Y);
-            var centerX = (minX + maxX) * 0.5;
-            var centerY = (minY + maxY) * 0.5;
+            // M01（连续冲压）使用模具本体几何中心，保证边缘与图纸边缘贴合；
+            // 其余模具使用识别特征中心，保证单孔叠加不偏。
+            double centerX;
+            double centerY;
+            if (useBodyCenter)
+            {
+                var minX = pts.Min(p => p.X);
+                var maxX = pts.Max(p => p.X);
+                var minY = pts.Min(p => p.Y);
+                var maxY = pts.Max(p => p.Y);
+                centerX = (minX + maxX) * 0.5;
+                centerY = (minY + maxY) * 0.5;
+            }
+            else
+            {
+                centerX = anchor.X;
+                centerY = anchor.Y;
+            }
 
             var ordered = pts
                 .Select(p => (X: p.X - centerX, Y: p.Y - centerY))
@@ -4025,7 +4039,10 @@ namespace CADRecognition
                 // 紫线显示采用外延后的路径，便于与冲压中心一致核对。
                 guidePaths.Add(new CornerStepPath(contourPath.CornerName, centerChain));
 
-                var moldStepLength = Math.Max(moldEdgeLength, 1.0);
+                // 连续冲压重叠控制：相邻两次冲压中心距 = 模具沿走刀方向尺寸 - 重叠量。
+            // 要求重叠 2~10mm，这里使用与模具尺寸相关的自适应值并限幅到 [2,10]。
+            var overlapMm = Compat.Clamp(moldEdgeLength * 0.15, 2.0, 10.0);
+            var moldStepLength = Math.Max(moldEdgeLength - overlapMm, 0.5);
 
                 // 第一步：命中紫线所有端点、拐点。
                 var keyPoints = new List<(double X, double Y)> { centerChain[0] };
@@ -4066,7 +4083,8 @@ namespace CADRecognition
                         mold1.Feature.Signature));
                 }
 
-                // 第二步：若紫色线段长度 > M01边长，则按边长步进插值。
+                // 第二步：若紫色线段长度 > 步距，则按步距插值。
+                // 步距已考虑重叠量：step = 模具沿路径尺寸 - overlap(2~10mm)。
                 for (var i = 1; i < centerChain.Count; i++)
                 {
                     var a = centerChain[i - 1];
