@@ -12,16 +12,11 @@
 
   <ItemGroup>
     <PackageReference Include="netDxf" Version="2023.11.10" />
-    <PackageReference Include="System.Text.Json" Version="10.0.6" />
   </ItemGroup>
 
   <ItemGroup>
     <Reference Include="CADImport">
-      <HintPath>..\..\CAD.NET_v16.1.0.65224(1)\Dlls\net40\CADImport.dll</HintPath>
-    </Reference>
-    <Reference Include="HslCommunication">
-      <HintPath>E:\安装包\HslCommunicationDemo-v12.8.2\HslCommunication.dll</HintPath>
-      <Private>true</Private>
+      <HintPath>..\..\CAD.NET_v16.1.0.65224(2)\Dlls\net40\CADImport.dll</HintPath>
     </Reference>
   </ItemGroup>
 

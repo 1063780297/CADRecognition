@@ -219,8 +219,10 @@
                     <ColumnDefinition Width="180"/>
                     <ColumnDefinition Width="220"/>
                     <ColumnDefinition Width="90"/>
-                    <ColumnDefinition Width="90"/>
+                    <ColumnDefinition Width="100"/>
+                    <ColumnDefinition Width="160"/>
                     <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="Auto"/>
@@ -236,12 +238,20 @@
                     <TextBlock Text="端口" VerticalAlignment="Center" Margin="0,0,6,0"/>
                     <ComboBox x:Name="TcpPortComboBox" Width="54" Height="22" IsEditable="True"/>
                 </StackPanel>
-                <Button Grid.Column="5" Content="调用" Width="80" Margin="4,2" Click="Export_Click" Visibility="Hidden"/>
-                <Button Grid.Column="6" Content="台1数据发送" Width="100" Margin="4,2" Click="SendStage1Tcp_Click"/>
-                <Button Grid.Column="7" Content="台2数据发送" Width="100" Margin="4,2" Click="SendStage2Tcp_Click"/>
-                <Button Grid.Column="8" Content="数据发送" Width="90" Margin="4,2" Click="SendAllTcp_Click"/>
-                <Button Grid.Column="9" Content="取消" Width="80" Margin="4,2" Click="Cancel_Click"/>
-                <Button Grid.Column="10" Content="关闭" Width="80" Margin="4,2" Click="Close_Click"/>
+                <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center" Margin="4,0,0,0">
+                    <TextBlock Text="站号" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                    <ComboBox x:Name="ModbusStationComboBox" Width="44" Height="22" IsEditable="True"/>
+                </StackPanel>
+                <StackPanel Grid.Column="4" Orientation="Horizontal" VerticalAlignment="Center" Margin="4,0,0,0">
+                    <TextBlock Text="寄存器" VerticalAlignment="Center" Margin="0,0,4,0" ToolTip="整张表相对保持寄存器的基址（字偏移），如 0 或 s=1;0；程序名从基址+0 起共1000字"/>
+                    <ComboBox x:Name="ModbusRegisterComboBox" Width="96" Height="22" IsEditable="True"/>
+                </StackPanel>
+                <Button Grid.Column="6" Content="调用" Width="80" Margin="4,2" Click="Export_Click" Visibility="Hidden"/>
+                <Button Grid.Column="7" Content="台1数据发送" Width="100" Margin="4,2" Click="SendStage1Tcp_Click"/>
+                <Button Grid.Column="8" Content="台2数据发送" Width="100" Margin="4,2" Click="SendStage2Tcp_Click"/>
+                <Button Grid.Column="9" Content="数据发送" Width="90" Margin="4,2" Click="SendAllTcp_Click"/>
+                <Button Grid.Column="10" Content="取消" Width="80" Margin="4,2" Click="Cancel_Click"/>
+                <Button Grid.Column="11" Content="关闭" Width="80" Margin="4,2" Click="Close_Click"/>
             </Grid>
         </Border>
     </Grid>

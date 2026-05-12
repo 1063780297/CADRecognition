@@ -1034,7 +1034,7 @@ namespace CADRecognition
 
             if (dialog.ShowDialog() == true)
             {
-                StatusText.Text = "已导出并发送 JSON。";
+                StatusText.Text = "已导出并通过 Modbus TCP 发送。";
             }
         }
 
@@ -1061,8 +1061,8 @@ namespace CADRecognition
             model.CustomContent = string.Empty;
 
             var boundaryWidth = model.PlateWidth2 > 0 ? model.PlateWidth2 : (_lastProjectProfile?.OuterRectangle.Height ?? 0);
-            var stage1Rows = _stage1PositionRows.OrderBy(r => r.PosY).ThenBy(r => r.PosX).ToList();
-            var stage2Rows = _stage2PositionRows.OrderBy(r => r.PosY).ThenBy(r => r.PosX).ToList();
+            var stage1Rows = _stage1PositionRows.OrderBy(r => r.Index).ToList();
+            var stage2Rows = _stage2PositionRows.OrderBy(r => r.Index).ToList();
             if (stage1Rows.Count == 0 && stage2Rows.Count == 0 && boundaryWidth > 0)
             {
                 stage1Rows = [];
@@ -1109,7 +1109,7 @@ namespace CADRecognition
         private IEnumerable<PositionRow> SplitRowsByBoundary(IEnumerable<PositionRow> rows, RectBounds boundary, bool upperHalf)
         {
             var midpoint = boundary.MinY + boundary.Height / 2.0;
-            foreach (var row in rows.OrderBy(x => x.PosY).ThenBy(x => x.PosX))
+            foreach (var row in rows.OrderBy(x => x.Index))
             {
                 var isUpper = row.PosY >= midpoint;
                 if (upperHalf == isUpper)
@@ -1160,12 +1160,13 @@ namespace CADRecognition
             }
 
             var index = 1;
-            var rows = result.HoleAssignments
-                .Where(x => !x.Hole.HoleType.StartsWith("EdgeNotch:", StringComparison.Ordinal))
-                .OrderBy(x => x.Hole.Centroid.Y).ThenBy(x => x.Hole.Centroid.X);
-
-            foreach (var row in rows)
+            foreach (var row in result.HoleAssignments)
             {
+                if (row.Hole.HoleType.StartsWith("EdgeNotch:", StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
                 positionRows.Add(new PositionRow
                 {
                     Index = index++,
@@ -1181,7 +1182,9 @@ namespace CADRecognition
                     IsEdgeHole = row.IsEdgeHole ? "是" : "否",
                     TopCandidates = row.TopCandidates,
                     AreaRatio = row.AreaRatioInfo,
-                    FailureReason = row.FailureReason
+                    FailureReason = row.FailureReason,
+                    RotationDeg = row.RotationDeg,
+                    IsMirrored = row.IsMirrored
                 });
             }
         }
@@ -1338,8 +1341,23 @@ namespace CADRecognition
             {
                 return;
             }
+            var isStage1 = ReferenceEquals(grid, PositionGrid);
+            var stage1Count = _stage1MoldFiles.Count;
+            var stageMolds = isStage1
+                ? _lastMolds.Take(stage1Count)
+                : _lastMolds.Skip(stage1Count);
+            var mold = stageMolds.FirstOrDefault(m => m.MoldId == row.MoldId);
+            var hasOutline = mold?.OutlinePoints is { Count: >= 2 };
+
             _viewer.FocusHole(row.AbsX, row.AbsY, row.MoldId, targetZoom: 4.0);
-            await _viewer.BlinkFocusAsync(row.AbsX, row.AbsY, row.MoldId);
+            if (hasOutline && mold is not null)
+            {
+                await _viewer.BlinkMoldOutlineAsync(row.AbsX, row.AbsY, row.MoldId, mold.OutlinePoints, row.RotationDeg, row.IsMirrored);
+            }
+            else
+            {
+                await _viewer.BlinkFocusAsync(row.AbsX, row.AbsY, row.MoldId);
+            }
             StatusText.Text = $"已放大定位孔位 #{row.Index}（{row.MoldCode}），角候选={row.IsCornerCandidate}，边缘孔={row.IsEdgeHole}，Top3={row.TopCandidates}";
         }
 
@@ -1969,25 +1987,36 @@ namespace CADRecognition
             _compactMode = compact;
         }
 
-        public void FocusHole(double modelX, double modelY, int moldId, double? targetZoom = null)
+        public void FocusHole(double modelX, double modelY, int moldId, double? targetZoom = null, bool showFocusRing = false)
         {
             var p = ModelToCanvas(modelX, modelY);
             var color = new SolidColorBrush(GetMoldColor(moldId));
-            if (_focusRing is null)
+            if (!showFocusRing)
             {
-                _focusRing = new WpfEllipse
+                if (_focusRing is not null)
                 {
-                    Width = 26,
-                    Height = 26,
-                    Stroke = color,
-                    StrokeThickness = 2.5,
-                    Fill = WpfBrushes.Transparent
-                };
-                _markCanvas.Children.Add(_focusRing);
+                    _markCanvas.Children.Remove(_focusRing);
+                    _focusRing = null;
+                }
             }
-            _focusRing.Stroke = color;
-            Canvas.SetLeft(_focusRing, p.X - 13);
-            Canvas.SetTop(_focusRing, p.Y - 13);
+            else
+            {
+                if (_focusRing is null)
+                {
+                    _focusRing = new WpfEllipse
+                    {
+                        Width = 26,
+                        Height = 26,
+                        Stroke = color,
+                        StrokeThickness = 2.5,
+                        Fill = WpfBrushes.Transparent
+                    };
+                    _markCanvas.Children.Add(_focusRing);
+                }
+                _focusRing.Stroke = color;
+                Canvas.SetLeft(_focusRing, p.X - 13);
+                Canvas.SetTop(_focusRing, p.Y - 13);
+            }
 
             if (targetZoom.HasValue)
             {
@@ -2002,26 +2031,100 @@ namespace CADRecognition
             _translate.Y = centerY - p.Y * scale;
         }
 
-        public async Task BlinkFocusAsync(double modelX, double modelY, int moldId)
+        public async Task BlinkMoldOutlineAsync(double modelX, double modelY, int moldId, IReadOnlyList<(double X, double Y)> outlinePoints, double rotationDeg, bool isMirrored)
         {
-            if (_focusRing is null)
+            if (outlinePoints.Count < 2)
             {
-                FocusHole(modelX, modelY, moldId);
-            }
-            if (_focusRing is null)
-            {
+                await BlinkFocusAsync(modelX, modelY, moldId);
                 return;
             }
-            var c = new SolidColorBrush(GetMoldColor(moldId));
-            _focusRing.Stroke = c;
+
+            var p = ModelToCanvas(modelX, modelY);
+            var rad = rotationDeg * Math.PI / 180.0;
+            var outline = new PointCollection();
+            foreach (var pt in outlinePoints)
+            {
+                var x = isMirrored ? -pt.X : pt.X;
+                var y = pt.Y;
+                var xr = x * Math.Cos(rad) - y * Math.Sin(rad);
+                var yr = x * Math.Sin(rad) + y * Math.Cos(rad);
+                outline.Add(new System.Windows.Point(p.X + xr * _drawScale, p.Y - yr * _drawScale));
+            }
+
+            var strokeColor = GetMoldColor(moldId);
+            // 使用局部引用：连续双击或并发 await 时，不应依赖会被其它调用清掉的共享字段。
+            var blinkPoly = new Polyline
+            {
+                Points = outline,
+                Stroke = new SolidColorBrush(strokeColor),
+                StrokeThickness = 2.8,
+                Fill = WpfBrushes.Transparent
+            };
+            _markCanvas.Children.Add(blinkPoly);
+
             for (var i = 0; i < 3; i++)
             {
-                _focusRing.Visibility = Visibility.Hidden;
+                blinkPoly.Visibility = Visibility.Hidden;
                 await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Background);
                 await Task.Delay(120);
-                _focusRing.Visibility = Visibility.Visible;
+                blinkPoly.Visibility = Visibility.Visible;
                 await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Background);
                 await Task.Delay(120);
+            }
+
+            if (_markCanvas.Children.Contains(blinkPoly))
+            {
+                _markCanvas.Children.Remove(blinkPoly);
+            }
+        }
+
+        public async Task BlinkFocusAsync(double modelX, double modelY, int moldId)
+        {
+            var p = ModelToCanvas(modelX, modelY);
+            var brush = new SolidColorBrush(GetMoldColor(moldId));
+            const double arm = 12.0;
+            var crossH = new Polyline
+            {
+                Stroke = brush,
+                StrokeThickness = 2.2,
+                Points = new PointCollection
+                {
+                    new System.Windows.Point(p.X - arm, p.Y),
+                    new System.Windows.Point(p.X + arm, p.Y)
+                }
+            };
+            var crossV = new Polyline
+            {
+                Stroke = brush,
+                StrokeThickness = 2.2,
+                Points = new PointCollection
+                {
+                    new System.Windows.Point(p.X, p.Y - arm),
+                    new System.Windows.Point(p.X, p.Y + arm)
+                }
+            };
+            _markCanvas.Children.Add(crossH);
+            _markCanvas.Children.Add(crossV);
+
+            for (var i = 0; i < 3; i++)
+            {
+                crossH.Visibility = Visibility.Hidden;
+                crossV.Visibility = Visibility.Hidden;
+                await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Background);
+                await Task.Delay(120);
+                crossH.Visibility = Visibility.Visible;
+                crossV.Visibility = Visibility.Visible;
+                await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Background);
+                await Task.Delay(120);
+            }
+
+            if (_markCanvas.Children.Contains(crossH))
+            {
+                _markCanvas.Children.Remove(crossH);
+            }
+            if (_markCanvas.Children.Contains(crossV))
+            {
+                _markCanvas.Children.Remove(crossV);
             }
         }
 
@@ -3909,7 +4012,205 @@ namespace CADRecognition
             }
 
             var cleaned = DeduplicateAssignments(rows);
-            return new MatchResult(cleaned, guidePaths);
+            var ordered = OrderAssignmentsForStamping(cleaned, guidePaths);
+            return new MatchResult(ordered, guidePaths);
+        }
+
+        /// <summary>
+        /// 冲压顺序：连续冲压（角落模具）沿轮廓/导线路径；内孔自左向右再自上而下，避免全局 Y-X 造成左右蛇形。
+        /// </summary>
+        public static IReadOnlyList<HoleAssignment> OrderAssignmentsForStamping(
+            IReadOnlyList<HoleAssignment> assignments,
+            IReadOnlyList<CornerStepPath>? guidePaths)
+        {
+            if (assignments.Count <= 1)
+            {
+                return assignments;
+            }
+
+            static bool IsEdgeNotch(HoleAssignment a) =>
+                a.Hole.HoleType.StartsWith("EdgeNotch:", StringComparison.Ordinal);
+
+            static bool IsContourStamp(HoleAssignment a) =>
+                string.Equals(a.PositionRelation, "连续冲压", StringComparison.Ordinal)
+                || a.Hole.HoleType.StartsWith("ContourCornerHit:", StringComparison.Ordinal)
+                || a.Hole.HoleType.StartsWith("ContourPath:", StringComparison.Ordinal);
+
+            static string? ContourPathTag(HoleAssignment a)
+            {
+                var t = a.Hole.HoleType;
+                const string p1 = "ContourCornerHit:";
+                const string p2 = "ContourPath:";
+                if (t.StartsWith(p1, StringComparison.Ordinal))
+                {
+                    return t.Substring(p1.Length);
+                }
+
+                if (t.StartsWith(p2, StringComparison.Ordinal))
+                {
+                    return t.Substring(p2.Length);
+                }
+
+                return null;
+            }
+
+            static int ContourTagOrder(string tag)
+            {
+                if (tag.Length > 7
+                    && tag.StartsWith("Contour", StringComparison.Ordinal)
+                    && int.TryParse(tag.Substring(7), NumberStyles.Integer, CultureInfo.InvariantCulture, out var n))
+                {
+                    return n;
+                }
+
+                return int.MaxValue;
+            }
+
+            var pathOrder = new Dictionary<string, int>(StringComparer.Ordinal);
+            if (guidePaths is not null)
+            {
+                for (var i = 0; i < guidePaths.Count; i++)
+                {
+                    var name = guidePaths[i].CornerName;
+                    if (!pathOrder.ContainsKey(name))
+                    {
+                        pathOrder[name] = i;
+                    }
+                }
+            }
+
+            IReadOnlyList<(double X, double Y)>? GuideChain(string pathTag)
+            {
+                if (guidePaths is null)
+                {
+                    return null;
+                }
+
+                foreach (var gp in guidePaths)
+                {
+                    if (string.Equals(gp.CornerName, pathTag, StringComparison.Ordinal) && gp.Points is { Count: >= 2 })
+                    {
+                        return gp.Points;
+                    }
+                }
+
+                return null;
+            }
+
+            var notches = assignments.Where(IsEdgeNotch).ToList();
+            var work = assignments.Where(a => !IsEdgeNotch(a)).ToList();
+
+            var contour = work.Where(IsContourStamp).ToList();
+            var inner = work.Where(a => !IsContourStamp(a)).ToList();
+
+            var contourOrdered = contour
+                .GroupBy(a => ContourPathTag(a) ?? string.Empty)
+                .OrderBy(g =>
+                {
+                    var tag = g.Key;
+                    if (tag.Length == 0)
+                    {
+                        return int.MaxValue;
+                    }
+
+                    if (pathOrder.TryGetValue(tag, out var pi))
+                    {
+                        return pi;
+                    }
+
+                    return 10000 + ContourTagOrder(tag);
+                })
+                .SelectMany(g =>
+                {
+                    var tag = g.Key;
+                    var chain = GuideChain(tag);
+                    if (chain is not null)
+                    {
+                        return g.OrderBy(a => ClosestPathStation(chain, a.Hole.Centroid))
+                            .ThenBy(a => a.Hole.Centroid.X)
+                            .ThenBy(a => a.Hole.Centroid.Y);
+                    }
+
+                    return g.OrderBy(a => a.Hole.Centroid.X).ThenBy(a => a.Hole.Centroid.Y);
+                })
+                .ToList();
+
+            var innerOrdered = inner
+                .OrderBy(a => a.Hole.Centroid.X)
+                .ThenBy(a => a.Hole.Centroid.Y)
+                .ToList();
+
+            var notchesOrdered = notches
+                .OrderBy(a => a.Hole.Centroid.X)
+                .ThenBy(a => a.Hole.Centroid.Y)
+                .ToList();
+
+            return contourOrdered.Concat(innerOrdered).Concat(notchesOrdered).ToList();
+        }
+
+        private static double ClosestPathStation(IReadOnlyList<(double X, double Y)> chain, (double X, double Y) p)
+        {
+            double bestDist2 = double.PositiveInfinity;
+            double bestStation = 0;
+            var cum = 0.0;
+            for (var i = 1; i < chain.Count; i++)
+            {
+                var ax = chain[i - 1].X;
+                var ay = chain[i - 1].Y;
+                var bx = chain[i].X;
+                var by = chain[i].Y;
+                var abx = bx - ax;
+                var aby = by - ay;
+                var segLen = Math.Sqrt(abx * abx + aby * aby);
+                double stationOnSeg;
+                double px;
+                double py;
+                if (segLen <= 1e-12)
+                {
+                    stationOnSeg = 0;
+                    px = ax;
+                    py = ay;
+                }
+                else
+                {
+                    var apx = p.X - ax;
+                    var apy = p.Y - ay;
+                    var t = (apx * abx + apy * aby) / (segLen * segLen);
+                    if (t < 0)
+                    {
+                        t = 0;
+                    }
+                    else if (t > 1)
+                    {
+                        t = 1;
+                    }
+
+                    stationOnSeg = t * segLen;
+                    px = ax + t * abx;
+                    py = ay + t * aby;
+                }
+
+                var dx = p.X - px;
+                var dy = p.Y - py;
+                var d2 = dx * dx + dy * dy;
+                if (d2 < bestDist2 - 1e-18)
+                {
+                    bestDist2 = d2;
+                    bestStation = cum + stationOnSeg;
+                }
+                else if (Math.Abs(d2 - bestDist2) < 1e-12)
+                {
+                    var alt = cum + stationOnSeg;
+                    if (alt < bestStation)
+                    {
+                        bestStation = alt;
+                    }
+                }
+
+                cum += segLen;
+            }
+
+            return bestStation;
         }
 
         private static double TrimmedChamferScore(

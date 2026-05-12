@@ -95,5 +95,7 @@ namespace CADRecognition
         public string TopCandidates { get; set; } = string.Empty;
         public string AreaRatio { get; set; } = string.Empty;
         public string FailureReason { get; set; } = string.Empty;
+        public double RotationDeg { get; set; }
+        public bool IsMirrored { get; set; }
     }
 }

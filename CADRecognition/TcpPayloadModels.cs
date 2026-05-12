@@ -29,5 +29,7 @@ namespace CADRecognition
         public List<string> Ports { get; set; } = new List<string>();
         public string LastHost { get; set; } = string.Empty;
         public string LastPort { get; set; } = string.Empty;
+        public string LastStation { get; set; } = "1";
+        public string LastHoldingRegisterAddress { get; set; } = "0";
     }
 }

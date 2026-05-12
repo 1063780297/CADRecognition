@@ -18,7 +18,7 @@ namespace CADRecognition
         private readonly string _tcpHistoryFilePath;
         private readonly TcpCustomContentStore _customContentStore;
         private readonly TcpConnectionHistoryStore _tcpHistoryStore;
-        private readonly TcpCommService _tcpCommService = new();
+        private readonly ModbusTcpCommService _modbusTcpCommService = new();
         private readonly ObservableCollection<TcpGridRow> _stage1Rows = new();
         private readonly ObservableCollection<TcpGridRow> _stage2Rows = new();
         private string _clipboard = string.Empty;
@@ -82,15 +82,23 @@ namespace CADRecognition
             else TcpHostComboBox.Text = "127.0.0.1";
 
             if (!string.IsNullOrWhiteSpace(_tcpHistoryStore.LastPort)) TcpPortComboBox.Text = _tcpHistoryStore.LastPort;
-            else TcpPortComboBox.Text = "9000";
+            else TcpPortComboBox.Text = "502";
+
+            if (!string.IsNullOrWhiteSpace(_tcpHistoryStore.LastStation)) ModbusStationComboBox.Text = _tcpHistoryStore.LastStation;
+            else ModbusStationComboBox.Text = "1";
+
+            if (!string.IsNullOrWhiteSpace(_tcpHistoryStore.LastHoldingRegisterAddress)) ModbusRegisterComboBox.Text = _tcpHistoryStore.LastHoldingRegisterAddress;
+            else ModbusRegisterComboBox.Text = "0";
         }
 
-        private void SaveTcpHistory(string host, string port)
+        private void SaveTcpHistory(string host, string port, string station, string registerAddress)
         {
             if (!string.IsNullOrWhiteSpace(host) && !_tcpHistoryStore.Hosts.Contains(host)) _tcpHistoryStore.Hosts.Insert(0, host);
             if (!string.IsNullOrWhiteSpace(port) && !_tcpHistoryStore.Ports.Contains(port)) _tcpHistoryStore.Ports.Insert(0, port);
             _tcpHistoryStore.LastHost = host;
             _tcpHistoryStore.LastPort = port;
+            _tcpHistoryStore.LastStation = station;
+            _tcpHistoryStore.LastHoldingRegisterAddress = registerAddress;
             SaveTcpHistoryStore();
         }
 
@@ -126,7 +134,7 @@ namespace CADRecognition
         {
             _isUpdatingView = true;
             ProgramNameTextBox.Text = Model.ProgramName;
-            ProgramNoTextBox.Text = Model.ProgramName;
+            ProgramNoTextBox.Text = Model.ProgramNo;
             LeftRightDoorTextBox.Text = Model.LeftRightDoor.ToString();
             MaterialTextBox.Text = Model.Material.ToString();
             TypeTextBox.Text = Model.Type.ToString();
@@ -269,7 +277,7 @@ namespace CADRecognition
         private void UpdateModelFromRows()
         {
             Model.ProgramName = ProgramNameTextBox.Text?.Trim() ?? string.Empty;
-            Model.ProgramNo = ProgramNameTextBox.Text?.Trim() ?? string.Empty;
+            Model.ProgramNo = ProgramNoTextBox.Text?.Trim() ?? string.Empty;
             SyncStageMoldIds();
             Model.LeftRightDoor = ParseInt(LeftRightDoorTextBox.Text);
             Model.Material = ParseInt(MaterialTextBox.Text);
@@ -313,22 +321,38 @@ namespace CADRecognition
                 var portText = TcpPortComboBox.Text?.Trim();
                 if (!int.TryParse(portText, out var port))
                 {
-                    StatusTextBlock.Text = "TCP 端口格式不正确。";
+                    StatusTextBlock.Text = "Modbus 端口格式不正确。";
                     return;
                 }
 
-                SaveTcpHistory(host ?? string.Empty, portText ?? string.Empty);
-                await _tcpCommService.SendJsonAsync(host ?? string.Empty, port, payload);
-                StatusTextBlock.Text = $"TCP 已发送到 {host}:{port}。";
+                var stationText = ModbusStationComboBox.Text?.Trim() ?? "1";
+                if (!byte.TryParse(stationText, out var station))
+                {
+                    StatusTextBlock.Text = "站号必须是 0-255 的整数。";
+                    return;
+                }
+
+                var registerAddr = ModbusRegisterComboBox.Text?.Trim() ?? "0";
+
+                SaveTcpHistory(host ?? string.Empty, portText ?? string.Empty, stationText, registerAddr);
+                if (payload is not TcpExportModel exportModel)
+                {
+                    StatusTextBlock.Text = "内部错误：导出模型类型不正确。";
+                    return;
+                }
+
+                await _modbusTcpCommService.SendExportModelAsync(host ?? string.Empty, port, station, registerAddr, exportModel).ConfigureAwait(true);
+                StatusTextBlock.Text = $"Modbus TCP 已按表写入 {host}:{port}（站{station}，基址{registerAddr}）。 台1坐标={exportModel.Stage1DiagramCoordinates.Count}，台2坐标={exportModel.Stage2DiagramCoordinates.Count}。";
             }
             catch (Exception ex)
             {
-                StatusTextBlock.Text = $"TCP 发送失败：{ex.Message}";
+                StatusTextBlock.Text = $"Modbus TCP 发送失败：{ex.Message}";
             }
         }
 
         private TcpExportModel BuildExportModel(bool sendStage1, bool sendStage2)
         {
+            UpdateModelFromRows();
             return new TcpExportModel
             {
                 ProgramName = Model.ProgramName,
