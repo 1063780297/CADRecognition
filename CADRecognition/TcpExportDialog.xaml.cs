@@ -260,12 +260,32 @@ namespace CADRecognition
             }
         }
 
-        private void SyncStageMoldIds()
+        private void SyncStageRowsToModel()
         {
+            CommitGridEdits();
+            Model.Stage1DiagramCoordinates = BuildCoordinates(_stage1Rows);
             Model.Stage1PositionMoldIds = _stage1Rows.Select(row => MapMoldId(row.PositionMoldId, "M")).ToList();
             Model.Stage1PunchMoldIds = _stage1Rows.Select(row => MapMoldId(row.PunchMoldId, "M")).ToList();
+            Model.Stage2DiagramCoordinates = BuildCoordinates(_stage2Rows);
             Model.Stage2PositionMoldIds = _stage2Rows.Select(row => MapMoldId(row.PositionMoldId, "N")).ToList();
             Model.Stage2PunchMoldIds = _stage2Rows.Select(row => MapMoldId(row.PunchMoldId, "N")).ToList();
+        }
+
+        private void CommitGridEdits()
+        {
+            Stage1Grid.CommitEdit(DataGridEditingUnit.Cell, true);
+            Stage1Grid.CommitEdit(DataGridEditingUnit.Row, true);
+            Stage2Grid.CommitEdit(DataGridEditingUnit.Cell, true);
+            Stage2Grid.CommitEdit(DataGridEditingUnit.Row, true);
+        }
+
+        private static List<TcpCoordinateRow> BuildCoordinates(IEnumerable<TcpGridRow> rows)
+        {
+            return rows.Select(row => new TcpCoordinateRow
+            {
+                X = ParseDouble(row.X),
+                Y = ParseDouble(row.Y)
+            }).ToList();
         }
 
         private void OnFieldChanged()
@@ -278,7 +298,7 @@ namespace CADRecognition
         {
             Model.ProgramName = ProgramNameTextBox.Text?.Trim() ?? string.Empty;
             Model.ProgramNo = ProgramNoTextBox.Text?.Trim() ?? string.Empty;
-            SyncStageMoldIds();
+            SyncStageRowsToModel();
             Model.LeftRightDoor = ParseInt(LeftRightDoorTextBox.Text);
             Model.Material = ParseInt(MaterialTextBox.Text);
             Model.Type = ParseInt(TypeTextBox.Text);
@@ -396,26 +416,89 @@ namespace CADRecognition
 
         private void InsertRow(ObservableCollection<TcpGridRow> rows, System.Windows.Controls.DataGrid grid)
         {
+            CommitGridEdits();
             var index = grid.SelectedIndex < 0 ? rows.Count : grid.SelectedIndex;
             rows.Insert(index, new TcpGridRow { RowIndex = index + 1 });
             RenumberRows(rows);
             grid.Items.Refresh();
+            grid.SelectedIndex = index;
+            OnFieldChanged();
         }
 
         private void DeleteRow(ObservableCollection<TcpGridRow> rows, System.Windows.Controls.DataGrid grid)
         {
-            if (grid.SelectedItem is not TcpGridRow row) return;
-            var idx = row.RowIndex - 1;
+            CommitGridEdits();
+            var idx = GetSelectedRowIndex(rows, grid);
             if (idx < 0 || idx >= rows.Count) return;
+
             rows.RemoveAt(idx);
             RenumberRows(rows);
             grid.Items.Refresh();
+            SelectRow(grid, rows, Math.Min(idx, rows.Count - 1));
+            OnFieldChanged();
         }
 
-        private void CopyRow(System.Windows.Controls.DataGrid grid)
+        private void CopyRow(ObservableCollection<TcpGridRow> rows, System.Windows.Controls.DataGrid grid)
         {
-            if (grid.SelectedItem is not TcpGridRow row) return;
-            _clipboard = string.Join("\t", row.RowIndex, row.X, row.Y, row.PositionMoldId, row.PunchMoldId);
+            CommitGridEdits();
+            var index = GetSelectedRowIndex(rows, grid);
+            if (index < 0 || index >= rows.Count) return;
+
+            rows.Insert(index + 1, rows[index].Clone());
+            RenumberRows(rows);
+            grid.Items.Refresh();
+            SelectRow(grid, rows, index + 1);
+            OnFieldChanged();
+        }
+
+        private void MoveRow(ObservableCollection<TcpGridRow> rows, System.Windows.Controls.DataGrid grid, int offset)
+        {
+            CommitGridEdits();
+            var oldIndex = GetSelectedRowIndex(rows, grid);
+            var newIndex = oldIndex + offset;
+            if (oldIndex < 0 || newIndex < 0 || newIndex >= rows.Count) return;
+
+            rows.Move(oldIndex, newIndex);
+            RenumberRows(rows);
+            grid.Items.Refresh();
+            SelectRow(grid, rows, newIndex);
+            OnFieldChanged();
+        }
+
+        private static int GetSelectedRowIndex(ObservableCollection<TcpGridRow> rows, System.Windows.Controls.DataGrid grid)
+        {
+            if (grid.SelectedItem is TcpGridRow selectedRow)
+            {
+                var selectedIndex = rows.IndexOf(selectedRow);
+                if (selectedIndex >= 0) return selectedIndex;
+            }
+
+            if (grid.CurrentItem is TcpGridRow currentRow)
+            {
+                var currentIndex = rows.IndexOf(currentRow);
+                if (currentIndex >= 0) return currentIndex;
+            }
+
+            if (grid.SelectedCells.Count > 0 && grid.SelectedCells[0].Item is TcpGridRow cellRow)
+            {
+                var cellIndex = rows.IndexOf(cellRow);
+                if (cellIndex >= 0) return cellIndex;
+            }
+
+            return grid.SelectedIndex >= 0 && grid.SelectedIndex < rows.Count ? grid.SelectedIndex : -1;
+        }
+
+        private static void SelectRow(System.Windows.Controls.DataGrid grid, ObservableCollection<TcpGridRow> rows, int index)
+        {
+            grid.SelectedCells.Clear();
+            grid.SelectedItem = null;
+
+            if (index < 0 || index >= rows.Count) return;
+
+            var row = rows[index];
+            grid.SelectedItem = row;
+            grid.CurrentItem = row;
+            grid.ScrollIntoView(row);
         }
 
         private void PasteRow(ObservableCollection<TcpGridRow> rows, System.Windows.Controls.DataGrid grid)
@@ -435,6 +518,7 @@ namespace CADRecognition
             row.PunchMoldId = parts[4];
             RenumberRows(rows);
             grid.Items.Refresh();
+            OnFieldChanged();
         }
 
         private static void RenumberRows(ObservableCollection<TcpGridRow> rows)
@@ -444,12 +528,16 @@ namespace CADRecognition
 
         private void Stage1Insert_Click(object sender, RoutedEventArgs e) => InsertRow(_stage1Rows, Stage1Grid);
         private void Stage1Delete_Click(object sender, RoutedEventArgs e) => DeleteRow(_stage1Rows, Stage1Grid);
-        private void Stage1Copy_Click(object sender, RoutedEventArgs e) => CopyRow(Stage1Grid);
+        private void Stage1Copy_Click(object sender, RoutedEventArgs e) => CopyRow(_stage1Rows, Stage1Grid);
         private void Stage1Paste_Click(object sender, RoutedEventArgs e) => PasteRow(_stage1Rows, Stage1Grid);
+        private void Stage1MoveUp_Click(object sender, RoutedEventArgs e) => MoveRow(_stage1Rows, Stage1Grid, -1);
+        private void Stage1MoveDown_Click(object sender, RoutedEventArgs e) => MoveRow(_stage1Rows, Stage1Grid, 1);
         private void Stage2Insert_Click(object sender, RoutedEventArgs e) => InsertRow(_stage2Rows, Stage2Grid);
         private void Stage2Delete_Click(object sender, RoutedEventArgs e) => DeleteRow(_stage2Rows, Stage2Grid);
-        private void Stage2Copy_Click(object sender, RoutedEventArgs e) => CopyRow(Stage2Grid);
+        private void Stage2Copy_Click(object sender, RoutedEventArgs e) => CopyRow(_stage2Rows, Stage2Grid);
         private void Stage2Paste_Click(object sender, RoutedEventArgs e) => PasteRow(_stage2Rows, Stage2Grid);
+        private void Stage2MoveUp_Click(object sender, RoutedEventArgs e) => MoveRow(_stage2Rows, Stage2Grid, -1);
+        private void Stage2MoveDown_Click(object sender, RoutedEventArgs e) => MoveRow(_stage2Rows, Stage2Grid, 1);
 
         private void Stage1Grid_PreviewKeyDown(object sender, KeyEventArgs e) => HandleGridKeyDown(e, Stage1Grid, _stage1Rows);
         private void Stage2Grid_PreviewKeyDown(object sender, KeyEventArgs e) => HandleGridKeyDown(e, Stage2Grid, _stage2Rows);
@@ -458,7 +546,10 @@ namespace CADRecognition
         {
             if (Keyboard.Modifiers == ModifierKeys.Control && e.Key == System.Windows.Input.Key.C)
             {
-                CopyRow(grid);
+                if (grid.SelectedItem is TcpGridRow row)
+                {
+                    _clipboard = string.Join("\t", row.RowIndex, row.X, row.Y, row.PositionMoldId, row.PunchMoldId);
+                }
                 e.Handled = true;
                 return;
             }
@@ -504,5 +595,16 @@ namespace CADRecognition
         public string Y { get; set; } = string.Empty;
         public string PositionMoldId { get; set; } = string.Empty;
         public string PunchMoldId { get; set; } = string.Empty;
+
+        public TcpGridRow Clone()
+        {
+            return new TcpGridRow
+            {
+                X = X,
+                Y = Y,
+                PositionMoldId = PositionMoldId,
+                PunchMoldId = PunchMoldId
+            };
+        }
     }
 }
