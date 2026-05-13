@@ -707,6 +707,107 @@ namespace CADRecognition
             PreviewHost.Content = _viewer;
             _viewer.SetCompactMode(_compactAnnotation);
             FileTreeView.Items.Clear();
+            Loaded += MainWindow_Loaded;
+            Closing += MainWindow_Closing;
+        }
+
+        private void MainWindow_Loaded(object sender, RoutedEventArgs e)
+        {
+            Loaded -= MainWindow_Loaded;
+            TryRestoreLastMolds();
+        }
+
+        private void MainWindow_Closing(object? sender, CancelEventArgs e)
+        {
+            LastMoldSessionSettings.Save(
+                _stage1MoldFiles.Where(File.Exists).ToList(),
+                _stage2MoldFiles.Where(File.Exists).ToList());
+        }
+
+        private void TryRestoreLastMolds()
+        {
+            var stored = LastMoldSessionSettings.Load();
+            if (stored.Stage1.Count == 0 && stored.Stage2.Count == 0)
+            {
+                return;
+            }
+
+            var skipped = new List<string>();
+            if (stored.Stage1.Count > 0)
+            {
+                skipped.AddRange(ApplyMoldPathsForStage(1, stored.Stage1, skipUnreadableFiles: true));
+            }
+
+            if (stored.Stage2.Count > 0)
+            {
+                skipped.AddRange(ApplyMoldPathsForStage(2, stored.Stage2, skipUnreadableFiles: true));
+            }
+
+            if (_stage1MoldFiles.Count == 0 && _stage2MoldFiles.Count == 0)
+            {
+                return;
+            }
+
+            LastMoldSessionSettings.Save(_stage1MoldFiles, _stage2MoldFiles);
+            var msg = $"已自动加载上次模具：台1 {_stage1MoldFiles.Count} 张，台2 {_stage2MoldFiles.Count} 张。";
+            if (skipped.Count > 0)
+            {
+                msg += " 无法读取已跳过：" + string.Join("、", skipped.Distinct(StringComparer.OrdinalIgnoreCase));
+            }
+
+            StatusText.Text = msg;
+        }
+
+        /// <summary>按路径加载某一工位模具；<paramref name="skipUnreadableFiles"/> 为 true 时跳过损坏或无法解析的文件。</summary>
+        private IReadOnlyList<string> ApplyMoldPathsForStage(int stageId, IEnumerable<string> inputPaths, bool skipUnreadableFiles)
+        {
+            var distinctExisting = inputPaths
+                .Where(p => !string.IsNullOrWhiteSpace(p))
+                .Where(File.Exists)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            var targetFiles = stageId == 1 ? _stage1MoldFiles : _stage2MoldFiles;
+            targetFiles.Clear();
+            var skipped = new List<string>();
+            foreach (var file in distinctExisting)
+            {
+                try
+                {
+                    var moldDoc = LoadCadDocument(file);
+                    RemoveDuplicateLines(moldDoc);
+                    _documentCache[file] = moldDoc;
+                    targetFiles.Add(file);
+                }
+                catch
+                {
+                    if (!skipUnreadableFiles)
+                    {
+                        throw;
+                    }
+
+                    skipped.Add(System.IO.Path.GetFileName(file));
+                }
+            }
+
+            if (stageId == 1)
+            {
+                Stage1MoldComboBox.ItemsSource = _stage1MoldFiles.Select(System.IO.Path.GetFileName).ToList();
+                _selectedStage1File = _stage1MoldFiles.FirstOrDefault();
+                Stage1MoldComboBox.SelectedIndex = _selectedStage1File is null ? -1 : 0;
+                RefreshMoldPreviewList(1);
+            }
+            else
+            {
+                Stage2MoldComboBox.ItemsSource = _stage2MoldFiles.Select(System.IO.Path.GetFileName).ToList();
+                _selectedStage2File = _stage2MoldFiles.FirstOrDefault();
+                Stage2MoldComboBox.SelectedIndex = _selectedStage2File is null ? -1 : 0;
+                RefreshMoldPreviewList(2);
+            }
+
+            MoldCountText.Text = $"{_stage1MoldFiles.Count}/{_stage2MoldFiles.Count}";
+            RefreshFileList();
+            return skipped;
         }
 
         public ObservableCollection<MoldRow> Stage1MoldRows => _stage1MoldRows;
@@ -805,12 +906,28 @@ namespace CADRecognition
             var removedProjectLines = RemoveDuplicateLines(_projectDoc);
             _documentCache[_projectFile] = _projectDoc;
 
-            // 导入新工程时清空上一张图纸的识别/标注展示状态。
+            // 导入新工程时清空上一张图纸的识别/标注展示状态；已导入的模具右侧预览保留并按文件重建（避免空白）。
             _lastMatchResult = null;
             _lastProjectProfile = DxfAnalyzer.ExtractProject(_projectDoc);
             _lastOuterContourPoints = DxfAnalyzer.ExtractOuterContourForDebug(_projectDoc);
-            _stage1MoldRows.Clear();
-            _stage2MoldRows.Clear();
+            if (_stage1MoldFiles.Count == 0)
+            {
+                _stage1MoldRows.Clear();
+            }
+            else
+            {
+                RefreshMoldPreviewList(1);
+            }
+
+            if (_stage2MoldFiles.Count == 0)
+            {
+                _stage2MoldRows.Clear();
+            }
+            else
+            {
+                RefreshMoldPreviewList(2);
+            }
+
             _stage1PositionRows.Clear();
             _stage2PositionRows.Clear();
             Stage1LegendPanel.Children.Clear();
@@ -847,33 +964,8 @@ namespace CADRecognition
                 return;
             }
 
-            var targetFiles = stageId == 1 ? _stage1MoldFiles : _stage2MoldFiles;
-            targetFiles.Clear();
-            targetFiles.AddRange(dialog.FileNames);
-            foreach (var file in targetFiles)
-            {
-                var moldDoc = LoadCadDocument(file);
-                RemoveDuplicateLines(moldDoc);
-                _documentCache[file] = moldDoc;
-            }
-
-            if (stageId == 1)
-            {
-                Stage1MoldComboBox.ItemsSource = _stage1MoldFiles.Select(System.IO.Path.GetFileName).ToList();
-                _selectedStage1File = _stage1MoldFiles.FirstOrDefault();
-                Stage1MoldComboBox.SelectedIndex = _selectedStage1File is null ? -1 : 0;
-                RefreshMoldPreviewList(1);
-            }
-            else
-            {
-                Stage2MoldComboBox.ItemsSource = _stage2MoldFiles.Select(System.IO.Path.GetFileName).ToList();
-                _selectedStage2File = _stage2MoldFiles.FirstOrDefault();
-                Stage2MoldComboBox.SelectedIndex = _selectedStage2File is null ? -1 : 0;
-                RefreshMoldPreviewList(2);
-            }
-
-            MoldCountText.Text = $"{_stage1MoldFiles.Count}/{_stage2MoldFiles.Count}";
-            RefreshFileList();
+            ApplyMoldPathsForStage(stageId, dialog.FileNames, skipUnreadableFiles: false);
+            LastMoldSessionSettings.Save(_stage1MoldFiles, _stage2MoldFiles);
             StatusText.Text = stageId == 1
                 ? $"已导入台1模具 {_stage1MoldFiles.Count} 张。"
                 : $"已导入台2模具 {_stage2MoldFiles.Count} 张。";
@@ -4012,16 +4104,17 @@ namespace CADRecognition
             }
 
             var cleaned = DeduplicateAssignments(rows);
-            var ordered = OrderAssignmentsForStamping(cleaned, guidePaths);
+            var ordered = OrderAssignmentsForStamping(cleaned, guidePaths, project.OuterRectangle);
             return new MatchResult(ordered, guidePaths);
         }
 
         /// <summary>
-        /// 冲压顺序：连续冲压（角落模具）沿轮廓/导线路径；内孔自左向右再自上而下，避免全局 Y-X 造成左右蛇形。
+        /// 冲压顺序：M01 连续冲压按板料竖中线分块——先左侧沿路径，再内孔（X 再 Y），再右侧沿路径；EdgeNotch 置尾。
         /// </summary>
         public static IReadOnlyList<HoleAssignment> OrderAssignmentsForStamping(
             IReadOnlyList<HoleAssignment> assignments,
-            IReadOnlyList<CornerStepPath>? guidePaths)
+            IReadOnlyList<CornerStepPath>? guidePaths,
+            RectBounds outer)
         {
             if (assignments.Count <= 1)
             {
@@ -4103,37 +4196,44 @@ namespace CADRecognition
             var contour = work.Where(IsContourStamp).ToList();
             var inner = work.Where(a => !IsContourStamp(a)).ToList();
 
-            var contourOrdered = contour
-                .GroupBy(a => ContourPathTag(a) ?? string.Empty)
-                .OrderBy(g =>
-                {
-                    var tag = g.Key;
-                    if (tag.Length == 0)
+            IEnumerable<HoleAssignment> OrderContourStamps(IEnumerable<HoleAssignment> source) =>
+                source
+                    .GroupBy(a => ContourPathTag(a) ?? string.Empty)
+                    .OrderBy(g =>
                     {
-                        return int.MaxValue;
-                    }
+                        var tag = g.Key;
+                        if (tag.Length == 0)
+                        {
+                            return int.MaxValue;
+                        }
 
-                    if (pathOrder.TryGetValue(tag, out var pi))
+                        if (pathOrder.TryGetValue(tag, out var pi))
+                        {
+                            return pi;
+                        }
+
+                        return 10000 + ContourTagOrder(tag);
+                    })
+                    .SelectMany(g =>
                     {
-                        return pi;
-                    }
+                        var tag = g.Key;
+                        var chain = GuideChain(tag);
+                        if (chain is not null)
+                        {
+                            return g.OrderBy(a => ClosestPathStation(chain, a.Hole.Centroid))
+                                .ThenBy(a => a.Hole.Centroid.X)
+                                .ThenBy(a => a.Hole.Centroid.Y);
+                        }
 
-                    return 10000 + ContourTagOrder(tag);
-                })
-                .SelectMany(g =>
-                {
-                    var tag = g.Key;
-                    var chain = GuideChain(tag);
-                    if (chain is not null)
-                    {
-                        return g.OrderBy(a => ClosestPathStation(chain, a.Hole.Centroid))
-                            .ThenBy(a => a.Hole.Centroid.X)
-                            .ThenBy(a => a.Hole.Centroid.Y);
-                    }
+                        return g.OrderBy(a => a.Hole.Centroid.X).ThenBy(a => a.Hole.Centroid.Y);
+                    });
 
-                    return g.OrderBy(a => a.Hole.Centroid.X).ThenBy(a => a.Hole.Centroid.Y);
-                })
-                .ToList();
+            var midX = outer.MinX + outer.Width * 0.5;
+            var contourLeft = contour.Where(a => a.Hole.Centroid.X <= midX).ToList();
+            var contourRight = contour.Where(a => a.Hole.Centroid.X > midX).ToList();
+
+            var contourLeftOrdered = OrderContourStamps(contourLeft).ToList();
+            var contourRightOrdered = OrderContourStamps(contourRight).ToList();
 
             var innerOrdered = inner
                 .OrderBy(a => a.Hole.Centroid.X)
@@ -4145,7 +4245,11 @@ namespace CADRecognition
                 .ThenBy(a => a.Hole.Centroid.Y)
                 .ToList();
 
-            return contourOrdered.Concat(innerOrdered).Concat(notchesOrdered).ToList();
+            return contourLeftOrdered
+                .Concat(innerOrdered)
+                .Concat(contourRightOrdered)
+                .Concat(notchesOrdered)
+                .ToList();
         }
 
         private static double ClosestPathStation(IReadOnlyList<(double X, double Y)> chain, (double X, double Y) p)

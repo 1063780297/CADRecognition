@@ -8,8 +8,8 @@ using HslCommunication.ModBus;
 namespace CADRecognition
 {
     /// <summary>
-    /// 按固定字地址将 <see cref="TcpExportModel"/> 写入 Modbus TCP 保持寄存器（与功能需求表长度一致）。
-    /// 坐标区 80 字：40 点 ×（X、Y 各占 1 字），与表实际导出数据一致。
+    /// 按固定字地址将 <see cref="TcpExportModel"/> 写入 Modbus TCP 保持寄存器。
+    /// 字段顺序、数组长度和 INT/REAL/DINT 宽度与表格定义一致。
     /// </summary>
     internal sealed class ModbusTcpCommService
     {
@@ -64,7 +64,7 @@ namespace CADRecognition
                 throw new InvalidOperationException("INT 块长度与布局定义不一致。");
             }
 
-            ThrowIfFailed(await client.WriteAsync(Addr(ModbusTcpExportLayout.IntBlockStart), intBlock).ConfigureAwait(false));
+            await WriteInt16BlockAsync(client, Addr, ModbusTcpExportLayout.IntBlockStart, intBlock).ConfigureAwait(false);
 
             var plateWidthForTable = model.PlateWidth2 > 0 ? model.PlateWidth2 : model.PlateWidth;
             var reals = new[]
@@ -75,27 +75,23 @@ namespace CADRecognition
                 (float)model.Spare3
             };
 
-            ThrowIfFailed(await client.WriteAsync(Addr(ModbusTcpExportLayout.RealBlockStart), reals).ConfigureAwait(false));
+            await WriteFloatBlockAsync(client, Addr, ModbusTcpExportLayout.RealBlockStart, reals).ConfigureAwait(false);
 
-            ThrowIfFailed(await client.WriteAsync(Addr(ModbusTcpExportLayout.Spare4Start), new[] { model.Spare4 }).ConfigureAwait(false));
+            await WriteInt16BlockAsync(client, Addr, ModbusTcpExportLayout.Spare4Start, new[] { ToInt16(model.Spare4) }).ConfigureAwait(false);
 
-            var stage1Coords = BuildCoordinateWords(model.Stage1DiagramCoordinates);
-            ThrowIfFailed(await client.WriteAsync(Addr(ModbusTcpExportLayout.Stage1CoordStart), stage1Coords).ConfigureAwait(false));
+            await WriteFloatBlockAsync(client, Addr, ModbusTcpExportLayout.Stage1CoordStart, BuildCoordinateReals(model.Stage1DiagramCoordinates)).ConfigureAwait(false);
 
-            var stage1Pos = BuildMoldDints(model.Stage1PositionMoldIds);
-            ThrowIfFailed(await client.WriteAsync(Addr(ModbusTcpExportLayout.Stage1PositionMoldStart), stage1Pos).ConfigureAwait(false));
+            await WriteInt16BlockAsync(client, Addr, ModbusTcpExportLayout.Stage1PositionMoldStart, BuildMoldInts(model.Stage1PositionMoldIds)).ConfigureAwait(false);
 
-            var stage1Punch = BuildMoldDints(model.Stage1PunchMoldIds);
-            ThrowIfFailed(await client.WriteAsync(Addr(ModbusTcpExportLayout.Stage1PunchMoldStart), stage1Punch).ConfigureAwait(false));
+            await WriteDIntBlockAsync(client, Addr, ModbusTcpExportLayout.Stage1PunchMoldStart, BuildMoldDints(model.Stage1PunchMoldIds)).ConfigureAwait(false);
 
-            var stage2Coords = BuildCoordinateWords(model.Stage2DiagramCoordinates);
-            ThrowIfFailed(await client.WriteAsync(Addr(ModbusTcpExportLayout.Stage2CoordStart), stage2Coords).ConfigureAwait(false));
+            await WriteFloatBlockAsync(client, Addr, ModbusTcpExportLayout.Stage2CoordStart, BuildCoordinateReals(model.Stage2DiagramCoordinates)).ConfigureAwait(false);
 
-            var stage2Pos = BuildMoldDints(model.Stage2PositionMoldIds);
-            ThrowIfFailed(await client.WriteAsync(Addr(ModbusTcpExportLayout.Stage2PositionMoldStart), stage2Pos).ConfigureAwait(false));
+            await WriteInt16BlockAsync(client, Addr, ModbusTcpExportLayout.Stage2PositionMoldStart, BuildMoldInts(model.Stage2PositionMoldIds)).ConfigureAwait(false);
 
-            var stage2Punch = BuildMoldDints(model.Stage2PunchMoldIds);
-            ThrowIfFailed(await client.WriteAsync(Addr(ModbusTcpExportLayout.Stage2PunchMoldStart), stage2Punch).ConfigureAwait(false));
+            await WriteDIntBlockAsync(client, Addr, ModbusTcpExportLayout.Stage2PunchMoldStart, BuildMoldDints(model.Stage2PunchMoldIds)).ConfigureAwait(false);
+
+            ValidateLayout();
         }
 
         private static async Task WriteProgramNameAsync(ModbusTcpNet client, Func<int, string> addr, string programName)
@@ -109,6 +105,34 @@ namespace CADRecognition
             ThrowIfFailed(await client.WriteAsync(addr(ModbusTcpExportLayout.ProgramNameStart), bytes).ConfigureAwait(false));
         }
 
+        private static void ValidateLayout()
+        {
+            if (ModbusTcpExportLayout.ProgramNameWordLength != 20 ||
+                ModbusTcpExportLayout.IntBlockWordLength != 10 ||
+                ModbusTcpExportLayout.RealBlockWordLength != 8 ||
+                ModbusTcpExportLayout.Spare4WordLength != 2 ||
+                ModbusTcpExportLayout.Stage1CoordWordLength != ModbusTcpExportLayout.CoordinateSlotCount * 4 ||
+                ModbusTcpExportLayout.Stage1PositionMoldWordLength != ModbusTcpExportLayout.MoldSlotCount ||
+                ModbusTcpExportLayout.Stage1PunchMoldWordLength != ModbusTcpExportLayout.MoldSlotCount * 2 ||
+                ModbusTcpExportLayout.Stage2CoordWordLength != ModbusTcpExportLayout.CoordinateSlotCount * 4 ||
+                ModbusTcpExportLayout.Stage2PositionMoldWordLength != ModbusTcpExportLayout.MoldSlotCount ||
+                ModbusTcpExportLayout.Stage2PunchMoldWordLength != ModbusTcpExportLayout.MoldSlotCount * 2)
+            {
+                throw new InvalidOperationException("Modbus 发送数据结构与表格定义不一致。");
+            }
+        }
+
+        private static short[] BuildMoldInts(System.Collections.Generic.IReadOnlyList<string> moldIds)
+        {
+            var buf = new short[ModbusTcpExportLayout.MoldSlotCount];
+            var n = Math.Min(moldIds.Count, ModbusTcpExportLayout.MoldSlotCount);
+            for (var i = 0; i < n; i++)
+            {
+                buf[i] = ToInt16(MoldStringToInt(moldIds[i]));
+            }
+
+            return buf;
+        }
 
         private static int[] BuildMoldDints(System.Collections.Generic.IReadOnlyList<string> moldIds)
         {
@@ -116,13 +140,37 @@ namespace CADRecognition
             var n = Math.Min(moldIds.Count, ModbusTcpExportLayout.MoldSlotCount);
             for (var i = 0; i < n; i++)
             {
-                buf[i] = MoldStringToDInt(moldIds[i]);
+                buf[i] = MoldStringToInt(moldIds[i]);
             }
 
             return buf;
         }
 
-        private static int MoldStringToDInt(string s)
+        private static async Task WriteInt16BlockAsync(ModbusTcpNet client, Func<int, string> addr, int startWord, short[] values)
+        {
+            for (var i = 0; i < values.Length; i++)
+            {
+                ThrowIfFailed(await client.WriteAsync(addr(startWord + i), new[] { (int)values[i] }).ConfigureAwait(false));
+            }
+        }
+
+        private static async Task WriteDIntBlockAsync(ModbusTcpNet client, Func<int, string> addr, int startWord, int[] values)
+        {
+            for (var i = 0; i < values.Length; i++)
+            {
+                ThrowIfFailed(await client.WriteAsync(addr(startWord + i * 2), values[i]).ConfigureAwait(false));
+            }
+        }
+
+        private static async Task WriteFloatBlockAsync(ModbusTcpNet client, Func<int, string> addr, int startWord, float[] values)
+        {
+            for (var i = 0; i < values.Length; i++)
+            {
+                ThrowIfFailed(await client.WriteAsync(addr(startWord + i * 2), values[i]).ConfigureAwait(false));
+            }
+        }
+
+        private static int MoldStringToInt(string s)
         {
             if (string.IsNullOrWhiteSpace(s))
             {
@@ -169,14 +217,14 @@ namespace CADRecognition
             return (short)v;
         }
 
-        private static short[] BuildCoordinateWords(System.Collections.Generic.IReadOnlyList<TcpCoordinateRow> rows)
+        private static float[] BuildCoordinateReals(System.Collections.Generic.IReadOnlyList<TcpCoordinateRow> rows)
         {
-            var buf = new short[ModbusTcpExportLayout.CoordinateSlotCount * 2];
+            var buf = new float[ModbusTcpExportLayout.CoordinateSlotCount * 2];
             var n = Math.Min(rows.Count, ModbusTcpExportLayout.CoordinateSlotCount);
             for (var i = 0; i < n; i++)
             {
-                buf[i * 2] = ToInt16((int)Math.Round(rows[i].X, MidpointRounding.AwayFromZero));
-                buf[i * 2 + 1] = ToInt16((int)Math.Round(rows[i].Y, MidpointRounding.AwayFromZero));
+                buf[i * 2] = (float)rows[i].X;
+                buf[i * 2 + 1] = (float)rows[i].Y;
             }
 
             return buf;
