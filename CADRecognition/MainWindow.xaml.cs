@@ -1318,15 +1318,19 @@ namespace CADRecognition
 
         private static string BuildMoldSizeText(HoleFeature feature)
         {
-            var width = Math.Round(feature.Width, 0, MidpointRounding.AwayFromZero);
-            var height = Math.Round(feature.Height, 0, MidpointRounding.AwayFromZero);
-            if (MoldMatcher.IsCircleLike(feature))
+            static string FormatDim(double value)
             {
-                var dia = Math.Round((feature.Width + feature.Height) / 2.0, 0, MidpointRounding.AwayFromZero);
-                return $"φ{dia:0}";
+                var rounded = Math.Round(value, 1, MidpointRounding.AwayFromZero);
+                return Math.Abs(rounded % 1.0) < 1e-9 ? $"{rounded:0}" : $"{rounded:0.0}";
             }
 
-            return $"{width:0}*{height:0}";
+            if (MoldMatcher.IsCircleLike(feature))
+            {
+                var dia = (feature.Width + feature.Height) / 2.0;
+                return $"φ{FormatDim(dia)}";
+            }
+
+            return $"{FormatDim(feature.Width)}*{FormatDim(feature.Height)}";
         }
 
         private void RenderStageResult(MatchResult result, IReadOnlyList<MoldProfile> molds, bool isStage1)
@@ -4250,7 +4254,7 @@ namespace CADRecognition
                         .FirstOrDefault() ?? viable.OrderBy(x => x.Score).First();
 
                     var debugTop = string.Join(" | ", ranked.Take(3).Select(r =>
-                        $"M{r.MoldId:D2}:A={r.AreaRatio:F3},P={r.PerimRatio:F3},L={r.LongRatio:F3},S={r.ShortRatio:F3},Sig={r.Signature:F3},T={r.TypeMatch}"));
+                        $"M{r.MoldId:D2}:A={r.AreaRatio:F1},P={r.PerimRatio:F1},L={r.LongRatio:F1},S={r.ShortRatio:F1},Sig={r.Signature:F1},T={r.TypeMatch}"));
 
                     rows.Add(new HoleAssignment(
                         hole,
@@ -4259,7 +4263,7 @@ namespace CADRecognition
                         IsAnyCornerZone(hole, project.OuterRectangle),
                         IsNearOuterEdge(hole, project.OuterRectangle),
                         debugTop,
-                        $"A={fallback.AreaRatio:F3},P={fallback.PerimRatio:F3}",
+                        $"A={fallback.AreaRatio:F1},P={fallback.PerimRatio:F1}",
                         "严格条件未通过，已使用兜底最近模具"));
                     continue;
                 }
@@ -4271,8 +4275,8 @@ namespace CADRecognition
                     "单次冲压",
                     IsAnyCornerZone(hole, project.OuterRectangle),
                     IsNearOuterEdge(hole, project.OuterRectangle),
-                    string.Join(" | ", strictPass.Take(3).Select(r => $"{(isStage1 ? "M" : "N")}{r.MoldId:D2}:{r.Score:F3}")),
-                    $"A={pick.AreaRatio:F3},P={pick.PerimRatio:F3}"));
+                    string.Join(" | ", strictPass.Take(3).Select(r => $"{(isStage1 ? "M" : "N")}{r.MoldId:D2}:{r.Score:F1}")),
+                    $"A={pick.AreaRatio:F1},P={pick.PerimRatio:F1}"));
             }
 
             var cleaned = DeduplicateAssignments(rows);
@@ -5583,7 +5587,7 @@ namespace CADRecognition
                 })
                 .OrderBy(x => x.Score)
                 .Take(topN)
-                .Select(x => $"{prefix}{x.MoldId:D2}:{x.Score:F3}");
+                .Select(x => $"{prefix}{x.MoldId:D2}:{x.Score:F1}");
             return string.Join(" | ", tops);
         }
 
@@ -5604,7 +5608,7 @@ namespace CADRecognition
                 .OrderBy(x => Math.Abs(x.AreaRatio - 1.0))
                 .ThenBy(x => x.Signature)
                 .Take(topN)
-                .Select(x => $"{prefix}{x.MoldId:D2}:{x.AreaRatio:F3}");
+                .Select(x => $"{prefix}{x.MoldId:D2}:{x.AreaRatio:F1}");
             return string.Join(" | ", tops);
         }
 
@@ -5667,21 +5671,23 @@ namespace CADRecognition
             var longSide = Math.Max(f.Width, f.Height);
             var shortSide = Math.Max(Math.Min(f.Width, f.Height), 1e-6);
             var axisRatio = longSide / shortSide;
-            if (axisRatio >= 1.035)
+            // 放宽圆孔几何门限：实图中圆孔经抽样/离散后常出现 3%~7% 的轴向误差。
+            // 仍保留上限，避免明显腰孔/椭圆误入圆孔族。
+            if (axisRatio >= 1.08)
             {
                 return false;
             }
 
-            // 对 EntityComposite / 其他类型做几何判定：宽高极接近 + 圆度指标更严格
+            // 对 EntityComposite / 其他类型做几何判定：允许更小的宽高误差容忍。
             var maxWh = Math.Max(longSide, 1e-6);
             var whRatio = Math.Abs(f.Width - f.Height) / maxWh;
-            if (whRatio > 0.03)
+            if (whRatio > 0.08)
             {
                 return false;
             }
 
             var circularity = 4.0 * Math.PI * f.Area / Math.Max(f.Perimeter * f.Perimeter, 1e-6);
-            return circularity >= 0.82;
+            return circularity >= 0.76;
         }
 
         private static double SimilarityScore(HoleFeature h, HoleFeature m)
