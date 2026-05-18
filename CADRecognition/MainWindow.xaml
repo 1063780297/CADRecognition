@@ -48,30 +48,36 @@
         </Grid.ColumnDefinitions>
 
         <Border Grid.Row="0" Grid.ColumnSpan="3" Background="#2A2A2A" Padding="8" CornerRadius="4">
-            <StackPanel Orientation="Horizontal">
-                <Button Content="导入工程图纸" Click="ImportProjectDxf_Click" Margin="0,0,15,0" />
-                <Button Content="一键识别匹配" Click="Recognize_Click" Margin="0,0,15,0" />
-                <Button Content="导出数据" Click="Export_Click" Margin="0,0,15,0" />
-                <TextBlock Text="识图边界：" Foreground="#DDDDDD" VerticalAlignment="Center" Margin="0,0,4,0"/>
-                <TextBox x:Name="BoardWidthTextBox"
-                         Width="88"
-                         Height="24"
-                         Text="0"
-                         VerticalContentAlignment="Center"
-                         Margin="0,0,16,0"
-                         TextChanged="BoardWidthTextBox_TextChanged"/>
-                <CheckBox x:Name="CompactAnnoCheckBox"
-                          Content="简洁标注"
-                          IsChecked="False"
-                          Checked="CompactAnnoCheckBox_Checked"
-                          Unchecked="CompactAnnoCheckBox_Checked"
-                          Foreground="#FFFFFF"
-                          VerticalAlignment="Center"
-                          Margin="0,0,20,0"/>
-                <TextBlock Text="已加载工程：" Foreground="#DDDDDD" VerticalAlignment="Center" />
-                <TextBlock x:Name="ProjectFileText" Foreground="#9CDCFE" VerticalAlignment="Center" Margin="4,0,20,0" />
-                <TextBlock Text="台1/台2：" Foreground="#DDDDDD" VerticalAlignment="Center" />
-                <TextBlock x:Name="MoldCountText" Foreground="#9CDCFE" VerticalAlignment="Center" Margin="4,0,0,0" />
+            <StackPanel>
+                <StackPanel x:Name="ImportProgressPanel" Orientation="Horizontal" Visibility="Collapsed" Margin="0,0,0,8">
+                    <TextBlock x:Name="ImportProgressText" Text="导入中..." Foreground="#FFFFFF" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                    <ProgressBar x:Name="ImportProgressBar" Width="360" Height="18" Minimum="0" Maximum="100" Value="0"/>
+                </StackPanel>
+                <StackPanel Orientation="Horizontal">
+                    <Button Content="导入工程图纸" Click="ImportProjectDxf_Click" Margin="0,0,15,0" />
+                    <Button Content="一键识别匹配" Click="Recognize_Click" Margin="0,0,15,0" />
+                    <Button Content="导出数据" Click="Export_Click" Margin="0,0,15,0" />
+                    <TextBlock Text="识图边界：" Foreground="#DDDDDD" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                    <TextBox x:Name="BoardWidthTextBox"
+                             Width="88"
+                             Height="24"
+                             Text="0"
+                             VerticalContentAlignment="Center"
+                             Margin="0,0,16,0"
+                             TextChanged="BoardWidthTextBox_TextChanged"/>
+                    <CheckBox x:Name="CompactAnnoCheckBox"
+                              Content="简洁标注"
+                              IsChecked="False"
+                              Checked="CompactAnnoCheckBox_Checked"
+                              Unchecked="CompactAnnoCheckBox_Checked"
+                              Foreground="#FFFFFF"
+                              VerticalAlignment="Center"
+                              Margin="0,0,20,0"/>
+                    <TextBlock Text="已加载工程：" Foreground="#DDDDDD" VerticalAlignment="Center" />
+                    <TextBlock x:Name="ProjectFileText" Foreground="#9CDCFE" VerticalAlignment="Center" Margin="4,0,20,0" />
+                    <TextBlock Text="台1/台2：" Foreground="#DDDDDD" VerticalAlignment="Center" />
+                    <TextBlock x:Name="MoldCountText" Foreground="#9CDCFE" VerticalAlignment="Center" Margin="4,0,0,0" />
+                </StackPanel>
             </StackPanel>
         </Border>
 

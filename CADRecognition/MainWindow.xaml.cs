@@ -716,10 +716,12 @@ namespace CADRecognition
             Closing += MainWindow_Closing;
         }
 
-        private void MainWindow_Loaded(object sender, RoutedEventArgs e)
+        private async void MainWindow_Loaded(object sender, RoutedEventArgs e)
         {
             Loaded -= MainWindow_Loaded;
-            TryRestoreLastMolds();
+            await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Render);
+            await Task.Delay(100);
+            await TryRestoreLastMoldsAsync();
         }
 
         private void MainWindow_Closing(object? sender, CancelEventArgs e)
@@ -729,7 +731,7 @@ namespace CADRecognition
                 _stage2MoldFiles.Where(File.Exists).ToList());
         }
 
-        private void TryRestoreLastMolds()
+        private async Task TryRestoreLastMoldsAsync()
         {
             var stored = LastMoldSessionSettings.Load();
             if (stored.Stage1.Count == 0 && stored.Stage2.Count == 0)
@@ -737,15 +739,16 @@ namespace CADRecognition
                 return;
             }
 
+            StatusText.Text = "正在恢复上次模具...";
             var skipped = new List<string>();
             if (stored.Stage1.Count > 0)
             {
-                skipped.AddRange(ApplyMoldPathsForStage(1, stored.Stage1, skipUnreadableFiles: true));
+                skipped.AddRange(await ApplyMoldPathsForStageAsync(1, stored.Stage1, skipUnreadableFiles: true));
             }
 
             if (stored.Stage2.Count > 0)
             {
-                skipped.AddRange(ApplyMoldPathsForStage(2, stored.Stage2, skipUnreadableFiles: true));
+                skipped.AddRange(await ApplyMoldPathsForStageAsync(2, stored.Stage2, skipUnreadableFiles: true));
             }
 
             if (_stage1MoldFiles.Count == 0 && _stage2MoldFiles.Count == 0)
@@ -827,33 +830,48 @@ namespace CADRecognition
             var loaded = new List<string>();
             var total = distinctExisting.Count;
 
-            await Task.Run(() =>
-            {
-                for (var i = 0; i < distinctExisting.Count; i++)
-                {
-                    var file = distinctExisting[i];
-                    try
-                    {
-                        var moldDoc = LoadCadDocument(file);
-                        RemoveDuplicateLines(moldDoc);
-                        Dispatcher.Invoke(() =>
-                        {
-                            SetDocumentCache(file, moldDoc);
-                            StatusText.Text = $"正在导入({i + 1}/{total})：{System.IO.Path.GetFileName(file)}";
-                        });
-                        loaded.Add(file);
-                    }
-                    catch
-                    {
-                        if (!skipUnreadableFiles)
-                        {
-                            throw;
-                        }
+            ImportProgressPanel.Visibility = Visibility.Visible;
+            ImportProgressBar.Minimum = 0;
+            ImportProgressBar.Maximum = Math.Max(total, 1);
+            ImportProgressBar.Value = 0;
+            ImportProgressText.Text = stageId == 1 ? "台1 模具导入中..." : "台2 模具导入中...";
 
-                        skipped.Add(System.IO.Path.GetFileName(file));
+            try
+            {
+                await Task.Run(() =>
+                {
+                    for (var i = 0; i < distinctExisting.Count; i++)
+                    {
+                        var file = distinctExisting[i];
+                        try
+                        {
+                            var moldDoc = LoadCadDocument(file);
+                            RemoveDuplicateLines(moldDoc);
+                            Dispatcher.Invoke(() =>
+                            {
+                                SetDocumentCache(file, moldDoc);
+                                ImportProgressBar.Value = i + 1;
+                                ImportProgressText.Text = $"正在导入({i + 1}/{total})：{System.IO.Path.GetFileName(file)}";
+                                StatusText.Text = $"正在导入({i + 1}/{total})：{System.IO.Path.GetFileName(file)}";
+                            });
+                            loaded.Add(file);
+                        }
+                        catch
+                        {
+                            if (!skipUnreadableFiles)
+                            {
+                                throw;
+                            }
+
+                            skipped.Add(System.IO.Path.GetFileName(file));
+                        }
                     }
-                }
-            });
+                });
+            }
+            finally
+            {
+                ImportProgressPanel.Visibility = Visibility.Collapsed;
+            }
 
             var targetFiles = stageId == 1 ? _stage1MoldFiles : _stage2MoldFiles;
             targetFiles.Clear();
@@ -5644,16 +5662,26 @@ namespace CADRecognition
                 return true;
             }
 
-            // 对 EntityComposite / 其他类型做几何判定：宽高近似相等 + 圆度指标接近 1
-            var maxWh = Math.Max(Math.Max(f.Width, f.Height), 1e-6);
+            // 先判“椭圆/腰孔”再判圆孔：
+            // 对近圆但存在明显长短轴差异的形状（如 19*18）优先按非圆处理，避免被 φ20 抢分类。
+            var longSide = Math.Max(f.Width, f.Height);
+            var shortSide = Math.Max(Math.Min(f.Width, f.Height), 1e-6);
+            var axisRatio = longSide / shortSide;
+            if (axisRatio >= 1.035)
+            {
+                return false;
+            }
+
+            // 对 EntityComposite / 其他类型做几何判定：宽高极接近 + 圆度指标更严格
+            var maxWh = Math.Max(longSide, 1e-6);
             var whRatio = Math.Abs(f.Width - f.Height) / maxWh;
-            if (whRatio > 0.10)
+            if (whRatio > 0.03)
             {
                 return false;
             }
 
             var circularity = 4.0 * Math.PI * f.Area / Math.Max(f.Perimeter * f.Perimeter, 1e-6);
-            return circularity >= 0.75;
+            return circularity >= 0.82;
         }
 
         private static double SimilarityScore(HoleFeature h, HoleFeature m)
