@@ -96,13 +96,28 @@ namespace CADRecognition
 
         private static async Task WriteProgramNameAsync(ModbusTcpNet client, Func<int, string> addr, string programName)
         {
-            var text = programName ?? string.Empty;
-            var encoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: false);
+            var text = TruncateUtf16Text(programName ?? string.Empty, ModbusTcpExportLayout.ProgramNameWordLength);
             var bytes = new byte[ModbusTcpExportLayout.ProgramNameWordLength * 2];
-            var encoded = encoding.GetBytes(text);
+            var encoded = Encoding.Unicode.GetBytes(text);
             Array.Copy(encoded, bytes, Math.Min(encoded.Length, bytes.Length));
 
             ThrowIfFailed(await client.WriteAsync(addr(ModbusTcpExportLayout.ProgramNameStart), bytes).ConfigureAwait(false));
+        }
+
+        private static string TruncateUtf16Text(string text, int maxWordLength)
+        {
+            if (string.IsNullOrEmpty(text) || text.Length <= maxWordLength)
+            {
+                return text ?? string.Empty;
+            }
+
+            var length = maxWordLength;
+            if (length > 0 && char.IsHighSurrogate(text[length - 1]))
+            {
+                length--;
+            }
+
+            return text.Substring(0, length);
         }
 
         private static void ValidateLayout()

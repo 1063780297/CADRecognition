@@ -677,8 +677,13 @@ namespace CADRecognition
     public partial class MainWindow : Window, INotifyPropertyChanged
     {
         private readonly IDxfPreviewPlugin _previewPlugin = new BasicCanvasPreviewPlugin();
+        private const int CacheMaxEntries = 200;
         private readonly Dictionary<string, DxfDocument> _documentCache = [];
+        private readonly LinkedList<string> _documentCacheLru = [];
+        private readonly Dictionary<string, LinkedListNode<string>> _documentCacheLruNodes = [];
         private readonly Dictionary<string, ImageSource> _moldPreviewCache = [];
+        private readonly LinkedList<string> _moldPreviewCacheLru = [];
+        private readonly Dictionary<string, LinkedListNode<string>> _moldPreviewCacheLruNodes = [];
         private readonly InteractiveDxfPreview _viewer = new();
         private readonly ObservableCollection<MoldRow> _stage1MoldRows = [];
         private readonly ObservableCollection<MoldRow> _stage2MoldRows = [];
@@ -776,7 +781,7 @@ namespace CADRecognition
                 {
                     var moldDoc = LoadCadDocument(file);
                     RemoveDuplicateLines(moldDoc);
-                    _documentCache[file] = moldDoc;
+                    SetDocumentCache(file, moldDoc);
                     targetFiles.Add(file);
                 }
                 catch
@@ -789,6 +794,70 @@ namespace CADRecognition
                     skipped.Add(System.IO.Path.GetFileName(file));
                 }
             }
+
+            if (stageId == 1)
+            {
+                Stage1MoldComboBox.ItemsSource = _stage1MoldFiles.Select(System.IO.Path.GetFileName).ToList();
+                _selectedStage1File = _stage1MoldFiles.FirstOrDefault();
+                Stage1MoldComboBox.SelectedIndex = _selectedStage1File is null ? -1 : 0;
+                RefreshMoldPreviewList(1);
+            }
+            else
+            {
+                Stage2MoldComboBox.ItemsSource = _stage2MoldFiles.Select(System.IO.Path.GetFileName).ToList();
+                _selectedStage2File = _stage2MoldFiles.FirstOrDefault();
+                Stage2MoldComboBox.SelectedIndex = _selectedStage2File is null ? -1 : 0;
+                RefreshMoldPreviewList(2);
+            }
+
+            MoldCountText.Text = $"{_stage1MoldFiles.Count}/{_stage2MoldFiles.Count}";
+            RefreshFileList();
+            return skipped;
+        }
+
+        private async Task<IReadOnlyList<string>> ApplyMoldPathsForStageAsync(int stageId, IEnumerable<string> inputPaths, bool skipUnreadableFiles)
+        {
+            var distinctExisting = inputPaths
+                .Where(p => !string.IsNullOrWhiteSpace(p))
+                .Where(File.Exists)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            var skipped = new List<string>();
+            var loaded = new List<string>();
+            var total = distinctExisting.Count;
+
+            await Task.Run(() =>
+            {
+                for (var i = 0; i < distinctExisting.Count; i++)
+                {
+                    var file = distinctExisting[i];
+                    try
+                    {
+                        var moldDoc = LoadCadDocument(file);
+                        RemoveDuplicateLines(moldDoc);
+                        Dispatcher.Invoke(() =>
+                        {
+                            SetDocumentCache(file, moldDoc);
+                            StatusText.Text = $"正在导入({i + 1}/{total})：{System.IO.Path.GetFileName(file)}";
+                        });
+                        loaded.Add(file);
+                    }
+                    catch
+                    {
+                        if (!skipUnreadableFiles)
+                        {
+                            throw;
+                        }
+
+                        skipped.Add(System.IO.Path.GetFileName(file));
+                    }
+                }
+            });
+
+            var targetFiles = stageId == 1 ? _stage1MoldFiles : _stage2MoldFiles;
+            targetFiles.Clear();
+            targetFiles.AddRange(loaded);
 
             if (stageId == 1)
             {
@@ -904,7 +973,7 @@ namespace CADRecognition
             _projectFile = dialog.FileName;
             _projectDoc = LoadCadDocument(_projectFile);
             var removedProjectLines = RemoveDuplicateLines(_projectDoc);
-            _documentCache[_projectFile] = _projectDoc;
+            SetDocumentCache(_projectFile, _projectDoc);
 
             // 导入新工程时清空上一张图纸的识别/标注展示状态；已导入的模具右侧预览保留并按文件重建（避免空白）。
             _lastMatchResult = null;
@@ -952,7 +1021,7 @@ namespace CADRecognition
             ImportMoldsForStage(2);
         }
 
-        private void ImportMoldsForStage(int stageId)
+        private async void ImportMoldsForStage(int stageId)
         {
             var dialog = new WinOpenFileDialog
             {
@@ -964,11 +1033,21 @@ namespace CADRecognition
                 return;
             }
 
-            ApplyMoldPathsForStage(stageId, dialog.FileNames, skipUnreadableFiles: false);
-            LastMoldSessionSettings.Save(_stage1MoldFiles, _stage2MoldFiles);
-            StatusText.Text = stageId == 1
-                ? $"已导入台1模具 {_stage1MoldFiles.Count} 张。"
-                : $"已导入台2模具 {_stage2MoldFiles.Count} 张。";
+            var files = dialog.FileNames;
+            StatusText.Text = stageId == 1 ? "台1 模具导入中..." : "台2 模具导入中...";
+
+            try
+            {
+                await ApplyMoldPathsForStageAsync(stageId, files, skipUnreadableFiles: false);
+                LastMoldSessionSettings.Save(_stage1MoldFiles, _stage2MoldFiles);
+                StatusText.Text = stageId == 1
+                    ? $"已导入台1模具 {_stage1MoldFiles.Count} 张。"
+                    : $"已导入台2模具 {_stage2MoldFiles.Count} 张。";
+            }
+            catch (Exception ex)
+            {
+                StatusText.Text = $"导入失败：{ex.Message}";
+            }
         }
 
         private DxfDocument LoadCadDocument(string path)
@@ -1097,8 +1176,16 @@ namespace CADRecognition
                 ? _stage2MoldFiles.ToList()
                 : _stage2MoldFiles.Where(f => string.Equals(f, _selectedStage2File, StringComparison.OrdinalIgnoreCase)).Concat(_stage2MoldFiles.Where(f => !string.Equals(f, _selectedStage2File, StringComparison.OrdinalIgnoreCase))).ToList();
 
-            var stage1Molds = stage1Files.Select((f, idx) => DxfAnalyzer.ExtractMold(1 + idx, f)).ToList();
-            var stage2Molds = stage2Files.Select((f, idx) => DxfAnalyzer.ExtractMold(1 + idx, f)).ToList();
+            var stage1Molds = stage1Files.Select((f, idx) =>
+            {
+                TryGetDocumentFromCache(f, out var doc);
+                return DxfAnalyzer.ExtractMold(1 + idx, f, doc);
+            }).ToList();
+            var stage2Molds = stage2Files.Select((f, idx) =>
+            {
+                TryGetDocumentFromCache(f, out var doc);
+                return DxfAnalyzer.ExtractMold(1 + idx, f, doc);
+            }).ToList();
             _lastMolds = stage1Molds.Concat(stage2Molds).ToList();
 
             var matcher = new MoldMatcher();
@@ -1408,7 +1495,7 @@ namespace CADRecognition
             {
                 return;
             }
-            if (!_documentCache.TryGetValue(path, out var doc))
+            if (!TryGetDocumentFromCache(path, out var doc))
             {
                 return;
             }
@@ -1464,15 +1551,15 @@ namespace CADRecognition
             {
                 _ = BuildMoldPreview(file);
                 var moldName = System.IO.Path.GetFileNameWithoutExtension(file);
-                if (_documentCache.TryGetValue(file, out var doc))
+                if (TryGetDocumentFromCache(file, out var doc))
                 {
-                    var feature = DxfAnalyzer.ExtractMold(0, file).Feature;
+                    var feature = DxfAnalyzer.ExtractMold(0, file, doc).Feature;
                     moldName = BuildMoldSizeText(feature);
                 }
 
                 moldRows.Add(new MoldRow
                 {
-                    MoldPreview = _moldPreviewCache.TryGetValue(file, out var preview) ? preview : null,
+                    MoldPreview = TryGetMoldPreviewFromCache(file, out var preview) ? preview : null,
                     MoldCode = $"{prefix}{index:D2}",
                     MoldName = moldName,
                     UsedCount = 0,
@@ -1483,21 +1570,85 @@ namespace CADRecognition
             }
         }
 
+        private void TouchLruKey(string key, LinkedList<string> lru, Dictionary<string, LinkedListNode<string>> lruNodes)
+        {
+            if (lruNodes.TryGetValue(key, out var existingNode))
+            {
+                lru.Remove(existingNode);
+            }
+
+            var newNode = lru.AddLast(key);
+            lruNodes[key] = newNode;
+        }
+
+        private void TrimCacheToLimit<T>(
+            Dictionary<string, T> cache,
+            LinkedList<string> lru,
+            Dictionary<string, LinkedListNode<string>> lruNodes,
+            int maxEntries)
+        {
+            while (cache.Count > maxEntries && lru.First is not null)
+            {
+                var oldestKey = lru.First.Value;
+                lru.RemoveFirst();
+                lruNodes.Remove(oldestKey);
+                cache.Remove(oldestKey);
+            }
+        }
+
+        private bool TryGetDocumentFromCache(string path, out DxfDocument doc)
+        {
+            if (_documentCache.TryGetValue(path, out doc!))
+            {
+                TouchLruKey(path, _documentCacheLru, _documentCacheLruNodes);
+                return true;
+            }
+
+            doc = null!;
+            return false;
+        }
+
+        private void SetDocumentCache(string path, DxfDocument doc)
+        {
+            _documentCache[path] = doc;
+            TouchLruKey(path, _documentCacheLru, _documentCacheLruNodes);
+            TrimCacheToLimit(_documentCache, _documentCacheLru, _documentCacheLruNodes, CacheMaxEntries);
+        }
+
+        private bool TryGetMoldPreviewFromCache(string path, out ImageSource preview)
+        {
+            if (_moldPreviewCache.TryGetValue(path, out preview!))
+            {
+                TouchLruKey(path, _moldPreviewCacheLru, _moldPreviewCacheLruNodes);
+                return true;
+            }
+
+            preview = null!;
+            return false;
+        }
+
+        private void SetMoldPreviewCache(string path, ImageSource preview)
+        {
+            _moldPreviewCache[path] = preview;
+            TouchLruKey(path, _moldPreviewCacheLru, _moldPreviewCacheLruNodes);
+            TrimCacheToLimit(_moldPreviewCache, _moldPreviewCacheLru, _moldPreviewCacheLruNodes, CacheMaxEntries);
+        }
+
         private ImageSource? BuildMoldPreview(string path)
         {
-            if (_moldPreviewCache.TryGetValue(path, out var cached))
+            if (TryGetMoldPreviewFromCache(path, out var cached))
             {
                 return cached;
             }
 
-            if (!_documentCache.TryGetValue(path, out var doc))
+            if (!TryGetDocumentFromCache(path, out var doc))
             {
                 if (!System.IO.File.Exists(path))
                 {
                     return null;
                 }
                 doc = LoadCadDocument(path);
-                _documentCache[path] = doc;
+                SetDocumentCache(path, doc);
             }
 
             const int width = 160;
@@ -1550,7 +1701,7 @@ namespace CADRecognition
             var bmp = new RenderTargetBitmap(width, height, 96, 96, PixelFormats.Pbgra32);
             bmp.Render(dv);
             bmp.Freeze();
-            _moldPreviewCache[path] = bmp;
+            SetMoldPreviewCache(path, bmp);
             return bmp;
         }
     }
@@ -2401,9 +2552,9 @@ namespace CADRecognition
     {
         private const int SignatureSamples = 72;
 
-        public static MoldProfile ExtractMold(int moldId, string path)
+        public static MoldProfile ExtractMold(int moldId, string path, DxfDocument? preloadedDoc = null)
         {
-            var doc = CadDocumentLoader.Load(path);
+            var doc = preloadedDoc ?? CadDocumentLoader.Load(path);
             // 模具特征只取“可闭合几何”，避免 OpenPolyline 的伪面积干扰面积比匹配。
             var holes = ExtractHoles(doc, includeOpenPolylines: false);
             var outer = DetectOuterRectangle(doc);
@@ -3993,6 +4144,9 @@ namespace CADRecognition
                     $"M{mold1.MoldId:D2}:ContourPath"));
             }
 
+            // 角落补冲先停用：当前 CornerMissing 候选是“角区特征中心”，会稳定产生四个固定点（四角各1个），
+            // 与连续冲压路径重复，导致列表前四个 M01 点异常。
+            // 后续如需恢复角补冲，应改成基于 contour pass 的真实残料区求交后再加点。
             var diag = Math.Sqrt(project.OuterRectangle.Width * project.OuterRectangle.Width +
                                  project.OuterRectangle.Height * project.OuterRectangle.Height);
             var safeDiag = Math.Max(diag, 1e-6);
@@ -4124,6 +4278,10 @@ namespace CADRecognition
             static bool IsEdgeNotch(HoleAssignment a) =>
                 a.Hole.HoleType.StartsWith("EdgeNotch:", StringComparison.Ordinal);
 
+            static bool IsCornerSupplement(HoleAssignment a) =>
+                string.Equals(a.PositionRelation, "连续冲压-角落补冲", StringComparison.Ordinal)
+                || a.Hole.HoleType.StartsWith("CornerMissing:", StringComparison.Ordinal);
+
             static bool IsContourStamp(HoleAssignment a) =>
                 string.Equals(a.PositionRelation, "连续冲压", StringComparison.Ordinal)
                 || a.Hole.HoleType.StartsWith("ContourCornerHit:", StringComparison.Ordinal)
@@ -4193,47 +4351,81 @@ namespace CADRecognition
             var notches = assignments.Where(IsEdgeNotch).ToList();
             var work = assignments.Where(a => !IsEdgeNotch(a)).ToList();
 
-            var contour = work.Where(IsContourStamp).ToList();
-            var inner = work.Where(a => !IsContourStamp(a)).ToList();
+            var cornerSupplement = work.Where(IsCornerSupplement).ToList();
+            var contour = work.Where(a => IsContourStamp(a) && !IsCornerSupplement(a)).ToList();
+            var inner = work.Where(a => !IsContourStamp(a) && !IsCornerSupplement(a)).ToList();
 
-            IEnumerable<HoleAssignment> OrderContourStamps(IEnumerable<HoleAssignment> source) =>
-                source
-                    .GroupBy(a => ContourPathTag(a) ?? string.Empty)
-                    .OrderBy(g =>
-                    {
-                        var tag = g.Key;
-                        if (tag.Length == 0)
-                        {
-                            return int.MaxValue;
-                        }
-
-                        if (pathOrder.TryGetValue(tag, out var pi))
-                        {
-                            return pi;
-                        }
-
-                        return 10000 + ContourTagOrder(tag);
-                    })
-                    .SelectMany(g =>
-                    {
-                        var tag = g.Key;
-                        var chain = GuideChain(tag);
-                        if (chain is not null)
-                        {
-                            return g.OrderBy(a => ClosestPathStation(chain, a.Hole.Centroid))
-                                .ThenBy(a => a.Hole.Centroid.X)
-                                .ThenBy(a => a.Hole.Centroid.Y);
-                        }
-
-                        return g.OrderBy(a => a.Hole.Centroid.X).ThenBy(a => a.Hole.Centroid.Y);
-                    });
-
+            // M01 连续点按“每个角落独立排序”：
+            // 每个角内部：先自上而下（Y降序），再向内收敛（离中线越近越后）。
+            var allContour = contour.Concat(cornerSupplement).ToList();
             var midX = outer.MinX + outer.Width * 0.5;
-            var contourLeft = contour.Where(a => a.Hole.Centroid.X <= midX).ToList();
-            var contourRight = contour.Where(a => a.Hole.Centroid.X > midX).ToList();
 
-            var contourLeftOrdered = OrderContourStamps(contourLeft).ToList();
-            var contourRightOrdered = OrderContourStamps(contourRight).ToList();
+            RectCorner NearestCorner((double X, double Y) p)
+            {
+                return outer.Corners
+                    .OrderBy(c =>
+                    {
+                        var dx = p.X - c.X;
+                        var dy = p.Y - c.Y;
+                        return dx * dx + dy * dy;
+                    })
+                    .First();
+            }
+
+            int CornerOrder(RectCorner c)
+            {
+                var top = c.Y >= (outer.MinY + outer.MaxY) * 0.5;
+                var left = c.X <= (outer.MinX + outer.MaxX) * 0.5;
+
+                // 右侧角落整体后置：先左侧两角，再右侧两角。
+                if (top && left) return 0;    // 左上
+                if (!top && left) return 1;   // 左下
+                if (top && !left) return 2;   // 右上
+                return 3;                     // 右下
+            }
+
+            var contourByCorner = allContour
+                .GroupBy(a => NearestCorner(a.Hole.Centroid))
+                .OrderBy(g => CornerOrder(g.Key))
+                .Select(g =>
+                {
+                    var corner = g.Key;
+                    var top = corner.Y >= (outer.MinY + outer.MaxY) * 0.5;
+                    var left = corner.X <= (outer.MinX + outer.MaxX) * 0.5;
+
+                    var avgWidth = g.Any() ? g.Average(x => Math.Max(x.Hole.Width, 1.0)) : 1.0;
+                    var layerStep = Math.Max(avgWidth * 0.5, 1.0);
+
+                    double InwardDistance(HoleAssignment a)
+                    {
+                        var x = a.Hole.Centroid.X;
+                        var y = a.Hole.Centroid.Y;
+                        var dx = left ? (x - outer.MinX) : (outer.MaxX - x);
+                        var dy = top ? (outer.MaxY - y) : (y - outer.MinY);
+                        return Math.Min(Math.Max(dx, 0), Math.Max(dy, 0));
+                    }
+
+                    var ordered = g
+                        .Select(a => new { Row = a, Inward = InwardDistance(a) })
+                        .OrderBy(x => (int)Math.Floor(x.Inward / layerStep))
+                        .ThenBy(x => top ? -x.Row.Hole.Centroid.Y : x.Row.Hole.Centroid.Y)
+                        .ThenBy(x => left ? x.Row.Hole.Centroid.X : -x.Row.Hole.Centroid.X)
+                        .Select(x => x.Row)
+                        .ToList();
+
+                    return new { IsLeft = left, Rows = ordered };
+                })
+                .ToList();
+
+            var contourLeftOrdered = contourByCorner
+                .Where(x => x.IsLeft)
+                .SelectMany(x => x.Rows)
+                .ToList();
+
+            var contourRightOrdered = contourByCorner
+                .Where(x => !x.IsLeft)
+                .SelectMany(x => x.Rows)
+                .ToList();
 
             var innerOrdered = inner
                 .OrderBy(a => a.Hole.Centroid.X)
@@ -4247,8 +4439,8 @@ namespace CADRecognition
 
             return contourLeftOrdered
                 .Concat(innerOrdered)
-                .Concat(contourRightOrdered)
                 .Concat(notchesOrdered)
+                .Concat(contourRightOrdered)
                 .ToList();
         }
 
@@ -4380,6 +4572,29 @@ namespace CADRecognition
             return Math.Sqrt(sum / keep);
         }
 
+        private static RectCorner FindNearestCorner(RectBounds rect, (double X, double Y) point)
+        {
+            return rect.Corners
+                .OrderBy(c =>
+                {
+                    var dx = point.X - c.X;
+                    var dy = point.Y - c.Y;
+                    return dx * dx + dy * dy;
+                })
+                .First();
+        }
+
+        private static (double X, double Y) PushPointTowardCorner(
+            (double X, double Y) point,
+            RectCorner corner,
+            double pushX,
+            double pushY)
+        {
+            var sx = corner.X >= point.X ? 1.0 : -1.0;
+            var sy = corner.Y >= point.Y ? 1.0 : -1.0;
+            return (point.X + sx * pushX, point.Y + sy * pushY);
+        }
+
         private static IReadOnlyList<HoleFeature> GenerateContinuousContourStampCenters(ProjectProfile project, MoldProfile mold1, List<CornerStepPath> guidePaths, bool isStage1)
         {
             var contourPaths = isStage1 ? project.Stage1ContourPaths : project.Stage2ContourPaths;
@@ -4402,60 +4617,156 @@ namespace CADRecognition
             var moldOutlineWidth = Math.Max(maxOx - minOx, 1.0);
             var moldOutlineHeight = Math.Max(maxOy - minOy, 1.0);
             var moldEdgeLength = Math.Max(moldOutlineWidth, moldOutlineHeight);
-            var moldToolWidth = Math.Min(moldOutlineWidth, moldOutlineHeight);
 
-            // CAD 偏移量：按“刀宽/模具宽度”的半径取值，更接近实际重合关系
-            // （之前用长边会导致偏移过大）
-            var offsetDist = Math.Max(moldToolWidth * 0.5, 0.8);
-            var moldStep = Math.Max(EstimateOutlineStep(outline) * 0.55, 2.5);
+            // 首次外偏移按半个模具尺寸，后续重复外移按完整 M01 长/宽。
+            var initialOffsetX = Math.Max(moldOutlineWidth * 0.5, 0.8);
+            var initialOffsetY = Math.Max(moldOutlineHeight * 0.5, 0.8);
+            var repeatOffsetX = Math.Max(moldOutlineWidth, 1.6);
+            var repeatOffsetY = Math.Max(moldOutlineHeight, 1.6);
             var points = new List<HoleFeature>();
 
-            foreach (var contourPath in contourPaths)
+            static bool IsPolylineOutsideWorkingZone(IReadOnlyList<(double X, double Y)> pts, RectBounds rect, double marginX, double marginY)
             {
-                var pts = contourPath.Points;
-                if (pts is null || pts.Count < 2)
+                return pts.Count > 0 && pts.All(p =>
+                    p.X < rect.MinX - marginX ||
+                    p.X > rect.MaxX + marginX ||
+                    p.Y < rect.MinY - marginY ||
+                    p.Y > rect.MaxY + marginY);
+            }
+
+            static IReadOnlyList<(double X, double Y)> TrimPolylineEndpointsByDistance(
+                IReadOnlyList<(double X, double Y)> polyline,
+                double trimStart,
+                double trimEnd)
+            {
+                if (polyline.Count < 2)
                 {
-                    continue;
+                    return [];
                 }
 
-                var chain = pts
-                    .DistinctBy(p => ($"{Math.Round(p.X, 4)}|{Math.Round(p.Y, 4)}"))
-                    .ToList();
-                if (chain.Count < 2)
+                var lengths = new double[polyline.Count];
+                var total = 0.0;
+                for (var i = 1; i < polyline.Count; i++)
                 {
-                    continue;
+                    var dx = polyline[i].X - polyline[i - 1].X;
+                    var dy = polyline[i].Y - polyline[i - 1].Y;
+                    total += Math.Sqrt(dx * dx + dy * dy);
+                    lengths[i] = total;
                 }
 
-                // 先对整条线做外偏移（类似 CAD Offset），再沿偏移后的线采样。
-                var offsetChain = OffsetPolylineOutward(chain, project.OuterRectangle, offsetDist);
-                if (offsetChain.Count < 2)
+                if (total <= 1e-9)
                 {
-                    continue;
+                    return [];
                 }
 
-                // 端点按要求外延：青色线的起点/终点向外偏移 0.5 * M01 边长。
-                var endpointExtend = Math.Max(moldEdgeLength * 0.5, 0.8);
-                var centerChain = ExtendPolylineEndpoints(offsetChain, endpointExtend, project.OuterRectangle);
-                if (centerChain.Count < 2)
+                trimStart = Math.Max(0, trimStart);
+                trimEnd = Math.Max(0, trimEnd);
+                var startStation = Math.Min(trimStart, total);
+                var endStation = Math.Max(startStation, total - trimEnd);
+                if (endStation - startStation <= 1e-9)
                 {
-                    continue;
+                    return [];
                 }
 
-                // 紫线显示采用外延后的路径，便于与冲压中心一致核对。
-                guidePaths.Add(new CornerStepPath(contourPath.CornerName, centerChain));
-
-                // 连续冲压重叠控制：相邻两次冲压中心距 = 模具沿走刀方向尺寸 - 重叠量。
-            // 要求重叠 2~10mm，这里使用与模具尺寸相关的自适应值并限幅到 [2,10]。
-            var overlapMm = Compat.Clamp(moldEdgeLength * 0.15, 2.0, 10.0);
-            var moldStepLength = Math.Max(moldEdgeLength - overlapMm, 0.5);
-
-                // 第一步：命中紫线所有端点、拐点。
-                var keyPoints = new List<(double X, double Y)> { centerChain[0] };
-                for (var i = 1; i < centerChain.Count - 1; i++)
+                (double X, double Y) SampleAt(double station)
                 {
-                    var a = centerChain[i - 1];
-                    var b = centerChain[i];
-                    var c = centerChain[i + 1];
+                    if (station <= 0)
+                    {
+                        return polyline[0];
+                    }
+
+                    if (station >= total)
+                    {
+                        return polyline[^1];
+                    }
+
+                    for (var i = 1; i < lengths.Length; i++)
+                    {
+                        if (lengths[i] + 1e-12 < station)
+                        {
+                            continue;
+                        }
+
+                        var segStart = lengths[i - 1];
+                        var segLen = lengths[i] - segStart;
+                        if (segLen <= 1e-12)
+                        {
+                            return polyline[i];
+                        }
+
+                        var t = (station - segStart) / segLen;
+                        var a = polyline[i - 1];
+                        var b = polyline[i];
+                        return (a.X + (b.X - a.X) * t, a.Y + (b.Y - a.Y) * t);
+                    }
+
+                    return polyline[^1];
+                }
+
+                var result = new List<(double X, double Y)> { SampleAt(startStation) };
+                for (var i = 1; i < polyline.Count - 1; i++)
+                {
+                    if (lengths[i] > startStation + 1e-9 && lengths[i] < endStation - 1e-9)
+                    {
+                        var p = polyline[i];
+                        var last = result[^1];
+                        if (Math.Sqrt((p.X - last.X) * (p.X - last.X) + (p.Y - last.Y) * (p.Y - last.Y)) > 1e-9)
+                        {
+                            result.Add(p);
+                        }
+                    }
+                }
+                result.Add(SampleAt(endStation));
+
+                var cleaned = new List<(double X, double Y)>();
+                foreach (var p in result)
+                {
+                    if (cleaned.Count == 0)
+                    {
+                        cleaned.Add(p);
+                        continue;
+                    }
+
+                    var last = cleaned[^1];
+                    if (Math.Sqrt((p.X - last.X) * (p.X - last.X) + (p.Y - last.Y) * (p.Y - last.Y)) > 1e-9)
+                    {
+                        cleaned.Add(p);
+                    }
+                }
+
+                return cleaned;
+            }
+
+            string BuildPassName(string baseName, int passIndex)
+            {
+                return passIndex == 1 ? baseName : $"{baseName}_P{passIndex}";
+            }
+
+            double GetStepLengthForDirection(double ux, double uy)
+            {
+                var dirToolLength = Math.Max(Math.Abs(ux) * moldOutlineWidth + Math.Abs(uy) * moldOutlineHeight, 1.0);
+                var overlapMm = Compat.Clamp(dirToolLength * 0.15, 2.0, 10.0);
+                return Math.Max(dirToolLength - overlapMm, 0.5);
+            }
+
+            double GetHalfTrimForDirection(double ux, double uy)
+            {
+                return GetStepLengthForDirection(ux, uy) * 0.5;
+            }
+
+            void EmitPassPoints(string passName, IReadOnlyList<(double X, double Y)> pathPoints)
+            {
+                if (pathPoints.Count < 2)
+                {
+                    return;
+                }
+
+                var keyPoints = new List<(double X, double Y)> { pathPoints[0] };
+                for (var i = 1; i < pathPoints.Count - 1; i++)
+                {
+                    var a = pathPoints[i - 1];
+                    var b = pathPoints[i];
+                    var c = pathPoints[i + 1];
                     var abx = b.X - a.X;
                     var aby = b.Y - a.Y;
                     var bcx = c.X - b.X;
@@ -4473,12 +4784,12 @@ namespace CADRecognition
                         keyPoints.Add(b);
                     }
                 }
-                keyPoints.Add(centerChain[^1]);
+                keyPoints.Add(pathPoints[^1]);
 
                 foreach (var v in keyPoints)
                 {
                     points.Add(new HoleFeature(
-                        $"ContourCornerHit:{contourPath.CornerName}",
+                        $"ContourCornerHit:{passName}",
                         v,
                         mold1.Feature.Width,
                         mold1.Feature.Height,
@@ -4488,27 +4799,31 @@ namespace CADRecognition
                         mold1.Feature.Signature));
                 }
 
-                // 第二步：若紫色线段长度 > 步距，则按步距插值。
-                // 步距已考虑重叠量：step = 模具沿路径尺寸 - overlap(2~10mm)。
-                for (var i = 1; i < centerChain.Count; i++)
+                for (var i = 1; i < pathPoints.Count; i++)
                 {
-                    var a = centerChain[i - 1];
-                    var b = centerChain[i];
+                    var a = pathPoints[i - 1];
+                    var b = pathPoints[i];
                     var dx = b.X - a.X;
                     var dy = b.Y - a.Y;
                     var segLen = Math.Sqrt(dx * dx + dy * dy);
-                    if (segLen <= moldStepLength + 1e-9)
+                    if (segLen <= 1e-9)
                     {
                         continue;
                     }
 
                     var ux = dx / segLen;
                     var uy = dy / segLen;
+                    var moldStepLength = GetStepLengthForDirection(ux, uy);
+                    if (segLen <= moldStepLength + 1e-9)
+                    {
+                        continue;
+                    }
+
                     for (var traveled = moldStepLength; traveled < segLen - 1e-9; traveled += moldStepLength)
                     {
                         var p = (a.X + ux * traveled, a.Y + uy * traveled);
                         points.Add(new HoleFeature(
-                            $"ContourPath:{contourPath.CornerName}",
+                            $"ContourPath:{passName}",
                             p,
                             mold1.Feature.Width,
                             mold1.Feature.Height,
@@ -4520,17 +4835,89 @@ namespace CADRecognition
                 }
             }
 
-            // 仅做精确去重（避免重复添加同一点），不做额外过滤逻辑。
+            foreach (var contourPath in contourPaths)
+            {
+                var pts = contourPath.Points;
+                if (pts is null || pts.Count < 2)
+                {
+                    continue;
+                }
+
+                var chain = pts
+                    .DistinctBy(p => ($"{Math.Round(p.X, 4)}|{Math.Round(p.Y, 4)}"))
+                    .ToList();
+                if (chain.Count < 2)
+                {
+                    continue;
+                }
+
+                var passSource = OffsetPolylineOutward(chain, project.OuterRectangle, initialOffsetX, initialOffsetY);
+                if (passSource.Count < 2)
+                {
+                    continue;
+                }
+
+                var endpointExtend = Math.Max(moldEdgeLength * 0.5, 0.8);
+                var passIndex = 1;
+                var currentPass = passSource;
+                while (currentPass.Count >= 2 && passIndex <= 12)
+                {
+                    var extendedPass = ExtendPolylineEndpoints(currentPass, endpointExtend, project.OuterRectangle);
+                    if (extendedPass.Count < 2)
+                    {
+                        break;
+                    }
+
+                    var passName = BuildPassName(contourPath.CornerName, passIndex);
+                    guidePaths.Add(new CornerStepPath(passName, extendedPass));
+                    EmitPassPoints(passName, extendedPass);
+
+                    if (IsPolylineOutsideWorkingZone(extendedPass, project.OuterRectangle, moldOutlineWidth, moldOutlineHeight))
+                    {
+                        break;
+                    }
+
+                    var nextPass = OffsetPolylineOutward(extendedPass, project.OuterRectangle, repeatOffsetX, repeatOffsetY);
+                    if (nextPass.Count < 2)
+                    {
+                        break;
+                    }
+
+                    currentPass = nextPass;
+                    passIndex++;
+                }
+            }
+
+            // 规则：不要求“完整落模在板内”，只要模具与板材有交集即可冲。
+            bool IntersectsBoard((double X, double Y) center)
+            {
+                var minX = center.X - moldOutlineWidth * 0.5;
+                var maxX = center.X + moldOutlineWidth * 0.5;
+                var minY = center.Y - moldOutlineHeight * 0.5;
+                var maxY = center.Y + moldOutlineHeight * 0.5;
+
+                return maxX >= project.OuterRectangle.MinX &&
+                       minX <= project.OuterRectangle.MaxX &&
+                       maxY >= project.OuterRectangle.MinY &&
+                       minY <= project.OuterRectangle.MaxY;
+            }
+
             var dedup = new List<HoleFeature>();
+            const double minKeepDistance = 3.0; // 固定：相邻冲点中心距 >= 3mm 才保留
             foreach (var p in points)
             {
-                var exists = dedup.Any(d =>
+                if (!IntersectsBoard(p.Centroid))
+                {
+                    continue;
+                }
+
+                var tooClose = dedup.Any(d =>
                 {
                     var dx = d.Centroid.X - p.Centroid.X;
                     var dy = d.Centroid.Y - p.Centroid.Y;
-                    return Math.Sqrt(dx * dx + dy * dy) <= 1e-6;
+                    return Math.Sqrt(dx * dx + dy * dy) < minKeepDistance;
                 });
-                if (!exists)
+                if (!tooClose)
                 {
                     dedup.Add(p);
                 }
@@ -4657,7 +5044,8 @@ namespace CADRecognition
         private static List<(double X, double Y)> OffsetPolylineOutward(
             IReadOnlyList<(double X, double Y)> chain,
             RectBounds outer,
-            double offset)
+            double offsetX,
+            double offsetY)
         {
             var result = new List<(double X, double Y)>();
             if (chain.Count < 2)
@@ -4754,14 +5142,14 @@ namespace CADRecognition
                 return result;
             }
 
-            (double NX, double NY) OutwardNormal((double X, double Y) a, (double X, double Y) b)
+            ((double NX, double NY) Normal, double Dist) OutwardNormal((double X, double Y) a, (double X, double Y) b)
             {
                 var dx = b.X - a.X;
                 var dy = b.Y - a.Y;
                 var len = Math.Sqrt(dx * dx + dy * dy);
                 if (len <= eps)
                 {
-                    return (0, 0);
+                    return ((0, 0), 0);
                 }
 
                 var tx = dx / len;
@@ -4779,29 +5167,30 @@ namespace CADRecognition
                 {
                     var distTop = Math.Abs(outer.MaxY - mid.Item2);
                     var distBottom = Math.Abs(mid.Item2 - outer.MinY);
-                    // 靠上边 -> 外侧朝 +Y；靠下边 -> 外侧朝 -Y
                     var ny = distTop <= distBottom ? 1.0 : -1.0;
-                    return (0.0, ny);
+                    return ((0.0, ny), offsetY);
                 }
 
                 if (isVertical)
                 {
                     var distLeft = Math.Abs(mid.Item1 - outer.MinX);
                     var distRight = Math.Abs(outer.MaxX - mid.Item1);
-                    // 靠左边 -> 外侧朝 -X；靠右边 -> 外侧朝 +X
                     var nx = distLeft <= distRight ? -1.0 : 1.0;
-                    return (nx, 0.0);
+                    return ((nx, 0.0), offsetX);
                 }
 
-                // 非正交段回退到中心距离判定
-                var ldx = mid.Item1 + left.Item1 * offset - center.Item1;
-                var ldy = mid.Item2 + left.Item2 * offset - center.Item2;
-                var rdx = mid.Item1 + right.Item1 * offset - center.Item1;
-                var rdy = mid.Item2 + right.Item2 * offset - center.Item2;
+                // 非正交段：按法向分量分别使用 X/Y 偏移，比较外侧方向。
+                var ldx = mid.Item1 + left.Item1 * offsetX - center.Item1;
+                var ldy = mid.Item2 + left.Item2 * offsetY - center.Item2;
+                var rdx = mid.Item1 + right.Item1 * offsetX - center.Item1;
+                var rdy = mid.Item2 + right.Item2 * offsetY - center.Item2;
                 var dl = ldx * ldx + ldy * ldy;
                 var dr = rdx * rdx + rdy * rdy;
 
-                return dl >= dr ? left : right;
+                var chosen = dl >= dr ? left : right;
+                // 对斜段给一个合成偏移距离，用于后续交点求解。
+                var dist = Math.Sqrt((chosen.Item1 * offsetX) * (chosen.Item1 * offsetX) + (chosen.Item2 * offsetY) * (chosen.Item2 * offsetY));
+                return (chosen, Math.Max(dist, 0.8));
             }
 
             (double X, double Y)? LineIntersection(
@@ -4821,7 +5210,7 @@ namespace CADRecognition
                 return (p.X + t * r.X, p.Y + t * r.Y);
             }
 
-            var segNormals = new List<(double NX, double NY)>();
+            var segNormals = new List<((double NX, double NY) Normal, double Dist)>();
             for (var i = 1; i < clean.Count; i++)
             {
                 segNormals.Add(OutwardNormal(clean[i - 1], clean[i]));
@@ -4829,8 +5218,8 @@ namespace CADRecognition
 
             // 起点 = 首段起点偏移
             result.Add((
-                clean[0].X + segNormals[0].NX * offset,
-                clean[0].Y + segNormals[0].NY * offset));
+                clean[0].X + segNormals[0].Normal.NX * segNormals[0].Dist,
+                clean[0].Y + segNormals[0].Normal.NY * segNormals[0].Dist));
 
             // 中间角点：相邻偏移线求交；失败时走“正交桥接点”，避免斜线短接。
             for (var i = 1; i < clean.Count - 1; i++)
@@ -4842,12 +5231,12 @@ namespace CADRecognition
                 var n1 = segNormals[i - 1];
                 var n2 = segNormals[i];
 
-                var p1 = (prev.X + n1.NX * offset, prev.Y + n1.NY * offset);
-                var p2 = (curr.X + n1.NX * offset, curr.Y + n1.NY * offset);
+                var p1 = (prev.X + n1.Normal.NX * n1.Dist, prev.Y + n1.Normal.NY * n1.Dist);
+                var p2 = (curr.X + n1.Normal.NX * n1.Dist, curr.Y + n1.Normal.NY * n1.Dist);
                 var r = (p2.Item1 - p1.Item1, p2.Item2 - p1.Item2);
 
-                var p3 = (curr.X + n2.NX * offset, curr.Y + n2.NY * offset);
-                var p4 = (next.X + n2.NX * offset, next.Y + n2.NY * offset);
+                var p3 = (curr.X + n2.Normal.NX * n2.Dist, curr.Y + n2.Normal.NY * n2.Dist);
+                var p4 = (next.X + n2.Normal.NX * n2.Dist, next.Y + n2.Normal.NY * n2.Dist);
                 var s = (p4.Item1 - p3.Item1, p4.Item2 - p3.Item2);
 
                 var cross = LineIntersection((p1.Item1, p1.Item2), (r.Item1, r.Item2), (p3.Item1, p3.Item2), (s.Item1, s.Item2));
@@ -4857,7 +5246,7 @@ namespace CADRecognition
                     var dx = cross.Value.X - curr.X;
                     var dy = cross.Value.Y - curr.Y;
                     var dist = Math.Sqrt(dx * dx + dy * dy);
-                    if (dist <= Math.Max(offset * 5.0, 1.0))
+                    if (dist <= Math.Max(Math.Max(n1.Dist, n2.Dist) * 5.0, 1.0))
                     {
                         result.Add(cross.Value);
                         continue;
@@ -4881,8 +5270,8 @@ namespace CADRecognition
             // 终点 = 尾段终点偏移
             var lastNormal = segNormals[^1];
             result.Add((
-                clean[^1].X + lastNormal.NX * offset,
-                clean[^1].Y + lastNormal.NY * offset));
+                clean[^1].X + lastNormal.Normal.NX * lastNormal.Dist,
+                clean[^1].Y + lastNormal.Normal.NY * lastNormal.Dist));
 
             // 去除相邻重复点
             var cleaned = new List<(double X, double Y)>();

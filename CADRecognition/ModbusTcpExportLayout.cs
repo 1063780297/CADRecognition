@@ -6,7 +6,7 @@ namespace CADRecognition
     /// </summary>
     internal static class ModbusTcpExportLayout
     {
-        /// <summary>1 程序名，UTF-8 字符串，20 字。</summary>
+        /// <summary>1 程序名，Unicode 字符串，20 字（支持中文，最多 20 个 16 位字符）。</summary>
         public const int ProgramNameStart = 0;
 
         public const int ProgramNameWordLength = 20;
@@ -26,42 +26,42 @@ namespace CADRecognition
 
         public const int Spare4WordLength = 2;
 
-        /// <summary>17 台1图纸坐标组 (X,Y)，(REAL*2)*80，共 320 字。</summary>
+        /// <summary>17 台1图纸坐标组 (X,Y)，(REAL*2)*100，共 400 字。</summary>
         public const int Stage1CoordStart = 40;
 
-        public const int Stage1CoordWordLength = 320;
+        public const int Stage1CoordWordLength = 400;
 
-        /// <summary>19 台1位置模具编号组，INT*80，共 80 字。</summary>
-        public const int Stage1PositionMoldStart = 360;
+        /// <summary>19 台1位置模具编号组，INT*100，共 100 字。</summary>
+        public const int Stage1PositionMoldStart = 440;
 
-        public const int Stage1PositionMoldWordLength = 80;
+        public const int Stage1PositionMoldWordLength = 100;
 
-        /// <summary>20 台1冲孔模具编号组，DINT*80，共 160 字。</summary>
-        public const int Stage1PunchMoldStart = 440;
+        /// <summary>20 台1冲孔模具编号组，DINT*100，共 200 字。</summary>
+        public const int Stage1PunchMoldStart = 540;
 
-        public const int Stage1PunchMoldWordLength = 160;
+        public const int Stage1PunchMoldWordLength = 200;
 
-        /// <summary>21 台2图纸坐标组 (X,Y)，(REAL*2)*80，共 320 字。</summary>
-        public const int Stage2CoordStart = 600;
+        /// <summary>21 台2图纸坐标组 (X,Y)，(REAL*2)*100，共 400 字。</summary>
+        public const int Stage2CoordStart = 740;
 
-        public const int Stage2CoordWordLength = 320;
+        public const int Stage2CoordWordLength = 400;
 
-        /// <summary>23 台2位置模具编号组，INT*80，共 80 字。</summary>
-        public const int Stage2PositionMoldStart = 920;
+        /// <summary>23 台2位置模具编号组，INT*100，共 100 字。</summary>
+        public const int Stage2PositionMoldStart = 1140;
 
-        public const int Stage2PositionMoldWordLength = 80;
+        public const int Stage2PositionMoldWordLength = 100;
 
-        /// <summary>24 台2冲孔模具编号组，DINT*80，共 160 字。</summary>
-        public const int Stage2PunchMoldStart = 1000;
+        /// <summary>24 台2冲孔模具编号组，DINT*100，共 200 字。</summary>
+        public const int Stage2PunchMoldStart = 1240;
 
-        public const int Stage2PunchMoldWordLength = 160;
+        public const int Stage2PunchMoldWordLength = 200;
 
         /// <summary>台1/台2 坐标与模具编号槽位数。</summary>
-        public const int CoordinateSlotCount = 80;
+        public const int CoordinateSlotCount = 100;
 
-        public const int MoldSlotCount = 80;
+        public const int MoldSlotCount = 100;
 
-        /// <summary>表占用总字数（1000 + 160）。</summary>
-        public const int TotalWordLength = 1160;
+        /// <summary>表占用总字数（1240 + 200）。</summary>
+        public const int TotalWordLength = 1440;
     }
 }
