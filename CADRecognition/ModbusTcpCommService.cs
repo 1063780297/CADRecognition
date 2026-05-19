@@ -9,7 +9,7 @@ namespace CADRecognition
 {
     /// <summary>
     /// 按固定字地址将 <see cref="TcpExportModel"/> 写入 Modbus TCP 保持寄存器。
-    /// 字段顺序、数组长度和 INT/REAL/DINT 宽度与表格定义一致。
+    /// 首字段使用 UTF-8 字符串写入，支持中文；其余字段的顺序、数组长度和 INT/REAL/DINT 宽度与表格定义一致。
     /// </summary>
     internal sealed class ModbusTcpCommService
     {
@@ -96,28 +96,27 @@ namespace CADRecognition
 
         private static async Task WriteProgramNameAsync(ModbusTcpNet client, Func<int, string> addr, string programName)
         {
-            var text = TruncateUtf16Text(programName ?? string.Empty, ModbusTcpExportLayout.ProgramNameWordLength);
-            var bytes = new byte[ModbusTcpExportLayout.ProgramNameWordLength * 2];
-            var encoded = Encoding.Unicode.GetBytes(text);
-            Array.Copy(encoded, bytes, Math.Min(encoded.Length, bytes.Length));
-
+            var bytes = EncodeUtf8Fixed(programName ?? string.Empty, ModbusTcpExportLayout.ProgramNameWordLength);
             ThrowIfFailed(await client.WriteAsync(addr(ModbusTcpExportLayout.ProgramNameStart), bytes).ConfigureAwait(false));
         }
 
-        private static string TruncateUtf16Text(string text, int maxWordLength)
+        private static byte[] EncodeUtf8Fixed(string text, int maxWordLength)
         {
-            if (string.IsNullOrEmpty(text) || text.Length <= maxWordLength)
+            var maxBytes = maxWordLength * 2;
+            var buffer = new byte[maxBytes];
+            if (string.IsNullOrEmpty(text))
             {
-                return text ?? string.Empty;
+                return buffer;
             }
 
-            var length = maxWordLength;
-            if (length > 0 && char.IsHighSurrogate(text[length - 1]))
+            var encoded = Encoding.UTF8.GetBytes(text);
+            var byteCount = Math.Min(encoded.Length, maxBytes);
+            if (byteCount > 0)
             {
-                length--;
+                Array.Copy(encoded, buffer, byteCount);
             }
 
-            return text.Substring(0, length);
+            return buffer;
         }
 
         private static void ValidateLayout()
