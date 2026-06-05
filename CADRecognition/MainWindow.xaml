@@ -56,6 +56,7 @@
                 <StackPanel Orientation="Horizontal">
                     <Button Content="导入工程图纸" Click="ImportProjectDxf_Click" Margin="0,0,15,0" />
                     <Button Content="一键识别匹配" Click="Recognize_Click" Margin="0,0,15,0" />
+                    <Button Content="全自动流程" Click="AutoImportRecognizeSend_Click" Margin="0,0,15,0" />
                     <Button Content="导出数据" Click="Export_Click" Margin="0,0,15,0" />
                     <TextBlock Text="识图边界：" Foreground="#DDDDDD" VerticalAlignment="Center" Margin="0,0,4,0"/>
                     <TextBox x:Name="BoardWidthTextBox"
@@ -75,6 +76,8 @@
                               Margin="0,0,20,0"/>
                     <TextBlock Text="已加载工程：" Foreground="#DDDDDD" VerticalAlignment="Center" />
                     <TextBlock x:Name="ProjectFileText" Foreground="#9CDCFE" VerticalAlignment="Center" Margin="4,0,20,0" />
+                    <TextBlock Text="当前文件夹：" Foreground="#DDDDDD" VerticalAlignment="Center" />
+                    <TextBlock x:Name="ProjectFolderText" Foreground="#9CDCFE" VerticalAlignment="Center" Margin="4,0,20,0" TextTrimming="CharacterEllipsis" Width="360" />
                     <TextBlock Text="台1/台2：" Foreground="#DDDDDD" VerticalAlignment="Center" />
                     <TextBlock x:Name="MoldCountText" Foreground="#9CDCFE" VerticalAlignment="Center" Margin="4,0,0,0" />
                 </StackPanel>

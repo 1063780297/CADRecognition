@@ -2,6 +2,7 @@ using System;
 using System.Globalization;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading;
 using System.Threading.Tasks;
 using HslCommunication.ModBus;
 
@@ -11,9 +12,40 @@ namespace CADRecognition
     /// 按固定字地址将 <see cref="TcpExportModel"/> 写入 Modbus TCP 保持寄存器。
     /// 首字段使用 UTF-8 字符串写入，支持中文；其余字段的顺序、数组长度和 INT/REAL/DINT 宽度与表格定义一致。
     /// </summary>
-    internal sealed class ModbusTcpCommService
+    internal sealed class ModbusTcpCommService : IDisposable
     {
         private static readonly Regex TrailingDigits = new(@"\d+$", RegexOptions.Compiled);
+        private readonly object _sync = new();
+        private ModbusTcpNet? _client;
+        private string _clientKey = string.Empty;
+        private readonly SemaphoreSlim _ioLock = new(1, 1);
+
+        public void Dispose()
+        {
+            lock (_sync)
+            {
+                _client?.Dispose();
+                _client = null;
+                _clientKey = string.Empty;
+            }
+        }
+
+        private ModbusTcpNet GetClient(string host, int port, byte station)
+        {
+            var key = $"{host}:{port}:{station}";
+            lock (_sync)
+            {
+                if (_client is not null && string.Equals(_clientKey, key, StringComparison.Ordinal))
+                {
+                    return _client;
+                }
+
+                _client?.Dispose();
+                _client = new ModbusTcpNet(host, port, station) { AddressStartWithZero = true };
+                _clientKey = key;
+                return _client;
+            }
+        }
 
         public async Task SendExportModelAsync(string host, int port, byte station, string registerBaseText, TcpExportModel model)
         {
@@ -32,17 +64,16 @@ namespace CADRecognition
                 throw new ArgumentNullException(nameof(model));
             }
 
+            var client = GetClient(host, port, station);
             var (addressPrefix, baseOffset) = ParseRegisterBase(registerBaseText);
             string Addr(int relativeWord) => string.IsNullOrEmpty(addressPrefix)
                 ? (baseOffset + relativeWord).ToString(CultureInfo.InvariantCulture)
                 : addressPrefix + (baseOffset + relativeWord).ToString(CultureInfo.InvariantCulture);
 
-            using var client = new ModbusTcpNet(host, port, station)
+            await _ioLock.WaitAsync().ConfigureAwait(false);
+            try
             {
-                AddressStartWithZero = true
-            };
-
-            await WriteProgramNameAsync(client, Addr, model.ProgramName).ConfigureAwait(false);
+                await WriteProgramNameAsync(client, Addr, model.ProgramName).ConfigureAwait(false);
 
             var programNoInt = ParseProgramNo(model.ProgramNo);
             var intBlock = new short[]
@@ -92,6 +123,11 @@ namespace CADRecognition
             await WriteDIntBlockAsync(client, Addr, ModbusTcpExportLayout.Stage2PunchMoldStart, BuildMoldDints(model.Stage2PunchMoldIds)).ConfigureAwait(false);
 
             ValidateLayout();
+            }
+            finally
+            {
+                _ioLock.Release();
+            }
         }
 
         private static async Task WriteProgramNameAsync(ModbusTcpNet client, Func<int, string> addr, string programName)

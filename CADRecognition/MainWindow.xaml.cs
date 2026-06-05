@@ -7,6 +7,7 @@ using System.Globalization;
 using System.IO;
 using System.Reflection;
 using System.Runtime.CompilerServices;
+using System.Threading;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
@@ -24,8 +25,10 @@ using WpfEllipse = System.Windows.Shapes.Ellipse;
 using WpfLine = System.Windows.Shapes.Line;
 using WpfRectangle = System.Windows.Shapes.Rectangle;
 using CADImport;
+using HslCommunication.ModBus;
 using Path = System.Windows.Shapes.Path;
 using Brushes = System.Windows.Media.Brushes;
+using FormsFolderBrowserDialog = System.Windows.Forms.FolderBrowserDialog;
 
 namespace CADRecognition
 {
@@ -689,6 +692,8 @@ namespace CADRecognition
         private readonly ObservableCollection<MoldRow> _stage2MoldRows = [];
         private readonly ObservableCollection<PositionRow> _stage1PositionRows = [];
         private readonly ObservableCollection<PositionRow> _stage2PositionRows = [];
+        private readonly ObservableCollection<PlcRegisterRow> _plcRegisters = [];
+        private readonly Dictionary<string, PlcRegisterRow> _plcRegisterMap = new(StringComparer.OrdinalIgnoreCase);
         private readonly List<string> _stage1MoldFiles = [];
         private readonly List<string> _stage2MoldFiles = [];
         private string? _selectedStage1File;
@@ -697,11 +702,29 @@ namespace CADRecognition
         private ProjectProfile? _lastProjectProfile;
         private List<MoldProfile> _lastMolds = [];
         private IReadOnlyList<(double X, double Y)> _lastOuterContourPoints = [];
+        private readonly ModbusTcpCommService _modbusTcpCommService = new();
+        private readonly SemaphoreSlim _plcIoLock = new(1, 1);
+        private ModbusTcpNet? _plcClient;
+        private string _plcClientKey = string.Empty;
+        private CancellationTokenSource? _automationCts;
+        private CancellationTokenSource? _heartbeatCts;
+        private Task? _heartbeatTask;
+        private Task? _automationLoopTask;
+        private readonly string _projectFolderSettingsPath = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "CADRecognition", "project-folder.txt");
 
+        private PlcMonitorWindow? _plcMonitorWindow;
+        private string? _projectFolder;
         private string? _projectFile;
         private DxfDocument? _projectDoc;
         private bool _compactAnnotation = false;
         private double _boardWidth = 0;
+        private string _d600Value = string.Empty;
+        private double _d620Value = 0;
+        private int _d622Value = 0;
+        private int _d623Value = 0;
+        private int _d624Value = 0;
+        private int _d625Value = 0;
+        private int _d626Value = 0;
 
         public MainWindow()
         {
@@ -709,7 +732,9 @@ namespace CADRecognition
             DataContext = this;
             MoldCountText.Text = "0";
             ProjectFileText.Text = "未加载";
+            ProjectFolderText.Text = "未选择";
             PreviewHost.Content = _viewer;
+            InitializePlcRegisters();
             _viewer.SetCompactMode(_compactAnnotation);
             FileTreeView.Items.Clear();
             Loaded += MainWindow_Loaded;
@@ -721,14 +746,33 @@ namespace CADRecognition
             Loaded -= MainWindow_Loaded;
             await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Render);
             await Task.Delay(100);
+            RestoreProjectFolder();
             await TryRestoreLastMoldsAsync();
+            RefreshPlcRegisters();
+            _ = EnsureAutomationLoopRunningAsync();
         }
 
         private void MainWindow_Closing(object? sender, CancelEventArgs e)
         {
+            _automationCts?.Cancel();
+            _heartbeatCts?.Cancel();
+            SaveProjectFolder();
             LastMoldSessionSettings.Save(
                 _stage1MoldFiles.Where(File.Exists).ToList(),
                 _stage2MoldFiles.Where(File.Exists).ToList());
+        }
+
+        public void SetProjectFolder(string folder)
+        {
+            _projectFolder = folder;
+            ProjectFolderText.Text = folder;
+            SaveProjectFolder();
+            //ProjectFolderChanged?.Invoke(this, EventArgs.Empty);
+        }
+
+        public void HandlePlcRegisterCellEditEnding(object sender, DataGridCellEditEndingEventArgs e)
+        {
+            PlcRegisterGrid_CellEditEnding(sender, e);
         }
 
         private async Task TryRestoreLastMoldsAsync()
@@ -901,6 +945,90 @@ namespace CADRecognition
         public ObservableCollection<MoldRow> Stage2MoldRows => _stage2MoldRows;
         public ObservableCollection<PositionRow> Stage1PositionRows => _stage1PositionRows;
         public ObservableCollection<PositionRow> Stage2PositionRows => _stage2PositionRows;
+        public ObservableCollection<PlcRegisterRow> PlcRegisters => _plcRegisters;
+        public string? CurrentProjectFolder => _projectFolder;
+
+        private void InitializePlcRegisters()
+        {
+            _plcRegisters.Clear();
+            _plcRegisterMap.Clear();
+
+            AddPlcRegisterRow("D600", string.Empty, "文件名");
+            AddPlcRegisterRow("D620", "0", "识图界限");
+            AddPlcRegisterRow("D622", "0", "软件状态");
+            AddPlcRegisterRow("D623", "0", "识图结果（1=成功，2=失败，3=未找到）");
+            AddPlcRegisterRow("D624", "0", "识图中（1=进行中，0=结束）");
+            AddPlcRegisterRow("D625", "0", "心跳");
+            AddPlcRegisterRow("D626", "0", "任务号");
+        }
+
+        private string GetPlcAddress(string logicalName) => _plcRegisterMap.TryGetValue(logicalName, out var row) ? row.Address : logicalName;
+        private string GetPlcAddressAt(int index) => index >= 0 && index < _plcRegisters.Count ? _plcRegisters[index].Address : string.Empty;
+
+        private void AddPlcRegisterRow(string logicalName, string value, string info)
+        {
+            var row = new PlcRegisterRow(logicalName, value, info);
+            _plcRegisters.Add(row);
+            _plcRegisterMap[logicalName] = row;
+        }
+
+        private void RefreshPlcRegisters()
+        {
+            if (!Dispatcher.CheckAccess())
+            {
+                Dispatcher.Invoke(RefreshPlcRegistersCore);
+                return;
+            }
+
+            RefreshPlcRegistersCore();
+        }
+
+        private void RefreshPlcRegistersCore()
+        {
+            if (_plcRegisters.Count < 7) InitializePlcRegisters();
+            _plcRegisters[0].Value = _d600Value;
+            _plcRegisters[1].Value = _d620Value.ToString("0.###", CultureInfo.InvariantCulture);
+            _plcRegisters[2].Value = _d622Value.ToString(CultureInfo.InvariantCulture);
+            _plcRegisters[3].Value = _d623Value.ToString(CultureInfo.InvariantCulture);
+            _plcRegisters[4].Value = _d624Value.ToString(CultureInfo.InvariantCulture);
+            _plcRegisters[5].Value = _d625Value.ToString(CultureInfo.InvariantCulture);
+            _plcRegisters[6].Value = _d626Value.ToString(CultureInfo.InvariantCulture);
+            OnPropertyChanged(nameof(PlcRegisters));
+        }
+
+        public void RefreshPlcRegistersForMonitor() => RefreshPlcRegisters();
+
+        public async Task LoadPlcRegistersForMonitorAsync(CancellationToken token = default)
+        {
+            var d600Address = GetPlcAddressAt(0);
+            var d620Address = GetPlcAddressAt(1);
+            var d626Address = GetPlcAddressAt(6);
+
+            if (string.IsNullOrWhiteSpace(d600Address) || string.IsNullOrWhiteSpace(d620Address) || string.IsNullOrWhiteSpace(d626Address))
+            {
+                RefreshPlcRegisters();
+                return;
+            }
+
+            try
+            {
+                var previousD626 = _d626Value;
+                await ReadD600FileNameAsync("127.0.0.1", 502, 1, d600Address, token).ConfigureAwait(true);
+                await ReadPlcBoundaryAsync("127.0.0.1", 502, 1, d620Address, token).ConfigureAwait(true);
+                await ReadIntAsync("127.0.0.1", 502, 1, d626Address, 626, token).ConfigureAwait(true);
+                RefreshPlcRegisters();
+
+                if (_d626Value != previousD626)
+                {
+                    _ = TriggerAutomationOnD626ChangeAsync(previousD626, _d626Value, token);
+                }
+            }
+            catch (Exception ex) when (ex is OperationCanceledException or InvalidOperationException or FormatException)
+            {
+                StatusText.Text = $"PLC监视读取失败：{ex.Message}";
+                RefreshPlcRegisters();
+            }
+        }
 
         public event PropertyChangedEventHandler? PropertyChanged;
 
@@ -1147,73 +1275,9 @@ namespace CADRecognition
             return files.First();
         }
 
-        private void Recognize_Click(object sender, RoutedEventArgs e)
+        private async void Recognize_Click(object sender, RoutedEventArgs e)
         {
-            if (_projectDoc is null || string.IsNullOrWhiteSpace(_projectFile))
-            {
-                StatusText.Text = "请先导入工程 DXF。";
-                return;
-            }
-            if (_stage1MoldFiles.Count == 0 || _stage2MoldFiles.Count == 0)
-            {
-                StatusText.Text = "请先分别导入台1模具和台2模具。";
-                return;
-            }
-
-            var project = DxfAnalyzer.ExtractProject(_projectDoc);
-            _lastProjectProfile = project;
-            _lastOuterContourPoints = DxfAnalyzer.ExtractOuterContourForDebug(_projectDoc);
-            var boardWidth = ReadBoardWidth();
-            var splitY = project.OuterRectangle.MinY + boardWidth;
-            var stage1Project = new ProjectProfile(
-                project.OuterRectangle,
-                project.Holes.Where(h => h.Centroid.Y < splitY).ToList(),
-                project.CornerCandidates,
-                project.EdgeCandidates,
-                project.CornerStepPaths,
-                project.ContourPaths,
-                project.Stage1ContourPaths,
-                []);
-            var stage2Project = new ProjectProfile(
-                project.OuterRectangle,
-                project.Holes.Where(h => h.Centroid.Y >= splitY).ToList(),
-                project.CornerCandidates,
-                project.EdgeCandidates,
-                project.CornerStepPaths,
-                project.ContourPaths,
-                [],
-                project.Stage2ContourPaths);
-
-            _selectedStage1File = ResolveSelectedMoldFile(Stage1MoldComboBox, _stage1MoldFiles);
-            _selectedStage2File = ResolveSelectedMoldFile(Stage2MoldComboBox, _stage2MoldFiles);
-
-            var stage1Files = _selectedStage1File is null
-                ? _stage1MoldFiles.ToList()
-                : _stage1MoldFiles.Where(f => string.Equals(f, _selectedStage1File, StringComparison.OrdinalIgnoreCase)).Concat(_stage1MoldFiles.Where(f => !string.Equals(f, _selectedStage1File, StringComparison.OrdinalIgnoreCase))).ToList();
-            var stage2Files = _selectedStage2File is null
-                ? _stage2MoldFiles.ToList()
-                : _stage2MoldFiles.Where(f => string.Equals(f, _selectedStage2File, StringComparison.OrdinalIgnoreCase)).Concat(_stage2MoldFiles.Where(f => !string.Equals(f, _selectedStage2File, StringComparison.OrdinalIgnoreCase))).ToList();
-
-            var stage1Molds = stage1Files.Select((f, idx) =>
-            {
-                TryGetDocumentFromCache(f, out var doc);
-                return DxfAnalyzer.ExtractMold(1 + idx, f, doc);
-            }).ToList();
-            var stage2Molds = stage2Files.Select((f, idx) =>
-            {
-                TryGetDocumentFromCache(f, out var doc);
-                return DxfAnalyzer.ExtractMold(1 + idx, f, doc);
-            }).ToList();
-            _lastMolds = stage1Molds.Concat(stage2Molds).ToList();
-
-            var matcher = new MoldMatcher();
-            var stage1Result = matcher.Match(stage1Project, stage1Molds, isStage1: true);
-            var stage2Result = matcher.Match(stage2Project, stage2Molds, isStage1: false);
-            _lastMatchResult = new MatchResult(stage1Result.HoleAssignments.Concat(stage2Result.HoleAssignments).ToList(), stage1Result.GuidePaths ?? stage2Result.GuidePaths);
-            RenderStageResult(stage1Result, stage1Molds, isStage1: true);
-            RenderStageResult(stage2Result, stage2Molds, isStage1: false);
-            RenderPreview(_projectDoc, _projectFile, withAnnotation: true);
-            StatusText.Text = $"识别完成：台1 {stage1Result.HoleAssignments.Count} 个，台2 {stage2Result.HoleAssignments.Count} 个。";
+            await RecognizeAndSendAsync(sendToPlc: false, writeHeartbeatOnly: false);
         }
 
         private void Export_Click(object sender, RoutedEventArgs e)
@@ -1233,6 +1297,664 @@ namespace CADRecognition
             {
                 StatusText.Text = "已导出并通过 Modbus TCP 发送。";
             }
+        }
+
+        private async void AutoImportRecognizeSend_Click(object sender, RoutedEventArgs e)
+        {
+            if (_plcMonitorWindow is null || !_plcMonitorWindow.IsLoaded)
+            {
+                _plcMonitorWindow = new PlcMonitorWindow(this)
+                {
+                    Owner = this
+                };
+                _plcMonitorWindow.Closed += (_, _) => _plcMonitorWindow = null;
+                _plcMonitorWindow.Show();
+            }
+            else
+            {
+                _plcMonitorWindow.Activate();
+            }
+
+            await EnsureAutomationLoopRunningAsync().ConfigureAwait(true);
+        }
+
+        private async Task EnsureAutomationLoopRunningAsync()
+        {
+            if (_automationLoopTask is not null && !_automationLoopTask.IsCompleted)
+            {
+                StatusText.Text = "自动识别后台已在运行。";
+                return;
+            }
+
+            if (_automationCts is not null)
+            {
+                _automationCts.Cancel();
+            }
+
+            _automationCts = new CancellationTokenSource();
+            var token = _automationCts.Token;
+            _automationLoopTask = Task.Run(async () =>
+            {
+                try
+                {
+                    if (!await EnsureProjectAndMoldsReadyForAutomationAsync(token).ConfigureAwait(false))
+                    {
+                        return;
+                    }
+
+                    await RunFullAutomationAsync(token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    StatusText.Text = "自动流程已取消。";
+                }
+                catch (Exception ex)
+                {
+                    StatusText.Text = $"自动流程失败：{ex.Message}";
+                }
+                finally
+                {
+                    _automationCts?.Dispose();
+                    _automationCts = null;
+                    _automationLoopTask = null;
+                }
+            }, token);
+
+            await Task.CompletedTask;
+        }
+
+        private async Task TriggerAutomationOnD626ChangeAsync(int previousD626, int currentD626, CancellationToken token)
+        {
+            if (previousD626 == currentD626)
+            {
+                return;
+            }
+
+            if (_automationLoopTask is not null && !_automationLoopTask.IsCompleted)
+            {
+                return;
+            }
+
+            try
+            {
+                await RunD626TriggeredAutomationAsync(token).ConfigureAwait(true);
+            }
+            catch (Exception ex) when (ex is OperationCanceledException or InvalidOperationException)
+            {
+                StatusText.Text = $"D626 变化后启动自动化失败：{ex.Message}";
+            }
+        }
+
+        private async Task RunD626TriggeredAutomationAsync(CancellationToken token)
+        {
+            if (!await EnsureProjectAndMoldsReadyForAutomationAsync(token).ConfigureAwait(true))
+            {
+                return;
+            }
+
+            var plcHost = "127.0.0.1";
+            var plcPort = 502;
+            byte station = 1;
+            var d600Address = GetPlcAddressAt(0);
+            var d620Address = GetPlcAddressAt(1);
+            var d622Address = GetPlcAddressAt(2);
+            var d623Address = GetPlcAddressAt(3);
+            var d624Address = GetPlcAddressAt(4);
+            var d625Address = GetPlcAddressAt(5);
+
+            if (!string.IsNullOrWhiteSpace(d622Address))
+            {
+                _d622Value = 1;
+                RefreshPlcRegisters();
+                await WriteSingleIntAsync(plcHost, plcPort, station, d622Address, 1, token).ConfigureAwait(true);
+            }
+
+            if (!string.IsNullOrWhiteSpace(d624Address))
+            {
+                _d624Value = 1;
+                RefreshPlcRegisters();
+                await WriteSingleIntAsync(plcHost, plcPort, station, d624Address, 1, token).ConfigureAwait(true);
+            }
+
+            if (!string.IsNullOrWhiteSpace(d625Address))
+            {
+                await StartHeartbeatAsync(plcHost, plcPort, station, 625, token).ConfigureAwait(true);
+            }
+
+            var fileName = await ReadD600FileNameAsync(plcHost, plcPort, station, d600Address, token).ConfigureAwait(true);
+            var matchedFile = FindFileInFolderByName(_projectFolder!, fileName);
+            if (matchedFile is null)
+            {
+                _d623Value = 2;
+                RefreshPlcRegisters();
+                await WriteSingleIntAsync(plcHost, plcPort, station, d623Address, 2, token).ConfigureAwait(true);
+                _d624Value = 0;
+                RefreshPlcRegisters();
+                await WriteSingleIntAsync(plcHost, plcPort, station, d624Address, 0, token).ConfigureAwait(true);
+                StatusText.Text = $"在图纸文件夹中未找到：{fileName}";
+                return;
+            }
+
+            _projectFile = matchedFile;
+            _projectDoc = LoadCadDocument(matchedFile);
+            SetDocumentCache(matchedFile, _projectDoc);
+            _lastProjectProfile = DxfAnalyzer.ExtractProject(_projectDoc);
+            _lastOuterContourPoints = DxfAnalyzer.ExtractOuterContourForDebug(_projectDoc);
+            ProjectFileText.Text = System.IO.Path.GetFileName(matchedFile);
+            RenderPreview(_projectDoc, _projectFile, withAnnotation: false);
+
+            var splitBoundary = await ReadPlcBoundaryAsync(plcHost, plcPort, station, d620Address, token).ConfigureAwait(true);
+            _boardWidth = splitBoundary;
+            if (BoardWidthTextBox is not null)
+            {
+                BoardWidthTextBox.Text = splitBoundary.ToString("0.###", CultureInfo.InvariantCulture);
+            }
+
+            var ok = await RecognizeAndSendAsync(sendToPlc: true, writeHeartbeatOnly: true).ConfigureAwait(true);
+            _d624Value = 0;
+            _d623Value = ok ? 1 : 2;
+            RefreshPlcRegisters();
+            await WriteSingleIntAsync(plcHost, plcPort, station, d624Address, 0, token).ConfigureAwait(true);
+            await WriteSingleIntAsync(plcHost, plcPort, station, d623Address, ok ? 1 : 2, token).ConfigureAwait(true);
+            StatusText.Text = ok ? "自动识别并发送成功，等待下一次 D626 变化..." : "自动识别失败，等待下一次 D626 变化...";
+        }
+
+        private async Task<bool> EnsureProjectAndMoldsReadyForAutomationAsync(CancellationToken token)
+        {
+            if (string.IsNullOrWhiteSpace(_projectFolder) || !Directory.Exists(_projectFolder))
+            {
+                using var dialog = new FormsFolderBrowserDialog
+                {
+                    Description = "请选择图纸文件所在文件夹",
+                    ShowNewFolderButton = false,
+                    SelectedPath = _projectFolder ?? string.Empty
+                };
+
+                if (dialog.ShowDialog() != System.Windows.Forms.DialogResult.OK || string.IsNullOrWhiteSpace(dialog.SelectedPath))
+                {
+                    return false;
+                }
+
+                SetProjectFolder(dialog.SelectedPath);
+            }
+
+            if (_stage1MoldFiles.Count == 0 || _stage2MoldFiles.Count == 0)
+            {
+                StatusText.Text = "请先按原逻辑导入台1和台2模具。";
+                return false;
+            }
+
+            token.ThrowIfCancellationRequested();
+            return true;
+        }
+
+        private void RestoreProjectFolder()
+        {
+            try
+            {
+                if (File.Exists(_projectFolderSettingsPath))
+                {
+                    var folder = File.ReadAllText(_projectFolderSettingsPath).Trim();
+                    if (!string.IsNullOrWhiteSpace(folder) && Directory.Exists(folder))
+                    {
+                        _projectFolder = folder;
+                        ProjectFolderText.Text = folder;
+                    }
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        private void SaveProjectFolder()
+        {
+            try
+            {
+                var folder = _projectFolder?.Trim();
+                if (string.IsNullOrWhiteSpace(folder))
+                {
+                    return;
+                }
+
+                var dir = System.IO.Path.GetDirectoryName(_projectFolderSettingsPath);
+                if (!string.IsNullOrWhiteSpace(dir))
+                {
+                    Directory.CreateDirectory(dir);
+                }
+
+                File.WriteAllText(_projectFolderSettingsPath, folder);
+            }
+            catch
+            {
+            }
+        }
+
+        private static string? FindFileInFolderByName(string folder, string fileName)
+        {
+            if (string.IsNullOrWhiteSpace(folder) || string.IsNullOrWhiteSpace(fileName) || !Directory.Exists(folder))
+            {
+                return null;
+            }
+
+            return Directory.EnumerateFiles(folder, "*.*", SearchOption.AllDirectories)
+                .FirstOrDefault(f => string.Equals(System.IO.Path.GetFileName(f), fileName, StringComparison.OrdinalIgnoreCase));
+        }
+
+        private async Task RunFullAutomationAsync(CancellationToken token)
+        {
+            if (string.IsNullOrWhiteSpace(_projectFolder) || !Directory.Exists(_projectFolder))
+            {
+                throw new InvalidOperationException("未选择图纸文件夹。");
+            }
+
+            var plcHost = "127.0.0.1";
+            var plcPort = 502;
+            byte station = 1;
+
+            await WriteSingleIntAsync(plcHost, plcPort, station, GetPlcAddressAt(2), 1, token).ConfigureAwait(true);
+            _d622Value = 1;
+            RefreshPlcRegisters();
+
+            await StartHeartbeatAsync(plcHost, plcPort, station, 625, token).ConfigureAwait(true);
+            try
+            {
+                while (!token.IsCancellationRequested)
+                {
+                    var d600Address = GetPlcAddressAt(0);
+                    var d620Address = GetPlcAddressAt(1);
+                    var d622Address = GetPlcAddressAt(2);
+                    var d623Address = GetPlcAddressAt(3);
+                    var d624Address = GetPlcAddressAt(4);
+                    var d625Address = GetPlcAddressAt(5);
+                    var d626Address = GetPlcAddressAt(6);
+
+                    await UpdatePlcSnapshotAsync(plcHost, plcPort, station, d600Address, d620Address, d622Address, d623Address, d624Address, d625Address, d626Address, token).ConfigureAwait(true);
+                    var initialD626 = _d626Value;
+                    StatusText.Text = $"已记录 {d626Address} 初始值：{initialD626}，等待变化...";
+                    await WaitForRegisterChangeAsync(plcHost, plcPort, station, d626Address, initialD626, 626, token).ConfigureAwait(true);
+
+                    await WriteSingleIntAsync(plcHost, plcPort, station, d622Address, 1, token).ConfigureAwait(true);
+                    _d622Value = 1;
+                    RefreshPlcRegisters();
+
+                    var fileName = await ReadD600FileNameAsync(plcHost, plcPort, station, d600Address, token).ConfigureAwait(true);
+                    var matchedFile = FindFileInFolderByName(_projectFolder, fileName);
+                    if (matchedFile is null)
+                    {
+                        _d623Value = 3;
+                        RefreshPlcRegisters();
+                        await WriteSingleIntAsync(plcHost, plcPort, station, d623Address, 3, token).ConfigureAwait(true);
+                        StatusText.Text = $"在图纸文件夹中未找到：{fileName}";
+                        continue;
+                    }
+
+                    _projectFile = matchedFile;
+                    _projectDoc = LoadCadDocument(matchedFile);
+                    SetDocumentCache(matchedFile, _projectDoc);
+                    _lastProjectProfile = DxfAnalyzer.ExtractProject(_projectDoc);
+                    _lastOuterContourPoints = DxfAnalyzer.ExtractOuterContourForDebug(_projectDoc);
+                    ProjectFileText.Text = System.IO.Path.GetFileName(matchedFile);
+                    RenderPreview(_projectDoc, _projectFile, withAnnotation: false);
+
+                    var splitBoundary = await ReadPlcBoundaryAsync(plcHost, plcPort, station, d620Address, token).ConfigureAwait(true);
+                    _boardWidth = splitBoundary;
+                    if (BoardWidthTextBox is not null)
+                    {
+                        BoardWidthTextBox.Text = splitBoundary.ToString("0.###", CultureInfo.InvariantCulture);
+                    }
+
+                    _d624Value = 1;
+                    RefreshPlcRegisters();
+                    await WriteSingleIntAsync(plcHost, plcPort, station, d624Address, 1, token).ConfigureAwait(true);
+                    var ok = await RecognizeAndSendAsync(sendToPlc: true, writeHeartbeatOnly: true).ConfigureAwait(true);
+                    _d624Value = 0;
+                    _d623Value = ok ? 1 : 2;
+                    RefreshPlcRegisters();
+                    await WriteSingleIntAsync(plcHost, plcPort, station, d624Address, 0, token).ConfigureAwait(true);
+                    await WriteSingleIntAsync(plcHost, plcPort, station, d623Address, ok ? 1 : 2, token).ConfigureAwait(true);
+                    StatusText.Text = ok ? "自动识别并发送成功，等待下一次 D626 变化..." : "自动识别失败，等待下一次 D626 变化...";
+                }
+            }
+            finally
+            {
+                await StopHeartbeatAsync().ConfigureAwait(true);
+                await WriteSingleIntAsync(plcHost, plcPort, station, "624", 0, token).ConfigureAwait(true);
+            }
+        }
+
+        private async Task<bool> RecognizeAndSendAsync(bool sendToPlc, bool writeHeartbeatOnly)
+        {
+            if (_projectDoc is null || string.IsNullOrWhiteSpace(_projectFile))
+            {
+                StatusText.Text = "请先导入工程 DXF。";
+                return false;
+            }
+            if (_stage1MoldFiles.Count == 0 || _stage2MoldFiles.Count == 0)
+            {
+                StatusText.Text = "请先分别导入台1模具和台2模具。";
+                return false;
+            }
+
+            var project = DxfAnalyzer.ExtractProject(_projectDoc);
+            _lastProjectProfile = project;
+            _lastOuterContourPoints = DxfAnalyzer.ExtractOuterContourForDebug(_projectDoc);
+            var boardWidth = ReadBoardWidth();
+            var splitY = project.OuterRectangle.MinY + boardWidth;
+            var stage1Project = new ProjectProfile(project.OuterRectangle, project.Holes.Where(h => h.Centroid.Y < splitY).ToList(), project.CornerCandidates, project.EdgeCandidates, project.CornerStepPaths, project.ContourPaths, project.Stage1ContourPaths, []);
+            var stage2Project = new ProjectProfile(project.OuterRectangle, project.Holes.Where(h => h.Centroid.Y >= splitY).ToList(), project.CornerCandidates, project.EdgeCandidates, project.CornerStepPaths, project.ContourPaths, [], project.Stage2ContourPaths);
+            _selectedStage1File = ResolveSelectedMoldFile(Stage1MoldComboBox, _stage1MoldFiles);
+            _selectedStage2File = ResolveSelectedMoldFile(Stage2MoldComboBox, _stage2MoldFiles);
+            var stage1Files = _selectedStage1File is null ? _stage1MoldFiles.ToList() : _stage1MoldFiles.Where(f => string.Equals(f, _selectedStage1File, StringComparison.OrdinalIgnoreCase)).Concat(_stage1MoldFiles.Where(f => !string.Equals(f, _selectedStage1File, StringComparison.OrdinalIgnoreCase))).ToList();
+            var stage2Files = _selectedStage2File is null ? _stage2MoldFiles.ToList() : _stage2MoldFiles.Where(f => string.Equals(f, _selectedStage2File, StringComparison.OrdinalIgnoreCase)).Concat(_stage2MoldFiles.Where(f => !string.Equals(f, _selectedStage2File, StringComparison.OrdinalIgnoreCase))).ToList();
+            var stage1Molds = stage1Files.Select((f, idx) => { TryGetDocumentFromCache(f, out var doc); return DxfAnalyzer.ExtractMold(1 + idx, f, doc); }).ToList();
+            var stage2Molds = stage2Files.Select((f, idx) => { TryGetDocumentFromCache(f, out var doc); return DxfAnalyzer.ExtractMold(1 + idx, f, doc); }).ToList();
+            _lastMolds = stage1Molds.Concat(stage2Molds).ToList();
+            var matcher = new MoldMatcher();
+            var stage1Result = matcher.Match(stage1Project, stage1Molds, isStage1: true);
+            var stage2Result = matcher.Match(stage2Project, stage2Molds, isStage1: false);
+            _lastMatchResult = new MatchResult(stage1Result.HoleAssignments.Concat(stage2Result.HoleAssignments).ToList(), stage1Result.GuidePaths ?? stage2Result.GuidePaths);
+            RenderStageResult(stage1Result, stage1Molds, isStage1: true);
+            RenderStageResult(stage2Result, stage2Molds, isStage1: false);
+            RenderPreview(_projectDoc, _projectFile, withAnnotation: true);
+            StatusText.Text = $"识别完成：台1 {stage1Result.HoleAssignments.Count} 个，台2 {stage2Result.HoleAssignments.Count} 个。";
+            if (sendToPlc)
+            {
+                await SendRecognitionResultAsync(stage1Result, stage2Result).ConfigureAwait(true);
+            }
+
+            return true;
+        }
+
+        private async Task SendRecognitionResultAsync(MatchResult stage1Result, MatchResult stage2Result)
+        {
+            var model = BuildTcpExportModel();
+            var host = "127.0.0.1";
+            var port = 502;
+            byte station = 1;
+            await _modbusTcpCommService.SendExportModelAsync(host, port, station, "0", model).ConfigureAwait(true);
+        }
+
+        private Task<ModbusTcpNet> GetPlcClientAsync(string host, int port, byte station)
+        {
+            var key = $"{host}:{port}:{station}";
+            if (_plcClient is not null && string.Equals(_plcClientKey, key, StringComparison.Ordinal))
+            {
+                return Task.FromResult(_plcClient);
+            }
+
+            _plcClient?.Dispose();
+            _plcClient = new ModbusTcpNet(host, port, station) { AddressStartWithZero = true };
+            _plcClientKey = key;
+            return Task.FromResult(_plcClient);
+        }
+
+        private static string NormalizePlcAddress(string address)
+        {
+            if (string.IsNullOrWhiteSpace(address))
+            {
+                return string.Empty;
+            }
+
+            var trimmed = address.Trim();
+            return trimmed.StartsWith("D", StringComparison.OrdinalIgnoreCase) ? trimmed.Substring(1) : trimmed;
+        }
+
+        private async Task WriteSingleIntAsync(string host, int port, byte station, string address, int value, CancellationToken token)
+        {
+            token.ThrowIfCancellationRequested();
+            var client = await GetPlcClientAsync(host, port, station).ConfigureAwait(true);
+            var plcAddress = NormalizePlcAddress(address);
+            await _plcIoLock.WaitAsync(token).ConfigureAwait(true);
+            try
+            {
+                var result = await client.WriteAsync(plcAddress, new[] { value }).ConfigureAwait(true);
+                if (result is null || !result.IsSuccess) throw new InvalidOperationException(result?.Message ?? $"写入 {plcAddress} 失败");
+            }
+            finally
+            {
+                _plcIoLock.Release();
+            }
+        }
+
+        private async Task<string> ReadD600FileNameAsync(string host, int port, byte station, string address, CancellationToken token)
+        {
+            token.ThrowIfCancellationRequested();
+            var client = await GetPlcClientAsync(host, port, station).ConfigureAwait(true);
+            var plcAddress = NormalizePlcAddress(address);
+
+            try
+            {
+                await _plcIoLock.WaitAsync(token).ConfigureAwait(true);
+                var result = await client.ReadStringAsync(plcAddress, 20).ConfigureAwait(true);
+                if (!result.IsSuccess)
+                {
+                    try
+                    {
+                        result = await client.ReadStringAsync(address, 20).ConfigureAwait(true);
+                    }
+                    catch (Exception fallbackEx) when (fallbackEx is not OperationCanceledException)
+                    {
+                        throw new InvalidOperationException($"读取 D600 字符串失败：{fallbackEx.Message}", fallbackEx);
+                    }
+                }
+
+                if (!result.IsSuccess)
+                {
+                    throw new InvalidOperationException(result.Message);
+                }
+
+                var text = result.Content?.Trim('\0', ' ', '\r', '\n') ?? string.Empty;
+                if (string.IsNullOrWhiteSpace(text))
+                {
+                    return _d600Value;
+                }
+
+                UpdatePlcStringValue(600, text);
+                return text;
+            }
+            catch (FormatException ex)
+            {
+                UpdatePlcStringValue(600, string.Empty);
+                throw new InvalidOperationException($"读取 D600 字符串失败，地址 {address} 的格式不正确。", ex);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                UpdatePlcStringValue(600, string.Empty);
+                throw new InvalidOperationException($"读取 D600 字符串失败：{ex.Message}", ex);
+            }
+            finally
+            {
+                _plcIoLock.Release();
+            }
+        }
+
+        private async Task<int> ReadIntAsync(string host, int port, byte station, string address, int logicalRegister, CancellationToken token)
+        {
+            token.ThrowIfCancellationRequested();
+            var client = await GetPlcClientAsync(host, port, station).ConfigureAwait(true);
+            var plcAddress = NormalizePlcAddress(address);
+            await _plcIoLock.WaitAsync(token).ConfigureAwait(true);
+            try
+            {
+                var result = await client.ReadInt16Async(plcAddress, 1).ConfigureAwait(true);
+                if (!result.IsSuccess) throw new InvalidOperationException(result.Message);
+                var value = result.Content is short[] values && values.Length > 0 ? values[0] : 0;
+                UpdatePlcIntValue(logicalRegister, value);
+                return value;
+            }
+            finally
+            {
+                _plcIoLock.Release();
+            }
+        }
+
+        private async Task<double> ReadPlcBoundaryAsync(string host, int port, byte station, string address, CancellationToken token)
+        {
+            token.ThrowIfCancellationRequested();
+            var client = await GetPlcClientAsync(host, port, station).ConfigureAwait(true);
+            var plcAddress = NormalizePlcAddress(address);
+            await _plcIoLock.WaitAsync(token).ConfigureAwait(true);
+            try
+            {
+                var result = await client.ReadFloatAsync(plcAddress, 1).ConfigureAwait(true);
+                if (!result.IsSuccess) throw new InvalidOperationException(result.Message);
+
+                var values = result.Content;
+                var value = values is { Length: > 0 } ? values[0] : _d620Value;
+                UpdatePlcFloatValue(620, value);
+                return value;
+            }
+            finally
+            {
+                _plcIoLock.Release();
+            }
+        }
+
+        private async Task WaitForRegisterChangeAsync(string host, int port, byte station, string address, int initialValue, int logicalRegister, CancellationToken token)
+        {
+            while (true)
+            {
+                token.ThrowIfCancellationRequested();
+                var current = await ReadIntAsync(host, port, station, address, logicalRegister, token).ConfigureAwait(true);
+                if (current != initialValue)
+                {
+                    return;
+                }
+
+                await Task.Delay(200, token).ConfigureAwait(true);
+            }
+        }
+
+        private void UpdatePlcStringValue(int register, string value)
+        {
+            if (register == 600)
+            {
+                _d600Value = value;
+                RefreshPlcRegisters();
+            }
+        }
+
+        private void UpdatePlcFloatValue(int register, double value)
+        {
+            if (register == 620)
+            {
+                _d620Value = value;
+                _boardWidth = Math.Max(0, value);
+
+                if (BoardWidthTextBox is not null)
+                {
+                    if (Dispatcher.CheckAccess())
+                    {
+                        BoardWidthTextBox.Text = value.ToString("0.###", CultureInfo.InvariantCulture);
+                    }
+                    else
+                    {
+                        Dispatcher.Invoke(() => BoardWidthTextBox.Text = value.ToString("0.###", CultureInfo.InvariantCulture));
+                    }
+                }
+
+                RefreshPlcRegisters();
+            }
+        }
+
+        private void UpdatePlcIntValue(int register, int value)
+        {
+            switch (register)
+            {
+                case 622: _d622Value = value; break;
+                case 623: _d623Value = value; break;
+                case 624: _d624Value = value; break;
+                case 625: _d625Value = value; break;
+                case 626: _d626Value = value; break;
+                default: return;
+            }
+
+            RefreshPlcRegisters();
+        }
+
+        private async Task UpdatePlcSnapshotAsync(string host, int port, byte station, string d600Address, string d620Address, string d622Address, string d623Address, string d624Address, string d625Address, string d626Address, CancellationToken token)
+        {
+            _d600Value = await ReadD600FileNameAsync(host, port, station, d600Address, token).ConfigureAwait(true);
+            _d620Value = await ReadPlcBoundaryAsync(host, port, station, d620Address, token).ConfigureAwait(true);
+            _d622Value = await ReadIntAsync(host, port, station, d622Address, 622, token).ConfigureAwait(true);
+            _d623Value = await ReadIntAsync(host, port, station, d623Address, 623, token).ConfigureAwait(true);
+            _d624Value = await ReadIntAsync(host, port, station, d624Address, 624, token).ConfigureAwait(true);
+            _d626Value = await ReadIntAsync(host, port, station, d626Address, 626, token).ConfigureAwait(true);
+            _d625Value = 1;
+            RefreshPlcRegisters();
+        }
+
+        private void PlcRegisterGrid_CellEditEnding(object sender, DataGridCellEditEndingEventArgs e)
+        {
+            if (e.Row.Item is not PlcRegisterRow row)
+            {
+                return;
+            }
+
+            try
+            {
+                if (e.EditingElement is System.Windows.Controls.TextBox editor)
+                {
+                    var newText = editor.Text?.Trim();
+                    if (!string.IsNullOrWhiteSpace(newText))
+                    {
+                        row.Address = newText;
+                        RefreshPlcRegisters();
+                    }
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        private async Task StartHeartbeatAsync(string host, int port, byte station, int register, CancellationToken token)
+        {
+            _heartbeatCts = CancellationTokenSource.CreateLinkedTokenSource(token);
+            var heartbeatToken = _heartbeatCts.Token;
+            _heartbeatTask = Task.Run(async () =>
+            {
+                using var client = new ModbusTcpNet(host, port, station) { AddressStartWithZero = true };
+                var plcAddress = register.ToString();
+                while (!heartbeatToken.IsCancellationRequested)
+                {
+                    try
+                    {
+                        var result = await client.WriteAsync(plcAddress, new[] { 1 }).ConfigureAwait(false);
+                        if (result is null || !result.IsSuccess)
+                        {
+                            // keep retrying silently; PLC status should stay connected if the socket remains open
+                        }
+                    }
+                    catch
+                    {
+                    }
+
+                    try
+                    {
+                        await Task.Delay(100, heartbeatToken).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        break;
+                    }
+                }
+            }, heartbeatToken);
+            await Task.CompletedTask;
+        }
+
+        private async Task StopHeartbeatAsync()
+        {
+            _heartbeatCts?.Cancel();
+            if (_heartbeatTask is not null)
+            {
+                try { await _heartbeatTask.ConfigureAwait(true); } catch { }
+            }
+
+            _heartbeatCts?.Dispose();
+            _heartbeatCts = null;
+            _heartbeatTask = null;
         }
 
         private TcpExportModel BuildTcpExportModel()
@@ -5763,6 +6485,55 @@ namespace CADRecognition
             }
             return result;
         }
+    }
+
+    public sealed class PlcRegisterRow : INotifyPropertyChanged
+    {
+        private string _address;
+        private string _value;
+        private string _info;
+
+        public PlcRegisterRow(string address, string value, string info)
+        {
+            _address = address;
+            _value = value;
+            _info = info;
+        }
+
+        public string Address
+        {
+            get => _address;
+            set
+            {
+                if (_address == value) return;
+                _address = value;
+                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Address)));
+            }
+        }
+
+        public string Value
+        {
+            get => _value;
+            set
+            {
+                if (_value == value) return;
+                _value = value;
+                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Value)));
+            }
+        }
+
+        public string Info
+        {
+            get => _info;
+            set
+            {
+                if (_info == value) return;
+                _info = value;
+                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Info)));
+            }
+        }
+
+        public event PropertyChangedEventHandler? PropertyChanged;
     }
 }
 
