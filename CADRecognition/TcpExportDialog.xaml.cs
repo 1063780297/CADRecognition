@@ -57,6 +57,23 @@ namespace CADRecognition
 
         public TcpExportModel Model { get; }
         public string CustomContent => Model.CustomContent;
+        public string TcpHost => TcpHostComboBox.Text?.Trim() ?? string.Empty;
+        public string TcpPort => TcpPortComboBox.Text?.Trim() ?? string.Empty;
+        public string ModbusStation => ModbusStationComboBox.Text?.Trim() ?? string.Empty;
+        public string ModbusRegisterAddress => ModbusRegisterComboBox.Text?.Trim() ?? string.Empty;
+
+        public static string SharedTcpHost { get; private set; } = "127.0.0.1";
+        public static string SharedTcpPort { get; private set; } = "502";
+        public static string SharedModbusStation { get; private set; } = "1";
+        public static string SharedModbusRegisterAddress { get; private set; } = "0";
+
+        public static void UpdateSharedConnectionSettings(string host, string port, string station, string registerAddress)
+        {
+            if (!string.IsNullOrWhiteSpace(host)) SharedTcpHost = host.Trim();
+            if (!string.IsNullOrWhiteSpace(port)) SharedTcpPort = port.Trim();
+            if (!string.IsNullOrWhiteSpace(station)) SharedModbusStation = station.Trim();
+            if (!string.IsNullOrWhiteSpace(registerAddress)) SharedModbusRegisterAddress = registerAddress.Trim();
+        }
 
         private void HookAutoSave(TextBox textBox)
         {
@@ -355,6 +372,7 @@ namespace CADRecognition
                 var registerAddr = ModbusRegisterComboBox.Text?.Trim() ?? "0";
 
                 SaveTcpHistory(host ?? string.Empty, portText ?? string.Empty, stationText, registerAddr);
+                UpdateSharedConnectionSettings(host ?? string.Empty, portText ?? string.Empty, stationText, registerAddr);
                 if (payload is not TcpExportModel exportModel)
                 {
                     StatusTextBlock.Text = "内部错误：导出模型类型不正确。";

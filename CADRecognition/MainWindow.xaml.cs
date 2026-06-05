@@ -749,6 +749,7 @@ namespace CADRecognition
             RestoreProjectFolder();
             await TryRestoreLastMoldsAsync();
             RefreshPlcRegisters();
+            _ = StartHeartbeatIfNeededAsync();
             _ = EnsureAutomationLoopRunningAsync();
         }
 
@@ -1013,9 +1014,12 @@ namespace CADRecognition
             try
             {
                 var previousD626 = _d626Value;
-                await ReadD600FileNameAsync("127.0.0.1", 502, 1, d600Address, token).ConfigureAwait(true);
-                await ReadPlcBoundaryAsync("127.0.0.1", 502, 1, d620Address, token).ConfigureAwait(true);
-                await ReadIntAsync("127.0.0.1", 502, 1, d626Address, 626, token).ConfigureAwait(true);
+                var plcHost = TcpExportDialog.SharedTcpHost;
+                var plcPort = int.TryParse(TcpExportDialog.SharedTcpPort, out var parsedPort) ? parsedPort : 502;
+                byte station = byte.TryParse(TcpExportDialog.SharedModbusStation, out var parsedStation) ? parsedStation : (byte)1;
+                await ReadD600FileNameAsync(plcHost, plcPort, station, d600Address, token).ConfigureAwait(true);
+                await ReadPlcBoundaryAsync(plcHost, plcPort, station, d620Address, token).ConfigureAwait(true);
+                await ReadIntAsync(plcHost, plcPort, station, d626Address, 626, token).ConfigureAwait(true);
                 RefreshPlcRegisters();
 
                 if (_d626Value != previousD626)
@@ -1392,9 +1396,9 @@ namespace CADRecognition
                 return;
             }
 
-            var plcHost = "127.0.0.1";
-            var plcPort = 502;
-            byte station = 1;
+            var plcHost = TcpExportDialog.SharedTcpHost;
+            var plcPort = int.TryParse(TcpExportDialog.SharedTcpPort, out var parsedPort) ? parsedPort : 502;
+            byte station = byte.TryParse(TcpExportDialog.SharedModbusStation, out var parsedStation) ? parsedStation : (byte)1;
             var d600Address = GetPlcAddressAt(0);
             var d620Address = GetPlcAddressAt(1);
             var d622Address = GetPlcAddressAt(2);
@@ -1548,9 +1552,9 @@ namespace CADRecognition
                 throw new InvalidOperationException("未选择图纸文件夹。");
             }
 
-            var plcHost = "127.0.0.1";
-            var plcPort = 502;
-            byte station = 1;
+            var plcHost = TcpExportDialog.SharedTcpHost;
+            var plcPort = int.TryParse(TcpExportDialog.SharedTcpPort, out var parsedPort) ? parsedPort : 502;
+            byte station = byte.TryParse(TcpExportDialog.SharedModbusStation, out var parsedStation) ? parsedStation : (byte)1;
 
             await WriteSingleIntAsync(plcHost, plcPort, station, GetPlcAddressAt(2), 1, token).ConfigureAwait(true);
             _d622Value = 1;
@@ -1669,10 +1673,11 @@ namespace CADRecognition
         private async Task SendRecognitionResultAsync(MatchResult stage1Result, MatchResult stage2Result)
         {
             var model = BuildTcpExportModel();
-            var host = "127.0.0.1";
-            var port = 502;
-            byte station = 1;
-            await _modbusTcpCommService.SendExportModelAsync(host, port, station, "0", model).ConfigureAwait(true);
+            var host = TcpExportDialog.SharedTcpHost;
+            var port = int.TryParse(TcpExportDialog.SharedTcpPort, out var parsedPort) ? parsedPort : 502;
+            byte station = byte.TryParse(TcpExportDialog.SharedModbusStation, out var parsedStation) ? parsedStation : (byte)1;
+            var registerAddress = TcpExportDialog.SharedModbusRegisterAddress;
+            await _modbusTcpCommService.SendExportModelAsync(host, port, station, registerAddress, model).ConfigureAwait(true);
         }
 
         private Task<ModbusTcpNet> GetPlcClientAsync(string host, int port, byte station)
@@ -1909,23 +1914,27 @@ namespace CADRecognition
             }
         }
 
+        private async Task StartHeartbeatIfNeededAsync()
+        {
+            if (_heartbeatTask is not null && !_heartbeatTask.IsCompleted)
+            {
+                return;
+            }
+
+            await StartHeartbeatAsync(TcpExportDialog.SharedTcpHost, int.TryParse(TcpExportDialog.SharedTcpPort, out var parsedPort) ? parsedPort : 502, byte.TryParse(TcpExportDialog.SharedModbusStation, out var parsedStation) ? parsedStation : (byte)1, 625, CancellationToken.None).ConfigureAwait(true);
+        }
+
         private async Task StartHeartbeatAsync(string host, int port, byte station, int register, CancellationToken token)
         {
             _heartbeatCts = CancellationTokenSource.CreateLinkedTokenSource(token);
             var heartbeatToken = _heartbeatCts.Token;
             _heartbeatTask = Task.Run(async () =>
             {
-                using var client = new ModbusTcpNet(host, port, station) { AddressStartWithZero = true };
-                var plcAddress = register.ToString();
                 while (!heartbeatToken.IsCancellationRequested)
                 {
                     try
                     {
-                        var result = await client.WriteAsync(plcAddress, new[] { 1 }).ConfigureAwait(false);
-                        if (result is null || !result.IsSuccess)
-                        {
-                            // keep retrying silently; PLC status should stay connected if the socket remains open
-                        }
+                        await WriteSingleIntAsync(host, port, station, register.ToString(), 1, heartbeatToken).ConfigureAwait(false);
                     }
                     catch
                     {
