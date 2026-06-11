@@ -18,7 +18,7 @@ namespace CADRecognition
         private readonly string _tcpHistoryFilePath;
         private readonly TcpCustomContentStore _customContentStore;
         private readonly TcpConnectionHistoryStore _tcpHistoryStore;
-        private readonly ModbusTcpCommService _modbusTcpCommService = new();
+        private readonly ModbusTcpCommService _modbusTcpCommService = ModbusTcpCommService.Shared;
         private readonly ObservableCollection<TcpGridRow> _stage1Rows = new();
         private readonly ObservableCollection<TcpGridRow> _stage2Rows = new();
         private string _clipboard = string.Empty;

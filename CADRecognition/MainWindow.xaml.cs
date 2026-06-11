@@ -702,7 +702,7 @@ namespace CADRecognition
         private ProjectProfile? _lastProjectProfile;
         private List<MoldProfile> _lastMolds = [];
         private IReadOnlyList<(double X, double Y)> _lastOuterContourPoints = [];
-        private readonly ModbusTcpCommService _modbusTcpCommService = new();
+        private readonly ModbusTcpCommService _modbusTcpCommService = ModbusTcpCommService.Shared;
         private readonly SemaphoreSlim _plcIoLock = new(1, 1);
         private ModbusTcpNet? _plcClient;
         private string _plcClientKey = string.Empty;

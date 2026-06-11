@@ -14,6 +14,7 @@ namespace CADRecognition
     /// </summary>
     internal sealed class ModbusTcpCommService : IDisposable
     {
+        public static ModbusTcpCommService Shared { get; } = new();
         private static readonly Regex TrailingDigits = new(@"\d+$", RegexOptions.Compiled);
         private readonly object _sync = new();
         private ModbusTcpNet? _client;
