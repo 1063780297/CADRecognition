@@ -65,7 +65,7 @@ namespace CADRecognition
         public static string SharedTcpHost { get; private set; } = "127.0.0.1";
         public static string SharedTcpPort { get; private set; } = "502";
         public static string SharedModbusStation { get; private set; } = "1";
-        public static string SharedModbusRegisterAddress { get; private set; } = "0";
+        public static string SharedModbusRegisterAddress { get; private set; } = "6000";
 
         public static void UpdateSharedConnectionSettings(string host, string port, string station, string registerAddress)
         {
@@ -105,7 +105,7 @@ namespace CADRecognition
             else ModbusStationComboBox.Text = "1";
 
             if (!string.IsNullOrWhiteSpace(_tcpHistoryStore.LastHoldingRegisterAddress)) ModbusRegisterComboBox.Text = _tcpHistoryStore.LastHoldingRegisterAddress;
-            else ModbusRegisterComboBox.Text = "0";
+            else ModbusRegisterComboBox.Text = "6000";
         }
 
         private void SaveTcpHistory(string host, string port, string station, string registerAddress)

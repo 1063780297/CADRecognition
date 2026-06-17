@@ -29,6 +29,7 @@ using HslCommunication.ModBus;
 using Path = System.Windows.Shapes.Path;
 using Brushes = System.Windows.Media.Brushes;
 using FormsFolderBrowserDialog = System.Windows.Forms.FolderBrowserDialog;
+using System.Text;
 
 namespace CADRecognition
 {
@@ -706,6 +707,8 @@ namespace CADRecognition
         private readonly SemaphoreSlim _plcIoLock = new(1, 1);
         private ModbusTcpNet? _plcClient;
         private string _plcClientKey = string.Empty;
+        private DateTime _lastPlcReconnectAttempt = DateTime.MinValue;
+        private bool _plcIsConnected = false;
         private CancellationTokenSource? _automationCts;
         private CancellationTokenSource? _heartbeatCts;
         private Task? _heartbeatTask;
@@ -739,6 +742,11 @@ namespace CADRecognition
             FileTreeView.Items.Clear();
             Loaded += MainWindow_Loaded;
             Closing += MainWindow_Closing;
+
+            // 初始化日志系统
+            AppLogger.Instance.CleanOldLogs();
+            AppLogger.Instance.LogOperation("软件启动", "CADRecognition 应用程序已启动");
+            AppLogger.Instance.Info("旧日志文件清理完成");
         }
 
         private async void MainWindow_Loaded(object sender, RoutedEventArgs e)
@@ -749,18 +757,19 @@ namespace CADRecognition
             RestoreProjectFolder();
             await TryRestoreLastMoldsAsync();
             RefreshPlcRegisters();
-            _ = StartHeartbeatIfNeededAsync();
-            _ = EnsureAutomationLoopRunningAsync();
         }
 
         private void MainWindow_Closing(object? sender, CancelEventArgs e)
         {
+            AppLogger.Instance.LogOperation("软件关闭", "CADRecognition 应用程序正在关闭");
             _automationCts?.Cancel();
             _heartbeatCts?.Cancel();
             SaveProjectFolder();
             LastMoldSessionSettings.Save(
                 _stage1MoldFiles.Where(File.Exists).ToList(),
                 _stage2MoldFiles.Where(File.Exists).ToList());
+            AppLogger.Instance.Info("软件正常关闭");
+            AppLogger.Instance.Dispose();
         }
 
         public void SetProjectFolder(string folder)
@@ -1021,13 +1030,8 @@ namespace CADRecognition
                 await ReadPlcBoundaryAsync(plcHost, plcPort, station, d620Address, token).ConfigureAwait(true);
                 await ReadIntAsync(plcHost, plcPort, station, d626Address, 626, token).ConfigureAwait(true);
                 RefreshPlcRegisters();
-
-                if (_d626Value != previousD626)
-                {
-                    _ = TriggerAutomationOnD626ChangeAsync(previousD626, _d626Value, token);
-                }
             }
-            catch (Exception ex) when (ex is OperationCanceledException or InvalidOperationException or FormatException)
+            catch (Exception ex) when (ex is OperationCanceledException or InvalidOperationException or FormatException or TimeoutException)
             {
                 StatusText.Text = $"PLC监视读取失败：{ex.Message}";
                 RefreshPlcRegisters();
@@ -1039,6 +1043,78 @@ namespace CADRecognition
         private void OnPropertyChanged([CallerMemberName] string? name = null)
         {
             PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+        }
+
+        private void SetStatus(string message)
+        {
+            if (Dispatcher.CheckAccess())
+            {
+                StatusText.Text = message;
+            }
+            else
+            {
+                Dispatcher.Invoke(() => StatusText.Text = message);
+            }
+            AppLogger.Instance.LogStatus(message);
+        }
+
+        private void RunOnUiThread(Action action)
+        {
+            if (Dispatcher.CheckAccess())
+            {
+                action();
+            }
+            else
+            {
+                Dispatcher.Invoke(action);
+            }
+        }
+
+        /// <summary>
+        /// 在后台线程执行任务，完成后自动回到 UI 线程。
+        /// </summary>
+        private async Task<T> RunInBackgroundAsync<T>(Func<Task<T>> backgroundWork)
+        {
+            var result = await Task.Run(async () => await backgroundWork().ConfigureAwait(false)).ConfigureAwait(false);
+            return result;
+        }
+
+        /// <summary>
+        /// 在后台线程执行任务，完成后自动回到 UI 线程（无返回值）。
+        /// </summary>
+        private async Task RunInBackgroundAsync(Func<Task> backgroundWork)
+        {
+            await Task.Run(async () => await backgroundWork().ConfigureAwait(false)).ConfigureAwait(false);
+        }
+
+        /// <summary>
+        /// 在 UI 线程执行操作（用于更新 UI）。
+        /// </summary>
+        private async Task RunOnUiThreadAsync(Func<Task> action)
+        {
+            if (Dispatcher.CheckAccess())
+            {
+                await action().ConfigureAwait(true);
+                return;
+            }
+
+            var operation = Dispatcher.InvokeAsync(action);
+            await operation.Task.ConfigureAwait(false);
+        }
+
+        /// <summary>
+        /// 在 UI 线程执行操作并获取返回值。
+        /// </summary>
+        private async Task<T> RunOnUiThreadAsync<T>(Func<Task<T>> action)
+        {
+            if (Dispatcher.CheckAccess())
+            {
+                return await action().ConfigureAwait(true);
+            }
+
+            var operation = Dispatcher.InvokeAsync(action);
+            var task = await operation.Task.ConfigureAwait(false);
+            return await task.ConfigureAwait(false);
         }
 
         private void CompactAnnoCheckBox_Checked(object sender, RoutedEventArgs e)
@@ -1292,7 +1368,7 @@ namespace CADRecognition
                 return;
             }
 
-            var dialog = new TcpExportDialog(BuildTcpExportModel())
+            var dialog = new TcpExportDialog(BuildTcpExportModel(ReadBoardWidth()))
             {
                 Owner = this
             };
@@ -1300,6 +1376,26 @@ namespace CADRecognition
             if (dialog.ShowDialog() == true)
             {
                 StatusText.Text = "已导出并通过 Modbus TCP 发送。";
+            }
+        }
+
+        private void OpenLogFolder_Click(object sender, RoutedEventArgs e)
+        {
+            var logPath = System.IO.Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                "CADRecognition",
+                "Logs");
+
+            try
+            {
+                Directory.CreateDirectory(logPath);
+                System.Diagnostics.Process.Start("explorer.exe", logPath);
+                AppLogger.Instance.Info($"打开日志文件夹: {logPath}");
+            }
+            catch (Exception ex)
+            {
+                AppLogger.Instance.Error($"打开日志文件夹失败: {ex.Message}", ex);
+                StatusText.Text = $"打开日志文件夹失败：{ex.Message}";
             }
         }
 
@@ -1311,7 +1407,11 @@ namespace CADRecognition
                 {
                     Owner = this
                 };
-                _plcMonitorWindow.Closed += (_, _) => _plcMonitorWindow = null;
+                _plcMonitorWindow.Closed += async (_, _) =>
+                {
+                    await StopAutomationAsync().ConfigureAwait(true);
+                    _plcMonitorWindow = null;
+                };
                 _plcMonitorWindow.Show();
             }
             else
@@ -1320,6 +1420,32 @@ namespace CADRecognition
             }
 
             await EnsureAutomationLoopRunningAsync().ConfigureAwait(true);
+        }
+
+        private async Task StopAutomationAsync()
+        {
+            AppLogger.Instance.Info("停止自动化任务...");
+            _automationCts?.Cancel();
+            _heartbeatCts?.Cancel();
+
+            if (_automationLoopTask is not null)
+            {
+                try { await _automationLoopTask.ConfigureAwait(true); } catch { }
+            }
+
+            if (_heartbeatTask is not null)
+            {
+                try { await _heartbeatTask.ConfigureAwait(true); } catch { }
+            }
+
+            _automationCts?.Dispose();
+            _automationCts = null;
+            _heartbeatCts?.Dispose();
+            _heartbeatCts = null;
+            _automationLoopTask = null;
+            _heartbeatTask = null;
+
+            AppLogger.Instance.Info("自动化任务已停止");
         }
 
         private async Task EnsureAutomationLoopRunningAsync()
@@ -1350,11 +1476,11 @@ namespace CADRecognition
                 }
                 catch (OperationCanceledException)
                 {
-                    StatusText.Text = "自动流程已取消。";
+                    SetStatus("自动流程已取消。");
                 }
                 catch (Exception ex)
                 {
-                    StatusText.Text = $"自动流程失败：{ex.Message}";
+                    SetStatus($"自动流程失败：{ex.Message}");
                 }
                 finally
                 {
@@ -1381,18 +1507,38 @@ namespace CADRecognition
 
             try
             {
+                AppLogger.Instance.LogOperation("D626 变化触发", $"检测到任务号变化: {previousD626} -> {currentD626}");
                 await RunD626TriggeredAutomationAsync(token).ConfigureAwait(true);
             }
-            catch (Exception ex) when (ex is OperationCanceledException or InvalidOperationException)
+            catch (OperationCanceledException)
             {
-                StatusText.Text = $"D626 变化后启动自动化失败：{ex.Message}";
+                AppLogger.Instance.Warn("D626 变化后启动自动化已取消");
+                SetStatus("自动化任务已取消");
+            }
+            catch (TimeoutException ex)
+            {
+                AppLogger.Instance.Error($"Modbus 操作超时: {ex.Message}", ex);
+                SetStatus($"Modbus 操作超时: {ex.Message}");
+            }
+            catch (InvalidOperationException ex)
+            {
+                AppLogger.Instance.Error($"D626 变化后启动自动化失败: {ex.Message}", ex);
+                SetStatus($"D626 变化后启动自动化失败：{ex.Message}");
+            }
+            catch (Exception ex)
+            {
+                AppLogger.Instance.Error($"D626 变化后启动自动化发生未知错误: {ex.Message}", ex);
+                SetStatus($"发生未知错误：{ex.Message}");
             }
         }
 
         private async Task RunD626TriggeredAutomationAsync(CancellationToken token)
         {
+            AppLogger.Instance.Info("开始执行 D626 触发的自动化任务");
+
             if (!await EnsureProjectAndMoldsReadyForAutomationAsync(token).ConfigureAwait(true))
             {
+                AppLogger.Instance.Warn("自动化任务前置条件不满足，已取消");
                 return;
             }
 
@@ -1406,11 +1552,14 @@ namespace CADRecognition
             var d624Address = GetPlcAddressAt(4);
             var d625Address = GetPlcAddressAt(5);
 
+            AppLogger.Instance.Info($"PLC配置: Host={plcHost}, Port={plcPort}, Station={station}");
+
             if (!string.IsNullOrWhiteSpace(d622Address))
             {
                 _d622Value = 1;
                 RefreshPlcRegisters();
                 await WriteSingleIntAsync(plcHost, plcPort, station, d622Address, 1, token).ConfigureAwait(true);
+                AppLogger.Instance.Info($"写入 D622={1} (地址: {d622Address})");
             }
 
             if (!string.IsNullOrWhiteSpace(d624Address))
@@ -1418,49 +1567,79 @@ namespace CADRecognition
                 _d624Value = 1;
                 RefreshPlcRegisters();
                 await WriteSingleIntAsync(plcHost, plcPort, station, d624Address, 1, token).ConfigureAwait(true);
+                AppLogger.Instance.Info($"写入 D624=1 标记识图开始 (地址: {d624Address})");
             }
 
             if (!string.IsNullOrWhiteSpace(d625Address))
             {
-                await StartHeartbeatAsync(plcHost, plcPort, station, 625, token).ConfigureAwait(true);
+                AppLogger.Instance.Info($"启动心跳: D625 地址={d625Address}");
+                await StartHeartbeatAsync(plcHost, plcPort, station, d625Address, token).ConfigureAwait(true);
             }
 
-            var fileName = await ReadD600FileNameAsync(plcHost, plcPort, station, d600Address, token).ConfigureAwait(true);
-            var matchedFile = FindFileInFolderByName(_projectFolder!, fileName);
-            if (matchedFile is null)
+            try
             {
-                _d623Value = 2;
+                AppLogger.Instance.Info($"读取文件名: D600 地址={d600Address}");
+                var fileName = await ReadD600FileNameAsync(plcHost, plcPort, station, d600Address, token).ConfigureAwait(true);
+                int zeroIndex = fileName.IndexOf('\0');
+                fileName = zeroIndex > 0 ? fileName.Substring(0, zeroIndex) : fileName;
+                AppLogger.Instance.Info($"从 PLC 读取文件名: {fileName}");
+
+                var matchedFile = FindFileInFolderByName(_projectFolder!, fileName);
+                if (matchedFile is null)
+                {
+                    _d623Value = 2;
+                    RefreshPlcRegisters();
+                    await WriteSingleIntAsync(plcHost, plcPort, station, d623Address, 2, token).ConfigureAwait(true);
+                    _d624Value = 0;
+                    RefreshPlcRegisters();
+                    await WriteSingleIntAsync(plcHost, plcPort, station, d624Address, 0, token).ConfigureAwait(true);
+                    StatusText.Text = $"在图纸文件夹中未找到：{fileName}";
+                    AppLogger.Instance.Error($"图纸文件未找到: {fileName}");
+                    return;
+                }
+
+                AppLogger.Instance.Info($"加载图纸文件: {System.IO.Path.GetFileName(matchedFile)}");
+                _projectFile = matchedFile;
+                _projectDoc = LoadCadDocument(matchedFile);
+                SetDocumentCache(matchedFile, _projectDoc);
+                _lastProjectProfile = DxfAnalyzer.ExtractProject(_projectDoc);
+                _lastOuterContourPoints = DxfAnalyzer.ExtractOuterContourForDebug(_projectDoc);
+                ProjectFileText.Text = System.IO.Path.GetFileName(matchedFile);
+                RenderPreview(_projectDoc, _projectFile, withAnnotation: false);
+
+                AppLogger.Instance.Info($"读取识图界限: D620 地址={d620Address}");
+                var splitBoundary = await ReadPlcBoundaryAsync(plcHost, plcPort, station, d620Address, token).ConfigureAwait(true);
+                _boardWidth = splitBoundary;
+                AppLogger.Instance.Info($"识图界限读取成功: {_boardWidth}");
+                if (BoardWidthTextBox is not null)
+                {
+                    BoardWidthTextBox.Text = splitBoundary.ToString("0.###", CultureInfo.InvariantCulture);
+                }
+
+                AppLogger.Instance.Info("开始执行识别并发送结果到 PLC...");
+                // 识图开始，置 D623=0 表示正在进行中
+                _d623Value = 0;
                 RefreshPlcRegisters();
-                await WriteSingleIntAsync(plcHost, plcPort, station, d623Address, 2, token).ConfigureAwait(true);
+                await WriteSingleIntAsync(plcHost, plcPort, station, d623Address, 0, token).ConfigureAwait(true);
+                var ok = await RecognizeAndSendAsync(sendToPlc: true, writeHeartbeatOnly: true).ConfigureAwait(true);
                 _d624Value = 0;
+                _d623Value = ok ? 1 : 2;
                 RefreshPlcRegisters();
                 await WriteSingleIntAsync(plcHost, plcPort, station, d624Address, 0, token).ConfigureAwait(true);
-                StatusText.Text = $"在图纸文件夹中未找到：{fileName}";
-                return;
+                await WriteSingleIntAsync(plcHost, plcPort, station, d623Address, ok ? 1 : 2, token).ConfigureAwait(true);
+                StatusText.Text = ok ? "自动识别并发送成功，等待下一次 D626 变化..." : "自动识别失败，等待下一次 D626 变化...";
+                AppLogger.Instance.Info($"识别完成: {(ok ? "成功" : "失败")}, D623={_d623Value}, D624=0");
             }
-
-            _projectFile = matchedFile;
-            _projectDoc = LoadCadDocument(matchedFile);
-            SetDocumentCache(matchedFile, _projectDoc);
-            _lastProjectProfile = DxfAnalyzer.ExtractProject(_projectDoc);
-            _lastOuterContourPoints = DxfAnalyzer.ExtractOuterContourForDebug(_projectDoc);
-            ProjectFileText.Text = System.IO.Path.GetFileName(matchedFile);
-            RenderPreview(_projectDoc, _projectFile, withAnnotation: false);
-
-            var splitBoundary = await ReadPlcBoundaryAsync(plcHost, plcPort, station, d620Address, token).ConfigureAwait(true);
-            _boardWidth = splitBoundary;
-            if (BoardWidthTextBox is not null)
+            catch (TimeoutException ex)
             {
-                BoardWidthTextBox.Text = splitBoundary.ToString("0.###", CultureInfo.InvariantCulture);
+                AppLogger.Instance.Error($"Modbus 操作超时导致自动化失败: {ex.Message}", ex);
+                SetStatus($"操作超时：{ex.Message}");
+                _d624Value = 0;
+                _d623Value = 2;
+                RefreshPlcRegisters();
+                try { await WriteSingleIntAsync(plcHost, plcPort, station, d624Address, 0, token).ConfigureAwait(true); } catch { }
+                try { await WriteSingleIntAsync(plcHost, plcPort, station, d623Address, 2, token).ConfigureAwait(true); } catch { }
             }
-
-            var ok = await RecognizeAndSendAsync(sendToPlc: true, writeHeartbeatOnly: true).ConfigureAwait(true);
-            _d624Value = 0;
-            _d623Value = ok ? 1 : 2;
-            RefreshPlcRegisters();
-            await WriteSingleIntAsync(plcHost, plcPort, station, d624Address, 0, token).ConfigureAwait(true);
-            await WriteSingleIntAsync(plcHost, plcPort, station, d623Address, ok ? 1 : 2, token).ConfigureAwait(true);
-            StatusText.Text = ok ? "自动识别并发送成功，等待下一次 D626 变化..." : "自动识别失败，等待下一次 D626 变化...";
         }
 
         private async Task<bool> EnsureProjectAndMoldsReadyForAutomationAsync(CancellationToken token)
@@ -1484,7 +1663,7 @@ namespace CADRecognition
 
             if (_stage1MoldFiles.Count == 0 || _stage2MoldFiles.Count == 0)
             {
-                StatusText.Text = "请先按原逻辑导入台1和台2模具。";
+                SetStatus("请先按原逻辑导入台1和台2模具。");
                 return false;
             }
 
@@ -1547,132 +1726,292 @@ namespace CADRecognition
 
         private async Task RunFullAutomationAsync(CancellationToken token)
         {
+            AppLogger.Instance.LogOperation("启动完整自动化", "RunFullAutomationAsync 开始执行");
+
             if (string.IsNullOrWhiteSpace(_projectFolder) || !Directory.Exists(_projectFolder))
             {
-                throw new InvalidOperationException("未选择图纸文件夹。");
+                var ex = new InvalidOperationException("未选择图纸文件夹。");
+                AppLogger.Instance.Error(ex.Message, ex);
+                throw ex;
             }
 
             var plcHost = TcpExportDialog.SharedTcpHost;
             var plcPort = int.TryParse(TcpExportDialog.SharedTcpPort, out var parsedPort) ? parsedPort : 502;
             byte station = byte.TryParse(TcpExportDialog.SharedModbusStation, out var parsedStation) ? parsedStation : (byte)1;
+            var d600Address = GetPlcAddressAt(0);
+            var d620Address = GetPlcAddressAt(1);
+            var d622Address = GetPlcAddressAt(2);
+            var d623Address = GetPlcAddressAt(3);
+            var d624Address = GetPlcAddressAt(4);
+            var d625Address = GetPlcAddressAt(5);
+            var d626Address = GetPlcAddressAt(6);
 
-            await WriteSingleIntAsync(plcHost, plcPort, station, GetPlcAddressAt(2), 1, token).ConfigureAwait(true);
+            AppLogger.Instance.Info($"PLC配置: Host={plcHost}, Port={plcPort}, Station={station}");
+
+            await WriteSingleIntAsync(plcHost, plcPort, station, d622Address, 1, token).ConfigureAwait(true);
             _d622Value = 1;
             RefreshPlcRegisters();
+            AppLogger.Instance.Info("写入 D622=1，启动自动化");
 
-            await StartHeartbeatAsync(plcHost, plcPort, station, 625, token).ConfigureAwait(true);
+            await StartHeartbeatAsync(plcHost, plcPort, station, d625Address, token).ConfigureAwait(true);
+            AppLogger.Instance.Info("启动心跳线程");
+
             try
             {
                 while (!token.IsCancellationRequested)
                 {
-                    var d600Address = GetPlcAddressAt(0);
-                    var d620Address = GetPlcAddressAt(1);
-                    var d622Address = GetPlcAddressAt(2);
-                    var d623Address = GetPlcAddressAt(3);
-                    var d624Address = GetPlcAddressAt(4);
-                    var d625Address = GetPlcAddressAt(5);
-                    var d626Address = GetPlcAddressAt(6);
-
+                    AppLogger.Instance.Debug("读取 PLC 寄存器快照...");
                     await UpdatePlcSnapshotAsync(plcHost, plcPort, station, d600Address, d620Address, d622Address, d623Address, d624Address, d625Address, d626Address, token).ConfigureAwait(true);
+
                     var initialD626 = _d626Value;
-                    StatusText.Text = $"已记录 {d626Address} 初始值：{initialD626}，等待变化...";
-                    await WaitForRegisterChangeAsync(plcHost, plcPort, station, d626Address, initialD626, 626, token).ConfigureAwait(true);
+                    SetStatus($"已记录 {d626Address} 初始值：{initialD626}，等待变化...");
+                    AppLogger.Instance.Info($"等待 D626 变化，当前值={initialD626}");
+
+                    try
+                    {
+                        var currentD626 = await WaitForRegisterChangeAsync(plcHost, plcPort, station, d626Address, initialD626, 626, token).ConfigureAwait(true);
+                        SetStatus($"收到新任务号 {d626Address}={currentD626}，准备开始自动识别流程...");
+                        AppLogger.Instance.Info($"D626 变化检测: {initialD626} -> {currentD626}");
+                    }
+                    catch (TimeoutException ex)
+                    {
+                        AppLogger.Instance.Error($"等待 D626 变化超时: {ex.Message}", ex);
+                        continue;
+                    }
 
                     await WriteSingleIntAsync(plcHost, plcPort, station, d622Address, 1, token).ConfigureAwait(true);
                     _d622Value = 1;
                     RefreshPlcRegisters();
+                    AppLogger.Instance.Info($"写入 D622=1");
 
-                    var fileName = await ReadD600FileNameAsync(plcHost, plcPort, station, d600Address, token).ConfigureAwait(true);
-                    var matchedFile = FindFileInFolderByName(_projectFolder, fileName);
-                    if (matchedFile is null)
+                    SetStatus($"检测到 {d626Address} 变化，正在读取 {d600Address} 文件名...");
+                    AppLogger.Instance.Info($"读取文件名: D600 地址={d600Address}");
+
+                    try
                     {
-                        _d623Value = 3;
+                        var fileName = await ReadD600FileNameAsync(plcHost, plcPort, station, d600Address, token).ConfigureAwait(true);
+                        int zeroIndex = fileName.IndexOf('\0');
+                        fileName = zeroIndex > 0 ? fileName.Substring(0, zeroIndex) : fileName;
+                        AppLogger.Instance.Info($"从 PLC 读取文件名: {fileName}");
+                        SetStatus($"正在按 {d600Address} 文件名查找图纸文件：{fileName}");
+
+                        var matchedFile = FindFileInFolderByName(_projectFolder, fileName);
+                        if (matchedFile is null)
+                        {
+                            _d623Value = 3;
+                            RefreshPlcRegisters();
+                            await WriteSingleIntAsync(plcHost, plcPort, station, d623Address, 3, token).ConfigureAwait(true);
+                            SetStatus($"在图纸文件夹中未找到：{fileName}");
+                            AppLogger.Instance.Error($"图纸文件未找到: {fileName}");
+                            continue;
+                        }
+
+                        AppLogger.Instance.Info($"加载图纸文件: {System.IO.Path.GetFileName(matchedFile)}");
+                        SetStatus($"正在读取图纸文件：{System.IO.Path.GetFileName(matchedFile)}");
+                        _projectFile = matchedFile;
+                        _projectDoc = LoadCadDocument(matchedFile);
+                        SetDocumentCache(matchedFile, _projectDoc);
+                        _lastProjectProfile = DxfAnalyzer.ExtractProject(_projectDoc);
+                        _lastOuterContourPoints = DxfAnalyzer.ExtractOuterContourForDebug(_projectDoc);
+                        RunOnUiThread(() =>
+                        {
+                            ProjectFileText.Text = System.IO.Path.GetFileName(matchedFile);
+                            RenderPreview(_projectDoc, _projectFile, withAnnotation: false);
+                        });
+
+                        AppLogger.Instance.Info($"读取识图界限: D620 地址={d620Address}");
+                        SetStatus($"图纸文件读取完成，正在读取 {d620Address} 识图界限...");
+
+                        var splitBoundary = await ReadPlcBoundaryAsync(plcHost, plcPort, station, d620Address, token).ConfigureAwait(true);
+                        _boardWidth = splitBoundary;
+                        AppLogger.Instance.Info($"识图界限读取成功: {_boardWidth}");
+                        if (BoardWidthTextBox is not null)
+                        {
+                            RunOnUiThread(() => BoardWidthTextBox.Text = splitBoundary.ToString("0.###", CultureInfo.InvariantCulture));
+                        }
+
+                        _d624Value = 1;
                         RefreshPlcRegisters();
-                        await WriteSingleIntAsync(plcHost, plcPort, station, d623Address, 3, token).ConfigureAwait(true);
-                        StatusText.Text = $"在图纸文件夹中未找到：{fileName}";
-                        continue;
+                        SetStatus($"已读取识图界限 {d620Address}={splitBoundary:0.###}，正在写入 {d624Address}=1 并开始识别...");
+                        AppLogger.Instance.Info($"写入 D624=1，识图开始");
+                        await WriteSingleIntAsync(plcHost, plcPort, station, d624Address, 1, token).ConfigureAwait(true);
+
+                        AppLogger.Instance.Info("开始执行识别并发送结果...");
+                        SetStatus("正在自动识别并发送结果到 PLC...");
+                        // 识图开始，置 D623=0 表示正在进行中
+                        _d623Value = 0;
+                        RefreshPlcRegisters();
+                        await WriteSingleIntAsync(plcHost, plcPort, station, d623Address, 0, token).ConfigureAwait(true);
+                        var ok = await RunOnUiThreadAsync(() => RecognizeAndSendAsync(sendToPlc: true, writeHeartbeatOnly: true)).ConfigureAwait(false);
+
+                        _d624Value = 0;
+                        _d623Value = ok ? 1 : 2;
+                        RefreshPlcRegisters();
+                        await WriteSingleIntAsync(plcHost, plcPort, station, d624Address, 0, token).ConfigureAwait(true);
+                        await WriteSingleIntAsync(plcHost, plcPort, station, d623Address, ok ? 1 : 2, token).ConfigureAwait(true);
+                        SetStatus(ok ? "自动识别并发送成功，等待下一次 D626 变化..." : "自动识别失败，等待下一次 D626 变化...");
+                        AppLogger.Instance.Info($"识别完成: {(ok ? "成功" : "失败")}, D623={_d623Value}, D624=0");
                     }
-
-                    _projectFile = matchedFile;
-                    _projectDoc = LoadCadDocument(matchedFile);
-                    SetDocumentCache(matchedFile, _projectDoc);
-                    _lastProjectProfile = DxfAnalyzer.ExtractProject(_projectDoc);
-                    _lastOuterContourPoints = DxfAnalyzer.ExtractOuterContourForDebug(_projectDoc);
-                    ProjectFileText.Text = System.IO.Path.GetFileName(matchedFile);
-                    RenderPreview(_projectDoc, _projectFile, withAnnotation: false);
-
-                    var splitBoundary = await ReadPlcBoundaryAsync(plcHost, plcPort, station, d620Address, token).ConfigureAwait(true);
-                    _boardWidth = splitBoundary;
-                    if (BoardWidthTextBox is not null)
+                    catch (TimeoutException ex)
                     {
-                        BoardWidthTextBox.Text = splitBoundary.ToString("0.###", CultureInfo.InvariantCulture);
+                        AppLogger.Instance.Error($"Modbus 操作超时: {ex.Message}", ex);
+                        SetStatus($"操作超时：{ex.Message}");
+                        _d623Value = 2;
+                        RefreshPlcRegisters();
+                        try { await WriteSingleIntAsync(plcHost, plcPort, station, d624Address, 0, token).ConfigureAwait(true); } catch { }
+                        try { await WriteSingleIntAsync(plcHost, plcPort, station, d623Address, 2, token).ConfigureAwait(true); } catch { }
                     }
-
-                    _d624Value = 1;
-                    RefreshPlcRegisters();
-                    await WriteSingleIntAsync(plcHost, plcPort, station, d624Address, 1, token).ConfigureAwait(true);
-                    var ok = await RecognizeAndSendAsync(sendToPlc: true, writeHeartbeatOnly: true).ConfigureAwait(true);
-                    _d624Value = 0;
-                    _d623Value = ok ? 1 : 2;
-                    RefreshPlcRegisters();
-                    await WriteSingleIntAsync(plcHost, plcPort, station, d624Address, 0, token).ConfigureAwait(true);
-                    await WriteSingleIntAsync(plcHost, plcPort, station, d623Address, ok ? 1 : 2, token).ConfigureAwait(true);
-                    StatusText.Text = ok ? "自动识别并发送成功，等待下一次 D626 变化..." : "自动识别失败，等待下一次 D626 变化...";
                 }
+            }
+            catch (OperationCanceledException)
+            {
+                AppLogger.Instance.Warn("自动化任务被取消");
+                _d623Value = 0;
+                RefreshPlcRegisters();
+                try { await WriteSingleIntAsync(plcHost, plcPort, station, d624Address, 0, token).ConfigureAwait(true); } catch { }
+                try { await WriteSingleIntAsync(plcHost, plcPort, station, d623Address, 0, token).ConfigureAwait(true); } catch { }
+            }
+            catch (Exception ex)
+            {
+                AppLogger.Instance.Error($"自动化任务发生未知错误: {ex.Message}", ex);
+                _d623Value = 0;
+                RefreshPlcRegisters();
+                try { await WriteSingleIntAsync(plcHost, plcPort, station, d624Address, 0, token).ConfigureAwait(true); } catch { }
+                try { await WriteSingleIntAsync(plcHost, plcPort, station, d623Address, 0, token).ConfigureAwait(true); } catch { }
             }
             finally
             {
+                AppLogger.Instance.Info("停止心跳线程");
                 await StopHeartbeatAsync().ConfigureAwait(true);
-                await WriteSingleIntAsync(plcHost, plcPort, station, "624", 0, token).ConfigureAwait(true);
+                AppLogger.Instance.Info("写入 D624=0，确保清理状态");
+                try { await WriteSingleIntAsync(plcHost, plcPort, station, d624Address, 0, token).ConfigureAwait(true); } catch { }
+                AppLogger.Instance.LogOperation("自动化结束", "RunFullAutomationAsync 执行完成");
             }
         }
 
         private async Task<bool> RecognizeAndSendAsync(bool sendToPlc, bool writeHeartbeatOnly)
         {
+            // 前置检查必须在 UI 线程
             if (_projectDoc is null || string.IsNullOrWhiteSpace(_projectFile))
             {
-                StatusText.Text = "请先导入工程 DXF。";
+                await RunOnUiThreadAsync(() =>
+                {
+                    StatusText.Text = "请先导入工程 DXF。";
+                    return Task.CompletedTask;
+                }).ConfigureAwait(false);
                 return false;
             }
             if (_stage1MoldFiles.Count == 0 || _stage2MoldFiles.Count == 0)
             {
-                StatusText.Text = "请先分别导入台1模具和台2模具。";
+                await RunOnUiThreadAsync(() =>
+                {
+                    StatusText.Text = "请先分别导入台1模具和台2模具。";
+                    return Task.CompletedTask;
+                }).ConfigureAwait(false);
                 return false;
             }
 
-            var project = DxfAnalyzer.ExtractProject(_projectDoc);
-            _lastProjectProfile = project;
-            _lastOuterContourPoints = DxfAnalyzer.ExtractOuterContourForDebug(_projectDoc);
-            var boardWidth = ReadBoardWidth();
-            var splitY = project.OuterRectangle.MinY + boardWidth;
-            var stage1Project = new ProjectProfile(project.OuterRectangle, project.Holes.Where(h => h.Centroid.Y < splitY).ToList(), project.CornerCandidates, project.EdgeCandidates, project.CornerStepPaths, project.ContourPaths, project.Stage1ContourPaths, []);
-            var stage2Project = new ProjectProfile(project.OuterRectangle, project.Holes.Where(h => h.Centroid.Y >= splitY).ToList(), project.CornerCandidates, project.EdgeCandidates, project.CornerStepPaths, project.ContourPaths, [], project.Stage2ContourPaths);
-            _selectedStage1File = ResolveSelectedMoldFile(Stage1MoldComboBox, _stage1MoldFiles);
-            _selectedStage2File = ResolveSelectedMoldFile(Stage2MoldComboBox, _stage2MoldFiles);
-            var stage1Files = _selectedStage1File is null ? _stage1MoldFiles.ToList() : _stage1MoldFiles.Where(f => string.Equals(f, _selectedStage1File, StringComparison.OrdinalIgnoreCase)).Concat(_stage1MoldFiles.Where(f => !string.Equals(f, _selectedStage1File, StringComparison.OrdinalIgnoreCase))).ToList();
-            var stage2Files = _selectedStage2File is null ? _stage2MoldFiles.ToList() : _stage2MoldFiles.Where(f => string.Equals(f, _selectedStage2File, StringComparison.OrdinalIgnoreCase)).Concat(_stage2MoldFiles.Where(f => !string.Equals(f, _selectedStage2File, StringComparison.OrdinalIgnoreCase))).ToList();
-            var stage1Molds = stage1Files.Select((f, idx) => { TryGetDocumentFromCache(f, out var doc); return DxfAnalyzer.ExtractMold(1 + idx, f, doc); }).ToList();
-            var stage2Molds = stage2Files.Select((f, idx) => { TryGetDocumentFromCache(f, out var doc); return DxfAnalyzer.ExtractMold(1 + idx, f, doc); }).ToList();
-            _lastMolds = stage1Molds.Concat(stage2Molds).ToList();
-            var matcher = new MoldMatcher();
-            var stage1Result = matcher.Match(stage1Project, stage1Molds, isStage1: true);
-            var stage2Result = matcher.Match(stage2Project, stage2Molds, isStage1: false);
-            _lastMatchResult = new MatchResult(stage1Result.HoleAssignments.Concat(stage2Result.HoleAssignments).ToList(), stage1Result.GuidePaths ?? stage2Result.GuidePaths);
-            RenderStageResult(stage1Result, stage1Molds, isStage1: true);
-            RenderStageResult(stage2Result, stage2Molds, isStage1: false);
-            RenderPreview(_projectDoc, _projectFile, withAnnotation: true);
-            StatusText.Text = $"识别完成：台1 {stage1Result.HoleAssignments.Count} 个，台2 {stage2Result.HoleAssignments.Count} 个。";
-            if (sendToPlc)
-            {
-                await SendRecognitionResultAsync(stage1Result, stage2Result).ConfigureAwait(true);
-            }
+            // 准备数据（在 UI 线程获取 ComboBox 选择和 BoardWidth）
+            string? selectedStage1File = null;
+            string? selectedStage2File = null;
+            double boardWidthValue = 150;
+            LoadingDialog? loadingDialog = null;
 
-            return true;
+            // 显示加载对话框（确保在 finally 中能关闭）
+            await RunOnUiThreadAsync(() =>
+            {
+                selectedStage1File = ResolveSelectedMoldFile(Stage1MoldComboBox, _stage1MoldFiles);
+                selectedStage2File = ResolveSelectedMoldFile(Stage2MoldComboBox, _stage2MoldFiles);
+                boardWidthValue = ReadBoardWidth(); // 在 UI 线程读取
+                loadingDialog = new LoadingDialog { Owner = this };
+                loadingDialog.SetMessage("正在识别图纸...");
+                loadingDialog.Show();
+                return Task.CompletedTask;
+            }).ConfigureAwait(false);
+
+            // 确保 loadingDialog 始终被关闭
+            try
+            {
+                // 在后台线程执行重型识别计算
+                bool ok;
+                try
+                {
+                    // 使用 Task.Run 在后台执行，用 Dispatcher 更新 UI
+                    ok = await Task.Run(async () =>
+                    {
+                        Dispatcher.Invoke(() => loadingDialog?.SetMessage("正在解析 CAD 图纸..."));
+
+                        var project = DxfAnalyzer.ExtractProject(_projectDoc!);
+                        _lastProjectProfile = project;
+                        _lastOuterContourPoints = DxfAnalyzer.ExtractOuterContourForDebug(_projectDoc!);
+
+                        Dispatcher.Invoke(() => loadingDialog?.SetMessage("正在匹配模具..."));
+
+                        var splitY = project.OuterRectangle.MinY + boardWidthValue;
+                        var stage1Project = new ProjectProfile(project.OuterRectangle, project.Holes.Where(h => h.Centroid.Y < splitY).ToList(), project.CornerCandidates, project.EdgeCandidates, project.CornerStepPaths, project.ContourPaths, project.Stage1ContourPaths, []);
+                        var stage2Project = new ProjectProfile(project.OuterRectangle, project.Holes.Where(h => h.Centroid.Y >= splitY).ToList(), project.CornerCandidates, project.EdgeCandidates, project.CornerStepPaths, project.ContourPaths, [], project.Stage2ContourPaths);
+                        var stage1Files = selectedStage1File is null ? _stage1MoldFiles.ToList() : _stage1MoldFiles.Where(f => string.Equals(f, selectedStage1File, StringComparison.OrdinalIgnoreCase)).Concat(_stage1MoldFiles.Where(f => !string.Equals(f, selectedStage1File, StringComparison.OrdinalIgnoreCase))).ToList();
+                        var stage2Files = selectedStage2File is null ? _stage2MoldFiles.ToList() : _stage2MoldFiles.Where(f => string.Equals(f, selectedStage2File, StringComparison.OrdinalIgnoreCase)).Concat(_stage2MoldFiles.Where(f => !string.Equals(f, selectedStage2File, StringComparison.OrdinalIgnoreCase))).ToList();
+                        var stage1Molds = stage1Files.Select((f, idx) => { TryGetDocumentFromCache(f, out var doc); return DxfAnalyzer.ExtractMold(1 + idx, f, doc); }).ToList();
+                        var stage2Molds = stage2Files.Select((f, idx) => { TryGetDocumentFromCache(f, out var doc); return DxfAnalyzer.ExtractMold(1 + idx, f, doc); }).ToList();
+                        _lastMolds = stage1Molds.Concat(stage2Molds).ToList();
+
+                        Dispatcher.Invoke(() => loadingDialog?.SetMessage("正在匹配台1模具..."));
+
+                        var matcher = new MoldMatcher();
+                        var stage1Result = matcher.Match(stage1Project, stage1Molds, isStage1: true);
+
+                        Dispatcher.Invoke(() => loadingDialog?.SetMessage("正在匹配台2模具..."));
+
+                        var stage2Result = matcher.Match(stage2Project, stage2Molds, isStage1: false);
+                        var matchResult = new MatchResult(stage1Result.HoleAssignments.Concat(stage2Result.HoleAssignments).ToList(), stage1Result.GuidePaths ?? stage2Result.GuidePaths);
+                        _lastMatchResult = matchResult;
+
+                        // UI 渲染需要在主线程
+                        Dispatcher.Invoke(() =>
+                        {
+                            loadingDialog?.SetMessage("正在渲染结果...");
+                            RenderStageResult(stage1Result, stage1Molds, isStage1: true);
+                            RenderStageResult(stage2Result, stage2Molds, isStage1: false);
+                            RenderPreview(_projectDoc!, _projectFile!, withAnnotation: true);
+                            StatusText.Text = $"识别完成：台1 {stage1Result.HoleAssignments.Count} 个，台2 {stage2Result.HoleAssignments.Count} 个。";
+                        });
+
+                        if (sendToPlc)
+                        {
+                            Dispatcher.Invoke(() => loadingDialog?.SetMessage("正在发送结果到 PLC..."));
+                            await SendRecognitionResultAsync(stage1Result, stage2Result, boardWidthValue).ConfigureAwait(false);
+                        }
+
+                        return true;
+                    }).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    AppLogger.Instance.Error($"识别过程发生异常: {ex.Message}", ex);
+                    Dispatcher.Invoke(() => StatusText.Text = $"识别失败: {ex.Message}");
+                    ok = false;
+                }
+
+                return ok;
+            }
+            finally
+            {
+                // 确保关闭加载对话框
+                Dispatcher.Invoke(() =>
+                {
+                    if (loadingDialog != null)
+                    {
+                        loadingDialog.Close();
+                        loadingDialog = null;
+                    }
+                });
+            }
         }
 
-        private async Task SendRecognitionResultAsync(MatchResult stage1Result, MatchResult stage2Result)
+        private async Task SendRecognitionResultAsync(MatchResult stage1Result, MatchResult stage2Result, double boardWidth)
         {
-            var model = BuildTcpExportModel();
+            var model = BuildTcpExportModel(boardWidth);
             var host = TcpExportDialog.SharedTcpHost;
             var port = int.TryParse(TcpExportDialog.SharedTcpPort, out var parsedPort) ? parsedPort : 502;
             byte station = byte.TryParse(TcpExportDialog.SharedModbusStation, out var parsedStation) ? parsedStation : (byte)1;
@@ -1683,7 +2022,7 @@ namespace CADRecognition
         private Task<ModbusTcpNet> GetPlcClientAsync(string host, int port, byte station)
         {
             var key = $"{host}:{port}:{station}";
-            if (_plcClient is not null && string.Equals(_plcClientKey, key, StringComparison.Ordinal))
+            if (_plcClient is not null && string.Equals(_plcClientKey, key, StringComparison.Ordinal) && _plcIsConnected)
             {
                 return Task.FromResult(_plcClient);
             }
@@ -1691,7 +2030,19 @@ namespace CADRecognition
             _plcClient?.Dispose();
             _plcClient = new ModbusTcpNet(host, port, station) { AddressStartWithZero = true };
             _plcClientKey = key;
+            _plcIsConnected = true;
             return Task.FromResult(_plcClient);
+        }
+
+        private void MarkPlcDisconnected()
+        {
+            _plcIsConnected = false;
+            _lastPlcReconnectAttempt = DateTime.Now;
+        }
+
+        private bool ShouldReconnectPlc()
+        {
+            return !_plcIsConnected && (DateTime.Now - _lastPlcReconnectAttempt).TotalSeconds >= 5;
         }
 
         private static string NormalizePlcAddress(string address)
@@ -1707,124 +2058,245 @@ namespace CADRecognition
 
         private async Task WriteSingleIntAsync(string host, int port, byte station, string address, int value, CancellationToken token)
         {
-            token.ThrowIfCancellationRequested();
-            var client = await GetPlcClientAsync(host, port, station).ConfigureAwait(true);
-            var plcAddress = NormalizePlcAddress(address);
-            await _plcIoLock.WaitAsync(token).ConfigureAwait(true);
+            await WithModbusTimeoutAsync($"Write[{address}]={value}", address, async ct =>
+            {
+                token.ThrowIfCancellationRequested();
+                var client = await GetPlcClientAsync(host, port, station).ConfigureAwait(true);
+                var plcAddress = NormalizePlcAddress(address);
+                var wordValue = value < short.MinValue ? short.MinValue : value > short.MaxValue ? short.MaxValue : (short)value;
+                await _plcIoLock.WaitAsync(ct).ConfigureAwait(true);
+                try
+                {
+                    var result = await client.WriteAsync(plcAddress, new[] { wordValue }).ConfigureAwait(true);
+                    if (result is null || !result.IsSuccess) throw new InvalidOperationException(result?.Message ?? $"写入 {plcAddress} 失败");
+                }
+                finally
+                {
+                    _plcIoLock.Release();
+                }
+                return true;
+            }, timeoutMs: 3000, token: token).ConfigureAwait(true);
+        }
+
+        /// <summary>
+        /// 心跳写入专用，不记录详细日志。
+        /// </summary>
+        private async Task WriteSingleIntSilentAsync(string host, int port, byte station, string address, int value, CancellationToken token)
+        {
             try
             {
-                var result = await client.WriteAsync(plcAddress, new[] { value }).ConfigureAwait(true);
-                if (result is null || !result.IsSuccess) throw new InvalidOperationException(result?.Message ?? $"写入 {plcAddress} 失败");
+                var client = await GetPlcClientAsync(host, port, station).ConfigureAwait(false);
+                var plcAddress = NormalizePlcAddress(address);
+                var wordValue = value < short.MinValue ? short.MinValue : value > short.MaxValue ? short.MaxValue : (short)value;
+
+                // 使用短超时快速检测 PLC 是否可用
+                using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(token);
+                timeoutCts.CancelAfter(500);
+
+                await _plcIoLock.WaitAsync(timeoutCts.Token).ConfigureAwait(false);
+                try
+                {
+                    await client.WriteAsync(plcAddress, new[] { wordValue }).ConfigureAwait(false);
+                }
+                finally
+                {
+                    _plcIoLock.Release();
+                }
             }
-            finally
+            catch
             {
-                _plcIoLock.Release();
             }
         }
 
         private async Task<string> ReadD600FileNameAsync(string host, int port, byte station, string address, CancellationToken token)
         {
-            token.ThrowIfCancellationRequested();
-            var client = await GetPlcClientAsync(host, port, station).ConfigureAwait(true);
-            var plcAddress = NormalizePlcAddress(address);
+            return await WithModbusTimeoutAsync("ReadString[D600]", address, async ct =>
+            {
+                token.ThrowIfCancellationRequested();
+                var client = await GetPlcClientAsync(host, port, station).ConfigureAwait(true);
+                var plcAddress = NormalizePlcAddress(address);
+
+                try
+                {
+                    await _plcIoLock.WaitAsync(ct).ConfigureAwait(true);
+                    var result = await client.ReadStringAsync(plcAddress, 20, Encoding.UTF8).ConfigureAwait(true);
+                    if (!result.IsSuccess)
+                    {
+                        try
+                        {
+                            result = await client.ReadStringAsync(address, 20, Encoding.UTF8).ConfigureAwait(true);
+                        }
+                        catch (Exception fallbackEx) when (fallbackEx is not OperationCanceledException)
+                        {
+                            throw new InvalidOperationException($"读取 D600 字符串失败：{fallbackEx.Message}", fallbackEx);
+                        }
+                    }
+
+                    if (!result.IsSuccess)
+                    {
+                        throw new InvalidOperationException(result.Message);
+                    }
+
+                    var text = result.Content?.Trim('\0', ' ', '\r', '\n') ?? string.Empty;
+                    if (string.IsNullOrWhiteSpace(text))
+                    {
+                        try
+                        {
+                            var raw = await client.ReadInt16Async(plcAddress, 10).ConfigureAwait(true);
+                            if (raw.IsSuccess && raw.Content is short[] words && words.Length > 0)
+                            {
+                                var bytes = new byte[words.Length * 2];
+                                for (var i = 0; i < words.Length; i++)
+                                {
+                                    var word = (ushort)words[i];
+                                    bytes[i * 2] = (byte)(word >> 8);
+                                    bytes[i * 2 + 1] = (byte)(word & 0xFF);
+                                }
+
+                                text = Encoding.UTF8.GetString(bytes).Trim('\0', ' ', '\r', '\n');
+                                if (!string.IsNullOrWhiteSpace(text))
+                                {
+                                    UpdatePlcStringValue(600, text);
+                                    return text;
+                                }
+                            }
+                        }
+                        catch
+                        {
+                        }
+
+                        return _d600Value;
+                    }
+
+                    UpdatePlcStringValue(600, text);
+                    return text;
+                }
+                catch (FormatException ex)
+                {
+                    UpdatePlcStringValue(600, string.Empty);
+                    throw new InvalidOperationException($"读取 D600 字符串失败，地址 {address} 的格式不正确。", ex);
+                }
+                finally
+                {
+                    _plcIoLock.Release();
+                }
+            }, timeoutMs: 5000, token: token).ConfigureAwait(true);
+        }
+
+        private async Task<T> WithModbusTimeoutAsync<T>(string operation, string address, Func<CancellationToken, Task<T>> action, int timeoutMs = 5000, CancellationToken token = default, bool silent = false)
+        {
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(token);
+            timeoutCts.CancelAfter(timeoutMs);
 
             try
             {
-                await _plcIoLock.WaitAsync(token).ConfigureAwait(true);
-                var result = await client.ReadStringAsync(plcAddress, 20).ConfigureAwait(true);
-                if (!result.IsSuccess)
-                {
-                    try
-                    {
-                        result = await client.ReadStringAsync(address, 20).ConfigureAwait(true);
-                    }
-                    catch (Exception fallbackEx) when (fallbackEx is not OperationCanceledException)
-                    {
-                        throw new InvalidOperationException($"读取 D600 字符串失败：{fallbackEx.Message}", fallbackEx);
-                    }
-                }
-
-                if (!result.IsSuccess)
-                {
-                    throw new InvalidOperationException(result.Message);
-                }
-
-                var text = result.Content?.Trim('\0', ' ', '\r', '\n') ?? string.Empty;
-                if (string.IsNullOrWhiteSpace(text))
-                {
-                    return _d600Value;
-                }
-
-                UpdatePlcStringValue(600, text);
-                return text;
+                var result = await action(timeoutCts.Token).ConfigureAwait(true);
+                return result;
             }
-            catch (FormatException ex)
+            catch (OperationCanceledException) when (!token.IsCancellationRequested)
             {
-                UpdatePlcStringValue(600, string.Empty);
-                throw new InvalidOperationException($"读取 D600 字符串失败，地址 {address} 的格式不正确。", ex);
+                AppLogger.Instance.LogModbus("超时", $"{operation}@{address}", error: $"{timeoutMs}ms超时");
+                MarkPlcDisconnected();
+                throw new TimeoutException($"Modbus操作 {operation} @ {address} 超时（{timeoutMs}ms）");
             }
-            catch (Exception ex) when (ex is not OperationCanceledException)
+            catch (System.Net.Sockets.SocketException ex)
             {
-                UpdatePlcStringValue(600, string.Empty);
-                throw new InvalidOperationException($"读取 D600 字符串失败：{ex.Message}", ex);
+                AppLogger.Instance.LogModbus("断链", $"{operation}@{address}", error: ex.Message);
+                MarkPlcDisconnected();
+                throw new TimeoutException($"PLC连接失败：{ex.Message}", ex);
             }
-            finally
+            catch (Exception ex) when (ex.Message.Contains("timeout", StringComparison.OrdinalIgnoreCase)
+                                      || ex.Message.Contains("连接", StringComparison.OrdinalIgnoreCase)
+                                      || ex.Message.Contains("connect", StringComparison.OrdinalIgnoreCase)
+                                      || ex.Message.Contains("无法连接", StringComparison.OrdinalIgnoreCase))
             {
-                _plcIoLock.Release();
+                AppLogger.Instance.LogModbus("断链", $"{operation}@{address}", error: ex.Message);
+                MarkPlcDisconnected();
+                throw new TimeoutException($"PLC连接失败：{ex.Message}", ex);
+            }
+            catch (Exception ex) when (ex is InvalidOperationException && (ex.Message.Contains("连接", StringComparison.OrdinalIgnoreCase)
+                                                              || ex.Message.Contains("关闭", StringComparison.OrdinalIgnoreCase)
+                                                              || ex.Message.Contains("强迫", StringComparison.OrdinalIgnoreCase)
+                                                              || ex.Message.Contains("远程", StringComparison.OrdinalIgnoreCase)))
+            {
+                AppLogger.Instance.LogModbus("断链", $"{operation}@{address}", error: ex.Message);
+                MarkPlcDisconnected();
+                throw new TimeoutException($"PLC连接已断开：{ex.Message}", ex);
+            }
+            catch (Exception ex)
+            {
+                AppLogger.Instance.LogModbus("失败", $"{operation}@{address}", error: ex.Message);
+                throw;
             }
         }
 
         private async Task<int> ReadIntAsync(string host, int port, byte station, string address, int logicalRegister, CancellationToken token)
         {
-            token.ThrowIfCancellationRequested();
-            var client = await GetPlcClientAsync(host, port, station).ConfigureAwait(true);
-            var plcAddress = NormalizePlcAddress(address);
-            await _plcIoLock.WaitAsync(token).ConfigureAwait(true);
-            try
+            return await WithModbusTimeoutAsync($"ReadInt[{logicalRegister}]", address, async ct =>
             {
-                var result = await client.ReadInt16Async(plcAddress, 1).ConfigureAwait(true);
-                if (!result.IsSuccess) throw new InvalidOperationException(result.Message);
-                var value = result.Content is short[] values && values.Length > 0 ? values[0] : 0;
-                UpdatePlcIntValue(logicalRegister, value);
-                return value;
-            }
-            finally
-            {
-                _plcIoLock.Release();
-            }
+                token.ThrowIfCancellationRequested();
+                var client = await GetPlcClientAsync(host, port, station).ConfigureAwait(true);
+                var plcAddress = NormalizePlcAddress(address);
+                await _plcIoLock.WaitAsync(ct).ConfigureAwait(true);
+                try
+                {
+                    var result = await client.ReadInt16Async(plcAddress, 1).ConfigureAwait(true);
+                    if (!result.IsSuccess) throw new InvalidOperationException(result.Message);
+                    var value = result.Content is short[] values && values.Length > 0 ? values[0] : 0;
+                    UpdatePlcIntValue(logicalRegister, value);
+                    return value;
+                }
+                finally
+                {
+                    _plcIoLock.Release();
+                }
+            }, timeoutMs: 5000, token: token).ConfigureAwait(true);
         }
 
         private async Task<double> ReadPlcBoundaryAsync(string host, int port, byte station, string address, CancellationToken token)
         {
-            token.ThrowIfCancellationRequested();
-            var client = await GetPlcClientAsync(host, port, station).ConfigureAwait(true);
-            var plcAddress = NormalizePlcAddress(address);
-            await _plcIoLock.WaitAsync(token).ConfigureAwait(true);
-            try
+            return await WithModbusTimeoutAsync("ReadFloat[D620]", address, async ct =>
             {
-                var result = await client.ReadFloatAsync(plcAddress, 1).ConfigureAwait(true);
-                if (!result.IsSuccess) throw new InvalidOperationException(result.Message);
+                token.ThrowIfCancellationRequested();
+                var client = await GetPlcClientAsync(host, port, station).ConfigureAwait(true);
+                var plcAddress = NormalizePlcAddress(address);
+                await _plcIoLock.WaitAsync(ct).ConfigureAwait(true);
+                try
+                {
+                    var result = await client.ReadFloatAsync(plcAddress, 1).ConfigureAwait(true);
+                    if (!result.IsSuccess) throw new InvalidOperationException(result.Message);
 
-                var values = result.Content;
-                var value = values is { Length: > 0 } ? values[0] : _d620Value;
-                UpdatePlcFloatValue(620, value);
-                return value;
-            }
-            finally
-            {
-                _plcIoLock.Release();
-            }
+                    var values = result.Content;
+                    var value = values is { Length: > 0 } ? values[0] : _d620Value;
+                    UpdatePlcFloatValue(620, value);
+                    return value;
+                }
+                finally
+                {
+                    _plcIoLock.Release();
+                }
+            }, timeoutMs: 5000, token: token).ConfigureAwait(true);
         }
 
-        private async Task WaitForRegisterChangeAsync(string host, int port, byte station, string address, int initialValue, int logicalRegister, CancellationToken token)
+        private async Task<int> WaitForRegisterChangeAsync(string host, int port, byte station, string address, int initialValue, int logicalRegister, CancellationToken token)
         {
+            var pollCount = 0;
             while (true)
             {
                 token.ThrowIfCancellationRequested();
                 var current = await ReadIntAsync(host, port, station, address, logicalRegister, token).ConfigureAwait(true);
+                pollCount++;
                 if (current != initialValue)
                 {
-                    return;
+                    AppLogger.Instance.Info($"【寄存器变化】{address}: {initialValue} -> {current}");
+                    SetStatus($"检测到 {address} 变化：{initialValue} -> {current}");
+                    return current;
+                }
+
+                if (pollCount % 25 == 0)
+                {
+                    AppLogger.Instance.Debug($"等待 {address} 变化，当前值={current}");
+                    SetStatus($"正在监听 {address}，当前值={current}，等待变化...");
                 }
 
                 await Task.Delay(200, token).ConfigureAwait(true);
@@ -1865,14 +2337,31 @@ namespace CADRecognition
 
         private void UpdatePlcIntValue(int register, int value)
         {
+            var previousValue = 0;
+            var changed = false;
             switch (register)
             {
-                case 622: _d622Value = value; break;
-                case 623: _d623Value = value; break;
-                case 624: _d624Value = value; break;
-                case 625: _d625Value = value; break;
-                case 626: _d626Value = value; break;
+                case 622:
+                    if (_d622Value != value) changed = true;
+                    _d622Value = value; break;
+                case 623:
+                    if (_d623Value != value) changed = true;
+                    _d623Value = value; break;
+                case 624:
+                    if (_d624Value != value) changed = true;
+                    _d624Value = value; break;
+                case 625:
+                    if (_d625Value != value) changed = true;
+                    _d625Value = value; break;
+                case 626:
+                    if (_d626Value != value) changed = true;
+                    _d626Value = value; break;
                 default: return;
+            }
+
+            if (changed)
+            {
+                AppLogger.Instance.Info($"【PLC {register} 变化】{previousValue} -> {value}");
             }
 
             RefreshPlcRegisters();
@@ -1921,10 +2410,10 @@ namespace CADRecognition
                 return;
             }
 
-            await StartHeartbeatAsync(TcpExportDialog.SharedTcpHost, int.TryParse(TcpExportDialog.SharedTcpPort, out var parsedPort) ? parsedPort : 502, byte.TryParse(TcpExportDialog.SharedModbusStation, out var parsedStation) ? parsedStation : (byte)1, 625, CancellationToken.None).ConfigureAwait(true);
+            await StartHeartbeatAsync(TcpExportDialog.SharedTcpHost, int.TryParse(TcpExportDialog.SharedTcpPort, out var parsedPort) ? parsedPort : 502, byte.TryParse(TcpExportDialog.SharedModbusStation, out var parsedStation) ? parsedStation : (byte)1, "625", CancellationToken.None).ConfigureAwait(true);
         }
 
-        private async Task StartHeartbeatAsync(string host, int port, byte station, int register, CancellationToken token)
+        private async Task StartHeartbeatAsync(string host, int port, byte station, string register, CancellationToken token)
         {
             _heartbeatCts = CancellationTokenSource.CreateLinkedTokenSource(token);
             var heartbeatToken = _heartbeatCts.Token;
@@ -1934,7 +2423,9 @@ namespace CADRecognition
                 {
                     try
                     {
-                        await WriteSingleIntAsync(host, port, station, register.ToString(), 1, heartbeatToken).ConfigureAwait(false);
+                        await WriteSingleIntSilentAsync(host, port, station, register, 1, heartbeatToken).ConfigureAwait(false);
+                        _d625Value = 1;
+                        RefreshPlcRegisters();
                     }
                     catch
                     {
@@ -1942,7 +2433,7 @@ namespace CADRecognition
 
                     try
                     {
-                        await Task.Delay(100, heartbeatToken).ConfigureAwait(false);
+                        await Task.Delay(1000, heartbeatToken).ConfigureAwait(false);
                     }
                     catch (OperationCanceledException)
                     {
@@ -1966,7 +2457,7 @@ namespace CADRecognition
             _heartbeatTask = null;
         }
 
-        private TcpExportModel BuildTcpExportModel()
+        private TcpExportModel BuildTcpExportModel(double boardWidth)
         {
             var model = new TcpExportModel();
             model.ProgramName = System.IO.Path.GetFileNameWithoutExtension(_projectFile);
@@ -1977,7 +2468,6 @@ namespace CADRecognition
             model.FormingLength = 0;
             model.FormingWidth = 0;
             model.FormingThickness = 0;
-            var boardWidth = ReadBoardWidth();
             model.PlateLength = _lastProjectProfile?.OuterRectangle.Width ?? 0;
             model.PlateWidth = _lastProjectProfile?.OuterRectangle.Height ?? 0;
             model.PlateWidth2 = boardWidth > 0 ? boardWidth
@@ -2217,13 +2707,15 @@ namespace CADRecognition
             _previewPlugin.CreatePreview(doc, _viewer);
             if (!string.IsNullOrWhiteSpace(path) && path == _projectFile && _lastProjectProfile is not null)
             {
+                var splitY = _lastProjectProfile.OuterRectangle.MinY + _boardWidth;
                 _viewer.RenderCornerContours(
                     _lastProjectProfile.OuterRectangle,
                     _lastOuterContourPoints,
                     withAnnotation ? _lastMatchResult?.GuidePaths : null,
                     _lastProjectProfile.CornerCandidates,
                     _boardWidth,
-                    _lastProjectProfile.OuterRectangle.MinY + _boardWidth);
+                    splitY);
+                _viewer.RenderPendingEdgeRecognitionHoles(_lastProjectProfile.EdgeCandidates, splitY);
 
                 if (withAnnotation && _lastMatchResult is not null)
                 {
@@ -2586,6 +3078,74 @@ namespace CADRecognition
                 _sceneCanvas.Children.Add(child);
             }
             ResetView();
+        }
+
+        public void RenderPendingEdgeRecognitionHoles(IReadOnlyList<EdgeCandidate> edgeCandidates, double? splitY)
+        {
+            if (edgeCandidates.Count == 0)
+            {
+                return;
+            }
+
+            foreach (var edge in edgeCandidates)
+            {
+                var isStage2 = splitY.HasValue && edge.Centroid.Y >= splitY.Value;
+                var stroke = isStage2
+                    ? new SolidColorBrush(WpfColor.FromArgb(245, 3, 169, 244))
+                    : new SolidColorBrush(WpfColor.FromArgb(245, 255, 152, 0));
+                var fill = isStage2
+                    ? new SolidColorBrush(WpfColor.FromArgb(40, 3, 169, 244))
+                    : new SolidColorBrush(WpfColor.FromArgb(40, 255, 152, 0));
+                var center = ModelToCanvas(edge.Centroid.X, edge.Centroid.Y);
+
+                if (edge.Points.Count >= 2)
+                {
+                    var poly = new Polyline
+                    {
+                        Stroke = stroke,
+                        StrokeThickness = 1.0,
+                        StrokeLineJoin = PenLineJoin.Round,
+                        StrokeStartLineCap = PenLineCap.Round,
+                        StrokeEndLineCap = PenLineCap.Round,
+                        StrokeDashArray = new DoubleCollection([4, 2])
+                    };
+                    foreach (var point in edge.Points)
+                    {
+                        poly.Points.Add(ModelToCanvas(point.X, point.Y));
+                    }
+                    _zoneCanvas.Children.Add(poly);
+                }
+
+                var w = Math.Max(edge.Width * _drawScale, 8.0);
+                var h = Math.Max(edge.Height * _drawScale, 8.0);
+                var marker = new WpfRectangle
+                {
+                    Width = w + 8,
+                    Height = h + 8,
+                    Stroke = stroke,
+                    Fill = fill,
+                    StrokeThickness = 0.8,
+                    StrokeDashArray = new DoubleCollection([3, 2])
+                };
+                Canvas.SetLeft(marker, center.X - marker.Width * 0.5);
+                Canvas.SetTop(marker, center.Y - marker.Height * 0.5);
+                _zoneCanvas.Children.Add(marker);
+
+                if (!_compactMode)
+                {
+                    var text = new TextBlock
+                    {
+                        Text = $"边缘孔{(isStage2 ? "N" : "M")}-{edge.Side}",
+                        Foreground = stroke,
+                        FontWeight = FontWeights.SemiBold,
+                        FontSize = 7,
+                        Background = new SolidColorBrush(WpfColor.FromArgb(120, 0, 0, 0))
+                    };
+                    Canvas.SetLeft(text, center.X + marker.Width * 0.5 + 2);
+                    Canvas.SetTop(text, center.Y - 7);
+                    _zoneCanvas.Children.Add(text);
+                }
+            }
         }
 
         public void RenderAnnotations(IReadOnlyList<HoleAssignment> assignments, IReadOnlyList<MoldProfile> molds, double? splitY)
@@ -3837,133 +4397,270 @@ namespace CADRecognition
 
         private static List<EdgeCandidate> ExtractEdgePartialCandidates(DxfDocument doc, RectBounds outer)
         {
-            var pts = CollectGeometryPoints(doc);
             var result = new List<EdgeCandidate>();
-            if (pts.Count < 10)
+            var edgeTol = Compat.Clamp(Math.Min(outer.Width, outer.Height) * 0.0006, 0.08, 0.3);
+            var connectTol = Math.Max(Math.Min(outer.Width, outer.Height) * 0.002, 1.0);
+            var minElementLength = Math.Max(Math.Min(outer.Width, outer.Height) * 0.01, 5.0);
+            var segments = new List<List<(double X, double Y)>>();
+            var boardContour = SelectOuterContourPoints(doc, outer).ToList();
+            if (boardContour.Count >= 2)
             {
-                // still try polyline-based extraction below
+                var first = boardContour[0];
+                var last = boardContour[^1];
+                var closeDist = Math.Sqrt((first.X - last.X) * (first.X - last.X) + (first.Y - last.Y) * (first.Y - last.Y));
+                if (closeDist > edgeTol)
+                {
+                    boardContour.Add(first);
+                }
             }
 
-            // Edge band (exclude corner zones)
-            var cornerX = outer.Width * 0.22;
-            var cornerY = outer.Height * 0.22;
-            var band = Math.Max(Math.Min(outer.Width, outer.Height) * 0.06, 12.0);
-            var depth = Math.Max(Math.Min(outer.Width, outer.Height) * 0.015, 3.0);
-            var gap = Math.Max(Math.Min(outer.Width, outer.Height) * 0.018, 12.0);
-
-            IEnumerable<(double X, double Y)> top = pts.Where(p =>
-                p.Y <= outer.MaxY - depth && p.Y >= outer.MaxY - band &&
-                p.X > outer.MinX + cornerX && p.X < outer.MaxX - cornerX);
-            IEnumerable<(double X, double Y)> bottom = pts.Where(p =>
-                p.Y >= outer.MinY + depth && p.Y <= outer.MinY + band &&
-                p.X > outer.MinX + cornerX && p.X < outer.MaxX - cornerX);
-            IEnumerable<(double X, double Y)> left = pts.Where(p =>
-                p.X >= outer.MinX + depth && p.X <= outer.MinX + band &&
-                p.Y > outer.MinY + cornerY && p.Y < outer.MaxY - cornerY);
-            IEnumerable<(double X, double Y)> right = pts.Where(p =>
-                p.X <= outer.MaxX - depth && p.X >= outer.MaxX - band &&
-                p.Y > outer.MinY + cornerY && p.Y < outer.MaxY - cornerY);
-
-            void AddGroups(IEnumerable<(double X, double Y)> bandPts, bool sortByX, string side)
+            static double PointToSegmentDistance((double X, double Y) p, (double X, double Y) a, (double X, double Y) b)
             {
-                var sorted = (sortByX ? bandPts.OrderBy(p => p.X) : bandPts.OrderBy(p => p.Y)).ToList();
-                if (sorted.Count < 5)
+                var vx = b.X - a.X;
+                var vy = b.Y - a.Y;
+                var wx = p.X - a.X;
+                var wy = p.Y - a.Y;
+                var len2 = vx * vx + vy * vy;
+                if (len2 <= 1e-12)
+                {
+                    var dx0 = p.X - a.X;
+                    var dy0 = p.Y - a.Y;
+                    return Math.Sqrt(dx0 * dx0 + dy0 * dy0);
+                }
+
+                var t = Compat.Clamp((wx * vx + wy * vy) / len2, 0.0, 1.0);
+                var projX = a.X + vx * t;
+                var projY = a.Y + vy * t;
+                var dx = p.X - projX;
+                var dy = p.Y - projY;
+                return Math.Sqrt(dx * dx + dy * dy);
+            }
+
+            bool IsOnRealBoardContour((double X, double Y) p)
+            {
+                if (boardContour.Count < 2)
+                {
+                    return Math.Abs(p.X - outer.MinX) <= edgeTol
+                        || Math.Abs(p.X - outer.MaxX) <= edgeTol
+                        || Math.Abs(p.Y - outer.MinY) <= edgeTol
+                        || Math.Abs(p.Y - outer.MaxY) <= edgeTol;
+                }
+
+                for (var i = 1; i < boardContour.Count; i++)
+                {
+                    if (PointToSegmentDistance(p, boardContour[i - 1], boardContour[i]) <= edgeTol)
+                    {
+                        return true;
+                    }
+                }
+
+                return false;
+            }
+
+            bool IsBoardEdgeSegment(IReadOnlyList<(double X, double Y)> points)
+            {
+                if (points.Count < 2)
+                {
+                    return true;
+                }
+
+                return points.All(IsOnRealBoardContour);
+            }
+
+            void AddSegment(IReadOnlyList<(double X, double Y)> points)
+            {
+                if (points.Count < 2 || IsBoardEdgeSegment(points))
                 {
                     return;
                 }
 
-                var current = new List<(double X, double Y)>();
-                for (var i = 0; i < sorted.Count; i++)
+                var cleaned = new List<(double X, double Y)>();
+                foreach (var p in points)
                 {
-                    if (current.Count == 0)
+                    if (cleaned.Count == 0)
                     {
-                        current.Add(sorted[i]);
+                        cleaned.Add(p);
                         continue;
                     }
-                    var prev = current[^1];
-                    var d = Math.Sqrt((sorted[i].X - prev.X) * (sorted[i].X - prev.X) + (sorted[i].Y - prev.Y) * (sorted[i].Y - prev.Y));
-                    if (d <= gap)
+
+                    var last = cleaned[^1];
+                    var d = Math.Sqrt((p.X - last.X) * (p.X - last.X) + (p.Y - last.Y) * (p.Y - last.Y));
+                    if (d > 1e-6)
                     {
-                        current.Add(sorted[i]);
-                    }
-                    else
-                    {
-                        if (current.Count >= 6)
-                        {
-                            result.Add(BuildEdgeCandidate(side, current));
-                        }
-                        current = [sorted[i]];
+                        cleaned.Add(p);
                     }
                 }
-                if (current.Count >= 6)
+
+                if (cleaned.Count >= 2 && !IsBoardEdgeSegment(cleaned))
                 {
-                    result.Add(BuildEdgeCandidate(side, current));
+                    segments.Add(cleaned);
                 }
             }
 
-            AddGroups(top, true, "Top");
-            AddGroups(bottom, true, "Bottom");
-            AddGroups(left, false, "Left");
-            AddGroups(right, false, "Right");
-
-            // Extra: use open polylines as edge-notch candidates (common DXF export).
-            foreach (var pl in doc.Entities.Polylines2D.Where(p => !IsPolylineClosedLike(p) && p.Vertexes.Count >= 3))
+            // 完整孔：闭合多段线、圆、整圆弧不进入边缘孔元素；板材边缘线也排除。
+            foreach (var line in doc.Entities.Lines)
             {
-                var polyPts = ExpandPolyline2D(pl, 24).ToList();
-                if (polyPts.Count < 6)
-                {
-                    continue;
-                }
-                var minX = polyPts.Min(p => p.X);
-                var maxX = polyPts.Max(p => p.X);
-                var minY = polyPts.Min(p => p.Y);
-                var maxY = polyPts.Max(p => p.Y);
-                var w = maxX - minX;
-                var h = maxY - minY;
-                if (w < 1e-6 || h < 1e-6)
+                AddSegment([(line.StartPoint.X, line.StartPoint.Y), (line.EndPoint.X, line.EndPoint.Y)]);
+            }
+
+            foreach (var arc in doc.Entities.Arcs)
+            {
+                if (NormalizeArcSweep(arc.StartAngle, arc.EndAngle) >= 350.0)
                 {
                     continue;
                 }
 
-                var cx = polyPts.Average(p => p.X);
-                var cy = polyPts.Average(p => p.Y);
-                var nearLeft = Math.Abs(cx - outer.MinX) <= band;
-                var nearRight = Math.Abs(outer.MaxX - cx) <= band;
-                var nearBottom = Math.Abs(cy - outer.MinY) <= band;
-                var nearTop = Math.Abs(outer.MaxY - cy) <= band;
+                AddSegment(SampleArc(arc, 24));
+            }
 
-                // Exclude corner zones
-                var inCornerZone = (cx <= outer.MinX + cornerX || cx >= outer.MaxX - cornerX) &&
-                                   (cy <= outer.MinY + cornerY || cy >= outer.MaxY - cornerY);
-                if (inCornerZone)
+            foreach (var pl in doc.Entities.Polylines2D.Where(p => !IsPolylineClosedLike(p) && p.Vertexes.Count >= 2))
+            {
+                AddSegment(ExpandPolyline2D(pl, 24).ToList());
+            }
+
+            static double Distance((double X, double Y) a, (double X, double Y) b)
+            {
+                var dx = a.X - b.X;
+                var dy = a.Y - b.Y;
+                return Math.Sqrt(dx * dx + dy * dy);
+            }
+
+            static bool IsClosedCandidate(IReadOnlyList<(double X, double Y)> points, double tolerance)
+            {
+                if (points.Count < 3)
+                {
+                    return false;
+                }
+
+                return Distance(points[0], points[^1]) <= tolerance;
+            }
+
+            static void ReverseInPlace(List<(double X, double Y)> points)
+            {
+                points.Reverse();
+            }
+
+            var groups = new List<List<(double X, double Y)>>();
+            foreach (var raw in segments)
+            {
+                var seg = raw.ToList();
+                var merged = false;
+                for (var i = 0; i < groups.Count; i++)
+                {
+                    var group = groups[i];
+                    var gStart = group[0];
+                    var gEnd = group[^1];
+                    var sStart = seg[0];
+                    var sEnd = seg[^1];
+
+                    if (Distance(gEnd, sStart) <= connectTol)
+                    {
+                        group.AddRange(seg.Skip(1));
+                        merged = true;
+                        break;
+                    }
+
+                    if (Distance(gEnd, sEnd) <= connectTol)
+                    {
+                        ReverseInPlace(seg);
+                        group.AddRange(seg.Skip(1));
+                        merged = true;
+                        break;
+                    }
+
+                    if (Distance(gStart, sEnd) <= connectTol)
+                    {
+                        group.InsertRange(0, seg.Take(seg.Count - 1));
+                        merged = true;
+                        break;
+                    }
+
+                    if (Distance(gStart, sStart) <= connectTol)
+                    {
+                        ReverseInPlace(seg);
+                        group.InsertRange(0, seg.Take(seg.Count - 1));
+                        merged = true;
+                        break;
+                    }
+                }
+
+                if (!merged)
+                {
+                    groups.Add(seg);
+                }
+            }
+
+            // 二次合并，处理 A-B、C-D 先分组后又能接上的情况。
+            var changed = true;
+            while (changed)
+            {
+                changed = false;
+                for (var i = 0; i < groups.Count && !changed; i++)
+                {
+                    for (var j = i + 1; j < groups.Count; j++)
+                    {
+                        var a = groups[i];
+                        var b = groups[j];
+                        var aStart = a[0];
+                        var aEnd = a[^1];
+                        var bStart = b[0];
+                        var bEnd = b[^1];
+
+                        if (Distance(aEnd, bStart) <= connectTol)
+                        {
+                            a.AddRange(b.Skip(1));
+                        }
+                        else if (Distance(aEnd, bEnd) <= connectTol)
+                        {
+                            b.Reverse();
+                            a.AddRange(b.Skip(1));
+                        }
+                        else if (Distance(aStart, bEnd) <= connectTol)
+                        {
+                            a.InsertRange(0, b.Take(b.Count - 1));
+                        }
+                        else if (Distance(aStart, bStart) <= connectTol)
+                        {
+                            b.Reverse();
+                            a.InsertRange(0, b.Take(b.Count - 1));
+                        }
+                        else
+                        {
+                            continue;
+                        }
+
+                        groups.RemoveAt(j);
+                        changed = true;
+                        break;
+                    }
+                }
+            }
+
+            foreach (var group in groups)
+            {
+                var length = PolylineLength(group);
+                if (group.Count < 2 || length < minElementLength || IsBoardEdgeSegment(group))
                 {
                     continue;
                 }
 
-                string? side = null;
-                if (nearLeft) side = "Left";
-                else if (nearRight) side = "Right";
-                else if (nearBottom) side = "Bottom";
-                else if (nearTop) side = "Top";
-                if (side is null)
+                // 边缘孔只处理非完整孔的开放线条；多条 Line/Arc 拼成闭环后应视为完整孔，不能进入边缘孔。
+                if (IsClosedCandidate(group, connectTol))
                 {
                     continue;
                 }
 
-                // Avoid duplicates near existing candidates
-                var thresh = Math.Max(Math.Min(w, h) * 0.8, 40.0);
-                var dup = result.Any(r =>
+                var cx = group.Average(p => p.X);
+                var cy = group.Average(p => p.Y);
+                var sideDistances = new[]
                 {
-                    var dx = r.Centroid.X - cx;
-                    var dy = r.Centroid.Y - cy;
-                    return Math.Sqrt(dx * dx + dy * dy) <= thresh;
-                });
-                if (dup)
-                {
-                    continue;
-                }
-
-                result.Add(BuildEdgeCandidate(side, polyPts));
+                    (Side: "Left", Distance: Math.Abs(cx - outer.MinX)),
+                    (Side: "Right", Distance: Math.Abs(outer.MaxX - cx)),
+                    (Side: "Bottom", Distance: Math.Abs(cy - outer.MinY)),
+                    (Side: "Top", Distance: Math.Abs(outer.MaxY - cy))
+                };
+                var side = sideDistances.OrderBy(x => x.Distance).First().Side;
+                result.Add(BuildEdgeCandidate(side, group));
             }
 
             return result;
@@ -4070,7 +4767,8 @@ namespace CADRecognition
                     area,
                     perimeter,
                     0,
-                    CreateCircleSignature(c.Radius, SignatureSamples)));
+                    CreateCircleSignature(c.Radius, SignatureSamples),
+                    CreateCirclePoints(c.Center.X, c.Center.Y, c.Radius, SignatureSamples)));
             }
 
             foreach (var a in doc.Entities.Arcs)
@@ -4100,7 +4798,8 @@ namespace CADRecognition
                     area,
                     perimeter,
                     0,
-                    CreateCircleSignature(a.Radius, SignatureSamples)));
+                    CreateCircleSignature(a.Radius, SignatureSamples),
+                    CreateCirclePoints(a.Center.X, a.Center.Y, a.Radius, SignatureSamples)));
             }
 
             foreach (var pl in doc.Entities.Polylines2D.Where(p => IsPolylineClosedLike(p) && p.Vertexes.Count >= 3))
@@ -4124,7 +4823,8 @@ namespace CADRecognition
                     Math.Abs(area),
                     perimeter,
                     pl.Elevation,
-                    CreatePolylineSignature(pts, SignatureSamples)));
+                    CreatePolylineSignature(pts, SignatureSamples),
+                    pts));
             }
 
             // 混合闭环（线段+圆弧）：把可闭合的 line/arc 组装成轮廓，识别“圆弧+线段孔”。
@@ -4155,7 +4855,8 @@ namespace CADRecognition
                     area,
                     perimeter,
                     0,
-                    CreatePolylineSignature(loop, SignatureSamples)));
+                    CreatePolylineSignature(loop, SignatureSamples),
+                    loop));
             }
 
             if (includeOpenPolylines)
@@ -4189,7 +4890,8 @@ namespace CADRecognition
                         pseudoArea,
                         perimeter,
                         pl.Elevation,
-                        CreatePolylineSignature(pts, SignatureSamples)));
+                        CreatePolylineSignature(pts, SignatureSamples),
+                        pts));
                 }
             }
 
@@ -4528,7 +5230,8 @@ namespace CADRecognition
                     Math.Max(zoneW * zoneH * 0.18, 1.0),
                     Math.Max((zoneW + zoneH) * 0.6, 1.0),
                     0,
-                    sig));
+                    sig,
+                    inZone));
             }
             return features;
         }
@@ -4592,7 +5295,8 @@ namespace CADRecognition
                         Math.Max(w * h * 0.45, 1.0),
                         Math.Max(PolylineLength(g), 1.0),
                         0,
-                        CreatePolylineSignature(g, SignatureSamples)));
+                        CreatePolylineSignature(g, SignatureSamples),
+                        g));
                 }
             }
 
@@ -4686,7 +5390,8 @@ namespace CADRecognition
                 area,
                 Math.Max(perimeter, 1.0),
                 0,
-                signature);
+                signature,
+                points);
         }
 
         private static List<(double X, double Y)> ExtractMoldOutline(DxfDocument doc, (double X, double Y) anchor, bool useBodyCenter)
@@ -4782,6 +5487,17 @@ namespace CADRecognition
             return normalized;
         }
 
+        private static IReadOnlyList<(double X, double Y)> CreateCirclePoints(double cx, double cy, double radius, int samples)
+        {
+            var points = new List<(double X, double Y)>(samples);
+            for (var i = 0; i < samples; i++)
+            {
+                var angle = 2.0 * Math.PI * i / Math.Max(samples, 1);
+                points.Add((cx + radius * Math.Cos(angle), cy + radius * Math.Sin(angle)));
+            }
+            return points;
+        }
+
         private static double[] CreatePolylineSignature(IReadOnlyList<(double X, double Y)> points, int samples)
         {
             var closed = points.ToList();
@@ -4864,7 +5580,7 @@ namespace CADRecognition
         {
             var rows = new List<HoleAssignment>();
             var guidePaths = new List<CornerStepPath>();
-            if (molds.Count == 0 || project.Holes.Count == 0)
+            if (molds.Count == 0 || (project.Holes.Count == 0 && project.EdgeCandidates.Count == 0))
             {
                 return new MatchResult(rows, guidePaths);
             }
@@ -4973,6 +5689,34 @@ namespace CADRecognition
                 var strictPass = ranked.Where(x => x.Strict).OrderBy(x => x.Score).ToList();
                 if (strictPass.Count == 0)
                 {
+                    var partial = TryPartialBBoxContourMatch(hole, nonCornerMolds, isStage1);
+                    if (partial is not null)
+                    {
+                        var prefix = isStage1 ? "M" : "N";
+                        var placementHole = new HoleFeature(
+                            hole.HoleType,
+                            partial.Placement,
+                            hole.Width,
+                            hole.Height,
+                            hole.Area,
+                            hole.Perimeter,
+                            hole.Rotation,
+                            hole.Signature,
+                            hole.Points);
+                        rows.Add(new HoleAssignment(
+                            placementHole,
+                            partial.MoldId,
+                            "局部冲压",
+                            IsAnyCornerZone(hole, project.OuterRectangle),
+                            IsNearOuterEdge(hole, project.OuterRectangle),
+                            $"{prefix}{partial.MoldId:D2}:Partial={partial.Score:F2},Cover={partial.Coverage:P0},Corner={partial.CornerName},Align=({partial.Placement.X:F1},{partial.Placement.Y:F1})",
+                            $"Partial,W={partial.WidthRatio:F2},H={partial.HeightRatio:F2},D={partial.TrimmedDistance:F2}",
+                            "边缘点对齐后使用模具定位点",
+                            0,
+                            false));
+                        continue;
+                    }
+
                     var viable = ranked.Where(x => !x.Impossible).ToList();
                     if (viable.Count == 0)
                     {
@@ -4984,8 +5728,9 @@ namespace CADRecognition
                         .OrderBy(x => x.Score)
                         .FirstOrDefault() ?? viable.OrderBy(x => x.Score).First();
 
+                    var debugPrefix = isStage1 ? "M" : "N";
                     var debugTop = string.Join(" | ", ranked.Take(3).Select(r =>
-                        $"M{r.MoldId:D2}:A={r.AreaRatio:F1},P={r.PerimRatio:F1},L={r.LongRatio:F1},S={r.ShortRatio:F1},Sig={r.Signature:F1},T={r.TypeMatch}"));
+                        $"{debugPrefix}{r.MoldId:D2}:A={r.AreaRatio:F1},P={r.PerimRatio:F1},L={r.LongRatio:F1},S={r.ShortRatio:F1},Sig={r.Signature:F1},T={r.TypeMatch}"));
 
                     rows.Add(new HoleAssignment(
                         hole,
@@ -5008,6 +5753,50 @@ namespace CADRecognition
                     IsNearOuterEdge(hole, project.OuterRectangle),
                     string.Join(" | ", strictPass.Take(3).Select(r => $"{(isStage1 ? "M" : "N")}{r.MoldId:D2}:{r.Score:F1}")),
                     $"A={pick.AreaRatio:F1},P={pick.PerimRatio:F1}"));
+            }
+
+            foreach (var edge in project.EdgeCandidates)
+            {
+                var edgeHole = new HoleFeature(
+                    $"EdgePartial:{edge.Side}",
+                    edge.Centroid,
+                    edge.Width,
+                    edge.Height,
+                    Math.Max(edge.Width * edge.Height * 0.45, 1.0),
+                    Math.Max(edge.Perimeter, 1.0),
+                    0,
+                    edge.Signature,
+                    edge.Points);
+
+                var partial = TryPartialBBoxContourMatch(edgeHole, nonCornerMolds, isStage1);
+                if (partial is null)
+                {
+                    continue;
+                }
+
+                var placementHole = new HoleFeature(
+                    edgeHole.HoleType,
+                    partial.Placement,
+                    edgeHole.Width,
+                    edgeHole.Height,
+                    edgeHole.Area,
+                    edgeHole.Perimeter,
+                    edgeHole.Rotation,
+                    edgeHole.Signature,
+                    edgeHole.Points);
+
+                var prefix = isStage1 ? "M" : "N";
+                rows.Add(new HoleAssignment(
+                    placementHole,
+                    partial.MoldId,
+                    "边缘孔局部冲压",
+                    false,
+                    true,
+                    $"{prefix}{partial.MoldId:D2}:EdgePartial={partial.Score:F2},Cover={partial.Coverage:P0},Corner={partial.CornerName},Align=({partial.Placement.X:F1},{partial.Placement.Y:F1})",
+                    $"EdgePartial,W={partial.WidthRatio:F2},H={partial.HeightRatio:F2},D={partial.TrimmedDistance:F2}",
+                    "边缘点对齐后使用模具定位点",
+                    0,
+                    false));
             }
 
             var cleaned = DeduplicateAssignments(rows);
@@ -6343,6 +7132,516 @@ namespace CADRecognition
             return string.Join(" | ", tops);
         }
 
+        private sealed record PartialMatchCandidate(
+            int MoldId,
+            string CornerName,
+            (double X, double Y) Placement,
+            double Score,
+            double Coverage,
+            double TrimmedDistance,
+            double WidthRatio,
+            double HeightRatio);
+
+        private sealed record PartialMatchAnchor(string Name, (double X, double Y) Point);
+
+        private sealed record PartialMoldCache(
+            MoldProfile Mold,
+            IReadOnlyList<(double X, double Y)> Points,
+            IReadOnlyList<PartialMatchAnchor> Anchors,
+            RectBounds Bounds);
+
+        private static readonly string EdgePartialDebugLogPath = System.IO.Path.Combine(
+            AppDomain.CurrentDomain.BaseDirectory,
+            "edge-partial-debug.log");
+
+        private static void AppendEdgePartialDebugLog(string message)
+        {
+            try
+            {
+                File.AppendAllText(EdgePartialDebugLogPath, message + Environment.NewLine, Encoding.UTF8);
+            }
+            catch
+            {
+                // 调试日志不能影响正常识别流程。
+            }
+        }
+
+        private static PartialMatchCandidate? TryPartialBBoxContourMatch(HoleFeature hole, IReadOnlyList<MoldProfile> molds, bool isStage1)
+        {
+            var holePoints = NormalizeFeaturePoints(hole);
+            var isEdgePartial = hole.HoleType.StartsWith("EdgePartial:", StringComparison.Ordinal);
+            if (isEdgePartial)
+            {
+                var box = holePoints.Count > 0 ? BoundsOf(holePoints) : new RectBounds(0, 0, 0, 0);
+                AppendEdgePartialDebugLog(
+                    $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] Begin {hole.HoleType}, Stage={(isStage1 ? "M" : "N")}, " +
+                    $"Center=({hole.Centroid.X:F3},{hole.Centroid.Y:F3}), Size=({hole.Width:F3},{hole.Height:F3}), " +
+                    $"Area={hole.Area:F3}, Perimeter={hole.Perimeter:F3}, Points={holePoints.Count}, " +
+                    $"Box=({box.MinX:F3},{box.MinY:F3})-({box.MaxX:F3},{box.MaxY:F3}), Molds={molds.Count}");
+            }
+
+            var minHolePointCount = isEdgePartial ? 3 : 8;
+            if (holePoints.Count < minHolePointCount || hole.Perimeter < 10.0)
+            {
+                if (isEdgePartial)
+                {
+                    AppendEdgePartialDebugLog($"  Reject before mold scan: Points={holePoints.Count} (<{minHolePointCount}) or Perimeter={hole.Perimeter:F3} (<10).");
+                }
+                return null;
+            }
+
+            var holeBounds = BoundsOf(holePoints);
+            var holeAnchors = BuildPartialMatchAnchors(holePoints, "孔", isEdgePartial ? 10 : 18);
+            var moldCaches = molds
+                .Select(m =>
+                {
+                    var points = NormalizeMoldPoints(m);
+                    return new PartialMoldCache(
+                        m,
+                        points,
+                        BuildPartialMatchAnchors(points, "模", isEdgePartial ? 10 : 18),
+                        points.Count > 0 ? BoundsOf(points) : new RectBounds(0, 0, 0, 0));
+                })
+                .ToList();
+
+            PartialMatchCandidate? best = null;
+            var scannedMoldCount = 0;
+            foreach (var moldCache in moldCaches)
+            {
+                var mold = moldCache.Mold;
+                var moldPoints = moldCache.Points;
+                var rejectReason = GetPartialMatchRejectReason(hole, mold.Feature, moldPoints.Count, isEdgePartial);
+                if (rejectReason is null && isEdgePartial)
+                {
+                    rejectReason = GetEdgePartialPrefilterRejectReason(hole, holeBounds, mold.Feature, moldCache.Bounds);
+                }
+
+                if (rejectReason is not null)
+                {
+                    if (isEdgePartial)
+                    {
+                        AppendEdgePartialDebugLog($"  Mold M{mold.MoldId:D2} skipped: {rejectReason}; MoldType={mold.Feature.HoleType}, Size=({mold.Feature.Width:F3},{mold.Feature.Height:F3}), Area={mold.Feature.Area:F3}, MoldPoints={moldPoints.Count}.");
+                    }
+                    continue;
+                }
+
+                scannedMoldCount++;
+                var candidate = TryPartialBBoxContourMatch(hole, holePoints, holeAnchors, moldCache, isEdgePartial);
+                if (candidate is null)
+                {
+                    if (isEdgePartial)
+                    {
+                        AppendEdgePartialDebugLog($"  Mold M{mold.MoldId:D2} no pass: all anchor pairs failed thresholds Cover>=80%, D<=1.8.");
+                    }
+                    continue;
+                }
+
+                if (isEdgePartial)
+                {
+                    AppendEdgePartialDebugLog($"  Mold M{mold.MoldId:D2} PASS: Anchor={candidate.CornerName}, Score={candidate.Score:F3}, Cover={candidate.Coverage:P1}, D={candidate.TrimmedDistance:F3}, Place=({candidate.Placement.X:F3},{candidate.Placement.Y:F3}).");
+                }
+
+                if (best is null || candidate.Score < best.Score)
+                {
+                    best = candidate;
+                    if (isEdgePartial && candidate.Coverage >= 0.995 && candidate.TrimmedDistance <= 0.05)
+                    {
+                        break;
+                    }
+                }
+            }
+
+            if (isEdgePartial)
+            {
+                AppendEdgePartialDebugLog($"  ScannedMolds={scannedMoldCount}/{molds.Count} after prefilter.");
+            }
+
+            if (isEdgePartial)
+            {
+                AppendEdgePartialDebugLog(best is null
+                    ? $"End {hole.HoleType}: NO MATCH. LogPath={EdgePartialDebugLogPath}"
+                    : $"End {hole.HoleType}: BEST M{best.MoldId:D2}, Anchor={best.CornerName}, Score={best.Score:F3}, Cover={best.Coverage:P1}, D={best.TrimmedDistance:F3}, Place=({best.Placement.X:F3},{best.Placement.Y:F3}). LogPath={EdgePartialDebugLogPath}");
+            }
+
+            return best;
+        }
+
+        private static bool CanAttemptPartialMatch(HoleFeature hole, HoleFeature mold)
+        {
+            var isEdgePartial = hole.HoleType.StartsWith("EdgePartial:", StringComparison.Ordinal);
+            return GetPartialMatchRejectReason(hole, mold, moldPointCount: 8, isEdgePartial) is null;
+        }
+
+        private static string? GetPartialMatchRejectReason(HoleFeature hole, HoleFeature mold, int moldPointCount, bool isEdgePartial)
+        {
+            var minMoldPointCount = isEdgePartial ? 3 : 8;
+            if (moldPointCount < minMoldPointCount)
+            {
+                return $"mold points too few ({moldPointCount}<{minMoldPointCount})";
+            }
+
+            if (!IsShapeFamilyCompatible(hole, mold))
+            {
+                return $"shape family incompatible: hole={hole.HoleType}, mold={mold.HoleType}";
+            }
+
+            const double sizeTolerance = 2.0;
+            if (hole.Width > mold.Width + sizeTolerance || hole.Height > mold.Height + sizeTolerance)
+            {
+                return $"size too large: hole=({hole.Width:F3},{hole.Height:F3}), mold=({mold.Width:F3},{mold.Height:F3}), tol={sizeTolerance:F1}";
+            }
+
+            if (hole.Area > mold.Area * 1.1)
+            {
+                return $"area too large: hole={hole.Area:F3}, moldLimit={mold.Area * 1.1:F3}";
+            }
+
+            return null;
+        }
+
+        private static string? GetEdgePartialPrefilterRejectReason(HoleFeature hole, RectBounds holeBounds, HoleFeature mold, RectBounds moldBounds)
+        {
+            var holeLong = Math.Max(holeBounds.Width, holeBounds.Height);
+            var holeShort = Math.Max(Math.Min(holeBounds.Width, holeBounds.Height), 1e-6);
+            var moldLong = Math.Max(moldBounds.Width, moldBounds.Height);
+            var moldShort = Math.Max(Math.Min(moldBounds.Width, moldBounds.Height), 1e-6);
+            if (holeLong > moldLong + 3.0 || holeShort > moldShort + 3.0)
+            {
+                return $"bbox long/short too large: hole=({holeLong:F3},{holeShort:F3}), mold=({moldLong:F3},{moldShort:F3})";
+            }
+
+            if (hole.Perimeter > mold.Perimeter * 1.35)
+            {
+                return $"perimeter too large: hole={hole.Perimeter:F3}, moldLimit={mold.Perimeter * 1.35:F3}";
+            }
+
+            return null;
+        }
+
+        private static PartialMatchCandidate? TryPartialBBoxContourMatch(
+            HoleFeature hole,
+            IReadOnlyList<(double X, double Y)> holePoints,
+            IReadOnlyList<PartialMatchAnchor> holeAnchors,
+            PartialMoldCache moldCache,
+            bool enableDebugLog)
+        {
+            var mold = moldCache.Mold;
+            var moldPoints = moldCache.Points;
+            var moldAnchors = moldCache.Anchors;
+            if (enableDebugLog)
+            {
+                AppendEdgePartialDebugLog($"  Mold M{mold.MoldId:D2} scan: HoleAnchors={holeAnchors.Count}, MoldAnchors={moldAnchors.Count}, AnchorPairs={holeAnchors.Count * moldAnchors.Count}.");
+            }
+
+            PartialMatchCandidate? best = null;
+            string? bestFailedAnchor = null;
+            var bestFailedCoverage = 0.0;
+            var bestFailedDistance = double.PositiveInfinity;
+            var bestFailedScore = double.PositiveInfinity;
+            foreach (var holeAnchor in holeAnchors)
+            {
+                foreach (var moldAnchor in moldAnchors)
+                {
+                    var placement = (X: holeAnchor.Point.X - moldAnchor.Point.X, Y: holeAnchor.Point.Y - moldAnchor.Point.Y);
+                    var refined = RefinePartialPlacement(holePoints, moldPoints, placement, out var coverage, out var trimmedDistance);
+                    var score = trimmedDistance + (1.0 - coverage) * 5.0;
+                    var anchorName = $"{holeAnchor.Name}->{moldAnchor.Name}";
+                    if (coverage < 0.8 || trimmedDistance > 1.8)
+                    {
+                        if (score < bestFailedScore)
+                        {
+                            bestFailedScore = score;
+                            bestFailedAnchor = anchorName;
+                            bestFailedCoverage = coverage;
+                            bestFailedDistance = trimmedDistance;
+                        }
+                        continue;
+                    }
+
+                    var widthRatio = hole.Width / Math.Max(mold.Feature.Width, 1e-6);
+                    var heightRatio = hole.Height / Math.Max(mold.Feature.Height, 1e-6);
+                    var candidate = new PartialMatchCandidate(mold.MoldId, anchorName, refined, score, coverage, trimmedDistance, widthRatio, heightRatio);
+                    if (best is null || candidate.Score < best.Score)
+                    {
+                        best = candidate;
+                    }
+                }
+            }
+
+            if (enableDebugLog && best is null)
+            {
+                AppendEdgePartialDebugLog(bestFailedAnchor is null
+                    ? $"    Best failed anchor: none evaluated."
+                    : $"    Best failed anchor: {bestFailedAnchor}, Score={bestFailedScore:F3}, Cover={bestFailedCoverage:P1}, D={bestFailedDistance:F3}.");
+            }
+
+            return best;
+        }
+
+        private static (double X, double Y) RefinePartialPlacement(
+            IReadOnlyList<(double X, double Y)> holePoints,
+            IReadOnlyList<(double X, double Y)> moldPoints,
+            (double X, double Y) initialPlacement,
+            out double bestCoverage,
+            out double bestTrimmedDistance)
+        {
+            var bestPlacement = initialPlacement;
+            var bestScore = double.PositiveInfinity;
+            bestCoverage = 0.0;
+            bestTrimmedDistance = double.PositiveInfinity;
+
+            var offsets = new (double X, double Y)[]
+            {
+                (0, 0),
+                (-2, 0), (2, 0), (0, -2), (0, 2),
+                (-2, -2), (-2, 2), (2, -2), (2, 2),
+                (-1, 0), (1, 0), (0, -1), (0, 1)
+            };
+
+            foreach (var offset in offsets)
+            {
+                var placement = (initialPlacement.X + offset.X, initialPlacement.Y + offset.Y);
+                var trimmed = TrimmedDirectedChamfer(holePoints, moldPoints, placement, distanceTolerance: 1.5, trimRatio: 0.8, out var coverage);
+                var score = trimmed + (1.0 - coverage) * 5.0;
+                if (score < bestScore)
+                {
+                    bestScore = score;
+                    bestPlacement = placement;
+                    bestCoverage = coverage;
+                    bestTrimmedDistance = trimmed;
+                }
+            }
+
+            return bestPlacement;
+        }
+
+        private static IReadOnlyList<PartialMatchAnchor> BuildPartialMatchAnchors(IReadOnlyList<(double X, double Y)> points, string prefix, int maxAnchors)
+        {
+            if (points.Count == 0)
+            {
+                return [];
+            }
+
+            var raw = new List<PartialMatchAnchor>();
+            void Add(string name, (double X, double Y) point)
+            {
+                if (raw.Any(a => Math.Abs(a.Point.X - point.X) < 1e-6 && Math.Abs(a.Point.Y - point.Y) < 1e-6))
+                {
+                    return;
+                }
+
+                raw.Add(new PartialMatchAnchor(name, point));
+            }
+
+            Add($"{prefix}起点", points[0]);
+            if (points.Count > 1)
+            {
+                Add($"{prefix}终点", points[^1]);
+            }
+
+            var box = BoundsOf(points);
+            var leftBottom = points.OrderBy(p => p.X + p.Y).First();
+            var leftTop = points.OrderBy(p => p.X - p.Y).First();
+            var rightBottom = points.OrderByDescending(p => p.X - p.Y).First();
+            var rightTop = points.OrderByDescending(p => p.X + p.Y).First();
+            var left = points.OrderBy(p => p.X).ThenBy(p => p.Y).First();
+            var right = points.OrderByDescending(p => p.X).ThenByDescending(p => p.Y).First();
+            var bottom = points.OrderBy(p => p.Y).ThenBy(p => p.X).First();
+            var top = points.OrderByDescending(p => p.Y).ThenByDescending(p => p.X).First();
+            var center = ((box.MinX + box.MaxX) * 0.5, (box.MinY + box.MaxY) * 0.5);
+
+            Add($"{prefix}左下", leftBottom);
+            Add($"{prefix}左上", leftTop);
+            Add($"{prefix}右下", rightBottom);
+            Add($"{prefix}右上", rightTop);
+            Add($"{prefix}最左", left);
+            Add($"{prefix}最右", right);
+            Add($"{prefix}最下", bottom);
+            Add($"{prefix}最上", top);
+            Add($"{prefix}中心", center);
+
+            var diagonal = Math.Sqrt(box.Width * box.Width + box.Height * box.Height);
+            var minSegmentLength = Math.Max(diagonal * 0.003, 0.2);
+            var minTurnSin = Math.Sin(Math.PI / 180.0 * 12.0);
+            for (var i = 1; i < points.Count - 1; i++)
+            {
+                var prev = points[i - 1];
+                var current = points[i];
+                var next = points[i + 1];
+                var vx1 = current.X - prev.X;
+                var vy1 = current.Y - prev.Y;
+                var vx2 = next.X - current.X;
+                var vy2 = next.Y - current.Y;
+                var len1 = Math.Sqrt(vx1 * vx1 + vy1 * vy1);
+                var len2 = Math.Sqrt(vx2 * vx2 + vy2 * vy2);
+                if (len1 < minSegmentLength || len2 < minSegmentLength)
+                {
+                    continue;
+                }
+
+                var turnSin = Math.Abs(vx1 * vy2 - vy1 * vx2) / Math.Max(len1 * len2, 1e-9);
+                if (turnSin >= minTurnSin)
+                {
+                    Add($"{prefix}拐角{i}", current);
+                }
+            }
+
+            if (raw.Count <= maxAnchors)
+            {
+                return raw;
+            }
+
+            var prioritized = raw
+                .OrderBy(a =>
+                {
+                    var p = a.Point;
+                    var dx = Math.Min(p.X - box.MinX, box.MaxX - p.X);
+                    var dy = Math.Min(p.Y - box.MinY, box.MaxY - p.Y);
+                    var edgeScore = Math.Min(dx, dy);
+                    return edgeScore;
+                })
+                .ThenBy(a => a.Name)
+                .Take(maxAnchors)
+                .ToList();
+
+            return prioritized;
+        }
+
+        private static double TrimmedDirectedChamfer(
+            IReadOnlyList<(double X, double Y)> sourcePoints,
+            IReadOnlyList<(double X, double Y)> targetPoints,
+            (double X, double Y) targetPlacement,
+            double distanceTolerance,
+            double trimRatio,
+            out double coverage)
+        {
+            var distances = new double[sourcePoints.Count];
+            var covered = 0;
+            var targetClosed = IsClosedPointChain(targetPoints);
+            var segmentCount = targetClosed ? targetPoints.Count : Math.Max(targetPoints.Count - 1, 0);
+            for (var i = 0; i < sourcePoints.Count; i++)
+            {
+                var hp = sourcePoints[i];
+                var best = double.PositiveInfinity;
+                for (var j = 0; j < segmentCount; j++)
+                {
+                    var a = targetPoints[j];
+                    var b = targetPoints[(j + 1) % targetPoints.Count];
+                    var shiftedA = (X: a.X + targetPlacement.X, Y: a.Y + targetPlacement.Y);
+                    var shiftedB = (X: b.X + targetPlacement.X, Y: b.Y + targetPlacement.Y);
+                    var dist = PointToSegmentDistance(hp, shiftedA, shiftedB);
+                    if (dist < best)
+                    {
+                        best = dist;
+                    }
+                }
+
+                distances[i] = best;
+                if (best <= distanceTolerance)
+                {
+                    covered++;
+                }
+            }
+
+            coverage = sourcePoints.Count == 0 ? 0.0 : (double)covered / sourcePoints.Count;
+            Array.Sort(distances);
+            var keep = Compat.Clamp((int)Math.Round(distances.Length * trimRatio), 1, distances.Length);
+            var sum = 0.0;
+            for (var i = 0; i < keep; i++)
+            {
+                sum += distances[i];
+            }
+            return sum / keep;
+        }
+
+        private static bool IsClosedPointChain(IReadOnlyList<(double X, double Y)> points)
+        {
+            if (points.Count < 3)
+            {
+                return false;
+            }
+
+            var first = points[0];
+            var last = points[^1];
+            var closeDistance = Math.Sqrt((first.X - last.X) * (first.X - last.X) + (first.Y - last.Y) * (first.Y - last.Y));
+            if (closeDistance <= 1e-6)
+            {
+                return true;
+            }
+
+            var box = BoundsOf(points);
+            var diagonal = Math.Sqrt(box.Width * box.Width + box.Height * box.Height);
+            return closeDistance <= Math.Max(diagonal * 0.001, 0.1);
+        }
+
+        private static double PointToSegmentDistance((double X, double Y) p, (double X, double Y) a, (double X, double Y) b)
+        {
+            var vx = b.X - a.X;
+            var vy = b.Y - a.Y;
+            var wx = p.X - a.X;
+            var wy = p.Y - a.Y;
+            var len2 = vx * vx + vy * vy;
+            if (len2 <= 1e-12)
+            {
+                var dx = p.X - a.X;
+                var dy = p.Y - a.Y;
+                return Math.Sqrt(dx * dx + dy * dy);
+            }
+
+            var t = Compat.Clamp((wx * vx + wy * vy) / len2, 0.0, 1.0);
+            var projX = a.X + t * vx;
+            var projY = a.Y + t * vy;
+            var pdx = p.X - projX;
+            var pdy = p.Y - projY;
+            return Math.Sqrt(pdx * pdx + pdy * pdy);
+        }
+
+        private static IReadOnlyList<(double X, double Y)> NormalizeFeaturePoints(HoleFeature feature)
+        {
+            if (feature.Points is { Count: >= 2 })
+            {
+                return feature.Points;
+            }
+
+            if (IsCircleLike(feature))
+            {
+                var radius = Math.Max(Math.Min(feature.Width, feature.Height) * 0.5, 0.5);
+                var points = new List<(double X, double Y)>(36);
+                for (var i = 0; i < 36; i++)
+                {
+                    var angle = 2.0 * Math.PI * i / 36.0;
+                    points.Add((feature.Centroid.X + radius * Math.Cos(angle), feature.Centroid.Y + radius * Math.Sin(angle)));
+                }
+                return points;
+            }
+
+            return BBoxPoints(feature.Centroid, feature.Width, feature.Height);
+        }
+
+        private static IReadOnlyList<(double X, double Y)> NormalizeMoldPoints(MoldProfile mold)
+        {
+            if (mold.OutlinePoints is { Count: >= 2 })
+            {
+                return mold.OutlinePoints;
+            }
+
+            return NormalizeFeaturePoints(mold.Feature);
+        }
+
+        private static IReadOnlyList<(double X, double Y)> BBoxPoints((double X, double Y) center, double width, double height)
+        {
+            var minX = center.X - width * 0.5;
+            var maxX = center.X + width * 0.5;
+            var minY = center.Y - height * 0.5;
+            var maxY = center.Y + height * 0.5;
+            return [(minX, minY), (minX, maxY), (maxX, maxY), (maxX, minY)];
+        }
+
+        private static RectBounds BoundsOf(IReadOnlyList<(double X, double Y)> points)
+        {
+            return new RectBounds(points.Min(p => p.X), points.Min(p => p.Y), points.Max(p => p.X), points.Max(p => p.Y));
+        }
+
         private static bool IsSameShapeType(HoleFeature hole, HoleFeature mold)
         {
             var hCircle = IsCircleLike(hole);
@@ -6354,10 +7653,12 @@ namespace CADRecognition
 
             var hPoly = hole.HoleType.ContainsIgnoreCase("Polyline") ||
                         hole.HoleType.ContainsIgnoreCase("EntityComposite") ||
-                        hole.HoleType.ContainsIgnoreCase("MixedArcLine");
+                        hole.HoleType.ContainsIgnoreCase("MixedArcLine") ||
+                        hole.HoleType.ContainsIgnoreCase("EdgePartial");
             var mPoly = mold.HoleType.ContainsIgnoreCase("Polyline") ||
                         mold.HoleType.ContainsIgnoreCase("EntityComposite") ||
-                        mold.HoleType.ContainsIgnoreCase("MixedArcLine");
+                        mold.HoleType.ContainsIgnoreCase("MixedArcLine") ||
+                        mold.HoleType.ContainsIgnoreCase("EdgePartial");
             if (hPoly || mPoly)
             {
                 return hPoly == mPoly;
@@ -6378,10 +7679,12 @@ namespace CADRecognition
 
             var hPolyFamily = hole.HoleType.ContainsIgnoreCase("Polyline")
                               || hole.HoleType.ContainsIgnoreCase("EntityComposite")
-                              || hole.HoleType.ContainsIgnoreCase("MixedArcLine");
+                              || hole.HoleType.ContainsIgnoreCase("MixedArcLine")
+                              || hole.HoleType.ContainsIgnoreCase("EdgePartial");
             var mPolyFamily = mold.HoleType.ContainsIgnoreCase("Polyline")
                               || mold.HoleType.ContainsIgnoreCase("EntityComposite")
-                              || mold.HoleType.ContainsIgnoreCase("MixedArcLine");
+                              || mold.HoleType.ContainsIgnoreCase("MixedArcLine")
+                              || mold.HoleType.ContainsIgnoreCase("EdgePartial");
             if (hPolyFamily || mPolyFamily)
             {
                 return hPolyFamily && mPolyFamily;

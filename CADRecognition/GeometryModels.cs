@@ -34,7 +34,7 @@ namespace CADRecognition
         double RotationDeg = 0,
         bool IsMirrored = false);
 
-    public sealed record HoleFeature(string HoleType, (double X, double Y) Centroid, double Width, double Height, double Area, double Perimeter, double Rotation, double[] Signature);
+    public sealed record HoleFeature(string HoleType, (double X, double Y) Centroid, double Width, double Height, double Area, double Perimeter, double Rotation, double[] Signature, IReadOnlyList<(double X, double Y)>? Points = null);
 
     public sealed record EdgeCandidate(
         string Side,
