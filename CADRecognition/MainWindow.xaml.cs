@@ -745,8 +745,8 @@ namespace CADRecognition
 
             // 初始化日志系统
             AppLogger.Instance.CleanOldLogs();
-            AppLogger.Instance.LogOperation("软件启动", "CADRecognition 应用程序已启动");
-            AppLogger.Instance.Info("旧日志文件清理完成");
+            AppLogger.Instance.LogOperation("软件启动", $"CADRecognition 应用程序已启动 [版本 {AppVersion.FullVersion}]");
+            AppLogger.Instance.Info($"旧日志文件清理完成 [当前版本 {AppVersion.FullVersion}]");
         }
 
         private async void MainWindow_Loaded(object sender, RoutedEventArgs e)
@@ -1585,6 +1585,12 @@ namespace CADRecognition
                 AppLogger.Instance.Info($"从 PLC 读取文件名: {fileName}");
 
                 var matchedFile = FindFileInFolderByName(_projectFolder!, fileName);
+                if (string.IsNullOrWhiteSpace(fileName))
+                {
+                    AppLogger.Instance.Debug($"D600 文件名称为空，等待 PLC 写入文件名，本次跳过。");
+                    return;
+                }
+
                 if (matchedFile is null)
                 {
                     _d623Value = 2;
@@ -1792,6 +1798,12 @@ namespace CADRecognition
                         var fileName = await ReadD600FileNameAsync(plcHost, plcPort, station, d600Address, token).ConfigureAwait(true);
                         int zeroIndex = fileName.IndexOf('\0');
                         fileName = zeroIndex > 0 ? fileName.Substring(0, zeroIndex) : fileName;
+                        if (string.IsNullOrWhiteSpace(fileName))
+                        {
+                            AppLogger.Instance.Debug($"PLC 尚未写入文件名，本次跳过，等待下一次任务。");
+                            return;
+                        }
+
                         AppLogger.Instance.Info($"从 PLC 读取文件名: {fileName}");
                         SetStatus($"正在按 {d600Address} 文件名查找图纸文件：{fileName}");
 
@@ -1806,6 +1818,17 @@ namespace CADRecognition
                             continue;
                         }
 
+                        AppLogger.Instance.Info($"读取识图界限: D620 地址={d620Address}");
+                        SetStatus($"正在读取 {d620Address} 识图界限...");
+
+                        var splitBoundary = await ReadPlcBoundaryAsync(plcHost, plcPort, station, d620Address, token).ConfigureAwait(true);
+                        _boardWidth = splitBoundary;
+                        AppLogger.Instance.Info($"识图界限读取成功: {_boardWidth}");
+                        if (BoardWidthTextBox is not null)
+                        {
+                            RunOnUiThread(() => BoardWidthTextBox.Text = splitBoundary.ToString("0.###", CultureInfo.InvariantCulture));
+                        }
+
                         AppLogger.Instance.Info($"加载图纸文件: {System.IO.Path.GetFileName(matchedFile)}");
                         SetStatus($"正在读取图纸文件：{System.IO.Path.GetFileName(matchedFile)}");
                         _projectFile = matchedFile;
@@ -1818,17 +1841,6 @@ namespace CADRecognition
                             ProjectFileText.Text = System.IO.Path.GetFileName(matchedFile);
                             RenderPreview(_projectDoc, _projectFile, withAnnotation: false);
                         });
-
-                        AppLogger.Instance.Info($"读取识图界限: D620 地址={d620Address}");
-                        SetStatus($"图纸文件读取完成，正在读取 {d620Address} 识图界限...");
-
-                        var splitBoundary = await ReadPlcBoundaryAsync(plcHost, plcPort, station, d620Address, token).ConfigureAwait(true);
-                        _boardWidth = splitBoundary;
-                        AppLogger.Instance.Info($"识图界限读取成功: {_boardWidth}");
-                        if (BoardWidthTextBox is not null)
-                        {
-                            RunOnUiThread(() => BoardWidthTextBox.Text = splitBoundary.ToString("0.###", CultureInfo.InvariantCulture));
-                        }
 
                         _d624Value = 1;
                         RefreshPlcRegisters();
@@ -2089,18 +2101,22 @@ namespace CADRecognition
                 var plcAddress = NormalizePlcAddress(address);
                 var wordValue = value < short.MinValue ? short.MinValue : value > short.MaxValue ? short.MaxValue : (short)value;
 
-                // 使用短超时快速检测 PLC 是否可用
                 using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(token);
                 timeoutCts.CancelAfter(500);
 
-                await _plcIoLock.WaitAsync(timeoutCts.Token).ConfigureAwait(false);
+                bool lockAcquired = false;
                 try
                 {
+                    await _plcIoLock.WaitAsync(timeoutCts.Token).ConfigureAwait(false);
+                    lockAcquired = true;
                     await client.WriteAsync(plcAddress, new[] { wordValue }).ConfigureAwait(false);
                 }
                 finally
                 {
-                    _plcIoLock.Release();
+                    if (lockAcquired)
+                    {
+                        _plcIoLock.Release();
+                    }
                 }
             }
             catch
@@ -2119,62 +2135,36 @@ namespace CADRecognition
                 try
                 {
                     await _plcIoLock.WaitAsync(ct).ConfigureAwait(true);
-                    var result = await client.ReadStringAsync(plcAddress, 20, Encoding.UTF8).ConfigureAwait(true);
-                    if (!result.IsSuccess)
+
+                    var raw = await client.ReadAsync(plcAddress, 20).ConfigureAwait(true);
+                    if (!raw.IsSuccess)
                     {
-                        try
-                        {
-                            result = await client.ReadStringAsync(address, 20, Encoding.UTF8).ConfigureAwait(true);
-                        }
-                        catch (Exception fallbackEx) when (fallbackEx is not OperationCanceledException)
-                        {
-                            throw new InvalidOperationException($"读取 D600 字符串失败：{fallbackEx.Message}", fallbackEx);
-                        }
+                        raw = await client.ReadAsync(address, 20).ConfigureAwait(true);
                     }
 
-                    if (!result.IsSuccess)
+                    if (!raw.IsSuccess)
                     {
-                        throw new InvalidOperationException(result.Message);
+                        throw new InvalidOperationException(raw.Message);
                     }
 
-                    var text = result.Content?.Trim('\0', ' ', '\r', '\n') ?? string.Empty;
-                    if (string.IsNullOrWhiteSpace(text))
+                    var bytes = new byte[raw.Content.Length];
+                    Buffer.BlockCopy(raw.Content, 0, bytes, 0, bytes.Length);
+                    SwapRegisterBytes(bytes);
+
+                    var text = Encoding.UTF8.GetString(bytes).Trim('\0', ' ', '\r', '\n');
+                    if (!string.IsNullOrWhiteSpace(text))
                     {
-                        try
-                        {
-                            var raw = await client.ReadInt16Async(plcAddress, 10).ConfigureAwait(true);
-                            if (raw.IsSuccess && raw.Content is short[] words && words.Length > 0)
-                            {
-                                var bytes = new byte[words.Length * 2];
-                                for (var i = 0; i < words.Length; i++)
-                                {
-                                    var word = (ushort)words[i];
-                                    bytes[i * 2] = (byte)(word >> 8);
-                                    bytes[i * 2 + 1] = (byte)(word & 0xFF);
-                                }
-
-                                text = Encoding.UTF8.GetString(bytes).Trim('\0', ' ', '\r', '\n');
-                                if (!string.IsNullOrWhiteSpace(text))
-                                {
-                                    UpdatePlcStringValue(600, text);
-                                    return text;
-                                }
-                            }
-                        }
-                        catch
-                        {
-                        }
-
-                        return _d600Value;
+                        UpdatePlcStringValue(600, text);
+                        return text;
                     }
 
-                    UpdatePlcStringValue(600, text);
-                    return text;
+                    return _d600Value;
                 }
                 catch (FormatException ex)
                 {
+                    AppLogger.Instance.Warn($"D600 字符串解析失败，视为空文件名: {ex.Message}");
                     UpdatePlcStringValue(600, string.Empty);
-                    throw new InvalidOperationException($"读取 D600 字符串失败，地址 {address} 的格式不正确。", ex);
+                    return string.Empty;
                 }
                 finally
                 {
@@ -2183,14 +2173,31 @@ namespace CADRecognition
             }, timeoutMs: 5000, token: token).ConfigureAwait(true);
         }
 
+        private static void SwapRegisterBytes(byte[] data)
+        {
+            if (data.Length < 2)
+            {
+                return;
+            }
+
+            for (var i = 0; i < data.Length; i += 2)
+            {
+                var high = data[i];
+                data[i] = data[i + 1];
+                data[i + 1] = high;
+            }
+        }
+
         private async Task<T> WithModbusTimeoutAsync<T>(string operation, string address, Func<CancellationToken, Task<T>> action, int timeoutMs = 5000, CancellationToken token = default, bool silent = false)
         {
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(token);
             timeoutCts.CancelAfter(timeoutMs);
 
+            bool lockAcquired = false;
             try
             {
                 var result = await action(timeoutCts.Token).ConfigureAwait(true);
+                lockAcquired = true;
                 return result;
             }
             catch (OperationCanceledException) when (!token.IsCancellationRequested)
@@ -2205,23 +2212,26 @@ namespace CADRecognition
                 MarkPlcDisconnected();
                 throw new TimeoutException($"PLC连接失败：{ex.Message}", ex);
             }
-            catch (Exception ex) when (ex.Message.Contains("timeout", StringComparison.OrdinalIgnoreCase)
-                                      || ex.Message.Contains("连接", StringComparison.OrdinalIgnoreCase)
-                                      || ex.Message.Contains("connect", StringComparison.OrdinalIgnoreCase)
-                                      || ex.Message.Contains("无法连接", StringComparison.OrdinalIgnoreCase))
-            {
-                AppLogger.Instance.LogModbus("断链", $"{operation}@{address}", error: ex.Message);
-                MarkPlcDisconnected();
-                throw new TimeoutException($"PLC连接失败：{ex.Message}", ex);
-            }
-            catch (Exception ex) when (ex is InvalidOperationException && (ex.Message.Contains("连接", StringComparison.OrdinalIgnoreCase)
-                                                              || ex.Message.Contains("关闭", StringComparison.OrdinalIgnoreCase)
-                                                              || ex.Message.Contains("强迫", StringComparison.OrdinalIgnoreCase)
-                                                              || ex.Message.Contains("远程", StringComparison.OrdinalIgnoreCase)))
+            catch (Exception ex) when (ex.Message.Contains("输入字符串的格式不正确", StringComparison.OrdinalIgnoreCase)
+                                      || ex.Message.Contains("已关闭 Safe handle", StringComparison.OrdinalIgnoreCase)
+                                      || ex.Message.Contains("将指定的计数添加到该信号量中会导致其超过最大计数", StringComparison.OrdinalIgnoreCase)
+                                      || ex.Message.Contains("Safe handle", StringComparison.OrdinalIgnoreCase))
             {
                 AppLogger.Instance.LogModbus("断链", $"{operation}@{address}", error: ex.Message);
                 MarkPlcDisconnected();
                 throw new TimeoutException($"PLC连接已断开：{ex.Message}", ex);
+            }
+            catch (Exception ex) when (ex.Message.Contains("timeout", StringComparison.OrdinalIgnoreCase)
+                                      || ex.Message.Contains("连接", StringComparison.OrdinalIgnoreCase)
+                                      || ex.Message.Contains("connect", StringComparison.OrdinalIgnoreCase)
+                                      || ex.Message.Contains("无法连接", StringComparison.OrdinalIgnoreCase)
+                                      || ex.Message.Contains("积极拒绝", StringComparison.OrdinalIgnoreCase)
+                                      || ex.Message.Contains("拒绝连接", StringComparison.OrdinalIgnoreCase)
+                                      || ex.Message.Contains("No connection could be made", StringComparison.OrdinalIgnoreCase))
+            {
+                AppLogger.Instance.LogModbus("断链", $"{operation}@{address}", error: ex.Message);
+                MarkPlcDisconnected();
+                throw new TimeoutException($"PLC连接失败：{ex.Message}", ex);
             }
             catch (Exception ex)
             {
@@ -2255,6 +2265,50 @@ namespace CADRecognition
 
         private async Task<double> ReadPlcBoundaryAsync(string host, int port, byte station, string address, CancellationToken token)
         {
+            return await ReadPlcBoundaryWithRetryAsync(host, port, station, address, retryCount: 2, timeoutMs: 10000, token).ConfigureAwait(true);
+        }
+
+        private async Task<double> ReadPlcBoundaryWithRetryAsync(string host, int port, byte station, string address, int retryCount, int timeoutMs, CancellationToken token)
+        {
+            if (retryCount < 1)
+            {
+                throw new ArgumentOutOfRangeException(nameof(retryCount));
+            }
+
+            for (var attempt = 1; ; attempt++)
+            {
+                try
+                {
+                    AppLogger.Instance.Debug($"读取识图界限: {address}，第 {attempt}/{retryCount} 次");
+                    return await ReadPlcBoundaryCoreAsync(host, port, station, address, timeoutMs, token).ConfigureAwait(true);
+                }
+                catch (TimeoutException ex)
+                {
+                    AppLogger.Instance.Warn($"读取识图界限超时: {address}，第 {attempt}/{retryCount} 次，{ex.Message}");
+                    if (attempt >= retryCount)
+                    {
+                        AppLogger.Instance.Error($"读取识图界限失败: {address}，已达到最大重试次数");
+                        throw;
+                    }
+
+                    try
+                    {
+                        await Task.Delay(TimeSpan.FromMilliseconds(200), token).ConfigureAwait(true);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        throw;
+                    }
+                    catch
+                    {
+                        // 忽略暂停期间的异常，继续重试
+                    }
+                }
+            }
+        }
+
+        private async Task<double> ReadPlcBoundaryCoreAsync(string host, int port, byte station, string address, int timeoutMs, CancellationToken token)
+        {
             return await WithModbusTimeoutAsync("ReadFloat[D620]", address, async ct =>
             {
                 token.ThrowIfCancellationRequested();
@@ -2275,7 +2329,7 @@ namespace CADRecognition
                 {
                     _plcIoLock.Release();
                 }
-            }, timeoutMs: 5000, token: token).ConfigureAwait(true);
+            }, timeoutMs: timeoutMs, token: token).ConfigureAwait(true);
         }
 
         private async Task<int> WaitForRegisterChangeAsync(string host, int port, byte station, string address, int initialValue, int logicalRegister, CancellationToken token)

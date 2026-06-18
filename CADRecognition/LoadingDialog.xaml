@@ -1,0 +1,60 @@
+<Window x:Class="CADRecognition.LoadingDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="正在识别"
+        Width="320"
+        Height="140"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="NoResize"
+        ShowInTaskbar="False"
+        Background="#F3F0E8">
+    <Window.Resources>
+        <Style TargetType="TextBlock">
+            <Setter Property="FontFamily" Value="SimSun"/>
+            <Setter Property="Foreground" Value="#111111"/>
+        </Style>
+    </Window.Resources>
+
+    <Grid Margin="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <StackPanel Grid.Row="0" Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Center">
+            <TextBlock x:Name="LoadingText"
+                       Text="正在识别..."
+                       FontSize="16"
+                       FontWeight="Bold"
+                       VerticalAlignment="Center"
+                       Margin="0,0,12,0"/>
+            <Ellipse Width="20" Height="20"
+                     Stroke="#FF8C00"
+                     StrokeThickness="3"
+                     VerticalAlignment="Center">
+                <Ellipse.Triggers>
+                    <EventTrigger RoutedEvent="Loaded">
+                        <BeginStoryboard>
+                            <Storyboard RepeatBehavior="Forever">
+                                <DoubleAnimation
+                                    Storyboard.TargetProperty="Opacity"
+                                    From="1" To="0.2"
+                                    Duration="0:0:0.5"
+                                    AutoReverse="True"/>
+                            </Storyboard>
+                        </BeginStoryboard>
+                    </EventTrigger>
+                </Ellipse.Triggers>
+            </Ellipse>
+        </StackPanel>
+
+        <TextBlock Grid.Row="1"
+                   x:Name="DetailText"
+                   Text=""
+                   FontSize="12"
+                   Foreground="#666666"
+                   VerticalAlignment="Bottom"
+                   HorizontalAlignment="Center"
+                   Margin="0,12,0,0"/>
+    </Grid>
+</Window>
