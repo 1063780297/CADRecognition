@@ -1280,6 +1280,40 @@ namespace CADRecognition
         {
             try
             {
+                var ext = System.IO.Path.GetExtension(path);
+                if (string.Equals(ext, ".dwg", StringComparison.OrdinalIgnoreCase))
+                {
+                    // DWG 文件加载需要 CADEditorControl，该控件必须在 UI 线程上创建和使用
+                    // 从自动化后台线程调用时必须通过 Dispatcher 切换到 UI 线程
+                    if (Dispatcher.CheckAccess())
+                    {
+                        return CadDocumentLoader.Load(path);
+                    }
+
+                    DxfDocument? doc = null;
+                    Exception? loadEx = null;
+                    Dispatcher.Invoke(() =>
+                    {
+                        try
+                        {
+                            doc = CadDocumentLoader.Load(path);
+                        }
+                        catch (Exception ex)
+                        {
+                            loadEx = ex;
+                        }
+                    });
+                    if (loadEx is not null)
+                    {
+                        throw loadEx;
+                    }
+                    if (doc is null)
+                    {
+                        throw new InvalidOperationException("DWG 文件加载返回了空文档。");
+                    }
+                    return doc;
+                }
+
                 return CadDocumentLoader.Load(path);
             }
             catch (Exception ex)
@@ -1960,8 +1994,8 @@ namespace CADRecognition
                         Dispatcher.Invoke(() => loadingDialog?.SetMessage("正在匹配模具..."));
 
                         var splitY = project.OuterRectangle.MinY + boardWidthValue;
-                        var stage1Project = new ProjectProfile(project.OuterRectangle, project.Holes.Where(h => h.Centroid.Y < splitY).ToList(), project.CornerCandidates, project.EdgeCandidates, project.CornerStepPaths, project.ContourPaths, project.Stage1ContourPaths, []);
-                        var stage2Project = new ProjectProfile(project.OuterRectangle, project.Holes.Where(h => h.Centroid.Y >= splitY).ToList(), project.CornerCandidates, project.EdgeCandidates, project.CornerStepPaths, project.ContourPaths, [], project.Stage2ContourPaths);
+                        var stage1Project = new ProjectProfile(project.OuterRectangle, project.Holes.Where(h => h.Centroid.Y < splitY).ToList(), project.CornerCandidates, project.EdgeCandidates.Where(e => e.Centroid.Y < splitY).ToList(), project.CornerStepPaths, project.ContourPaths, project.Stage1ContourPaths, []);
+                        var stage2Project = new ProjectProfile(project.OuterRectangle, project.Holes.Where(h => h.Centroid.Y >= splitY).ToList(), project.CornerCandidates, project.EdgeCandidates.Where(e => e.Centroid.Y >= splitY).ToList(), project.CornerStepPaths, project.ContourPaths, [], project.Stage2ContourPaths);
                         var stage1Files = selectedStage1File is null ? _stage1MoldFiles.ToList() : _stage1MoldFiles.Where(f => string.Equals(f, selectedStage1File, StringComparison.OrdinalIgnoreCase)).Concat(_stage1MoldFiles.Where(f => !string.Equals(f, selectedStage1File, StringComparison.OrdinalIgnoreCase))).ToList();
                         var stage2Files = selectedStage2File is null ? _stage2MoldFiles.ToList() : _stage2MoldFiles.Where(f => string.Equals(f, selectedStage2File, StringComparison.OrdinalIgnoreCase)).Concat(_stage2MoldFiles.Where(f => !string.Equals(f, selectedStage2File, StringComparison.OrdinalIgnoreCase))).ToList();
                         var stage1Molds = stage1Files.Select((f, idx) => { TryGetDocumentFromCache(f, out var doc); return DxfAnalyzer.ExtractMold(1 + idx, f, doc); }).ToList();
@@ -2147,11 +2181,7 @@ namespace CADRecognition
                         throw new InvalidOperationException(raw.Message);
                     }
 
-                    var bytes = new byte[raw.Content.Length];
-                    Buffer.BlockCopy(raw.Content, 0, bytes, 0, bytes.Length);
-                    SwapRegisterBytes(bytes);
-
-                    var text = Encoding.UTF8.GetString(bytes).Trim('\0', ' ', '\r', '\n');
+                    var text = DecodePlcString(raw.Content);
                     if (!string.IsNullOrWhiteSpace(text))
                     {
                         UpdatePlcStringValue(600, text);
@@ -2171,6 +2201,77 @@ namespace CADRecognition
                     _plcIoLock.Release();
                 }
             }, timeoutMs: 5000, token: token).ConfigureAwait(true);
+        }
+
+        private static string DecodePlcString(byte[] registerBytes)
+        {
+            if (registerBytes is not { Length: > 0 })
+            {
+                return string.Empty;
+            }
+
+            var raw = new byte[registerBytes.Length];
+            Buffer.BlockCopy(registerBytes, 0, raw, 0, raw.Length);
+
+            var swapped = new byte[registerBytes.Length];
+            Buffer.BlockCopy(registerBytes, 0, swapped, 0, swapped.Length);
+            SwapRegisterBytes(swapped);
+
+            if (TryDecode(swapped, Encoding.UTF8, out var swappedUtf8Text))
+            {
+                return swappedUtf8Text;
+            }
+
+            if (TryDecode(raw, Encoding.UTF8, out var utf8Text))
+            {
+                return utf8Text;
+            }
+
+            if (TryDecode(swapped, Encoding.GetEncoding("gb2312"), out var swappedGb2312Text))
+            {
+                return swappedGb2312Text;
+            }
+
+            if (TryDecode(raw, Encoding.GetEncoding("gb2312"), out var gb2312Text))
+            {
+                return gb2312Text;
+            }
+
+            if (TryDecode(swapped, Encoding.GetEncoding("gbk"), out var swappedGbkText))
+            {
+                return swappedGbkText;
+            }
+
+            if (TryDecode(raw, Encoding.GetEncoding("gbk"), out var gbkText))
+            {
+                return gbkText;
+            }
+
+            if (TryDecode(swapped, Encoding.ASCII, out var swappedAsciiText))
+            {
+                return swappedAsciiText;
+            }
+
+            if (TryDecode(raw, Encoding.ASCII, out var asciiText))
+            {
+                return asciiText;
+            }
+
+            return string.Empty;
+        }
+
+        private static bool TryDecode(byte[] bytes, Encoding encoding, out string text)
+        {
+            try
+            {
+                text = encoding.GetString(bytes).Trim('\0', ' ', '\r', '\n');
+                return !string.IsNullOrWhiteSpace(text) && text.IndexOf('\uFFFD') < 0;
+            }
+            catch
+            {
+                text = null;
+                return false;
+            }
         }
 
         private static void SwapRegisterBytes(byte[] data)
@@ -3152,24 +3253,6 @@ namespace CADRecognition
                     : new SolidColorBrush(WpfColor.FromArgb(40, 255, 152, 0));
                 var center = ModelToCanvas(edge.Centroid.X, edge.Centroid.Y);
 
-                if (edge.Points.Count >= 2)
-                {
-                    var poly = new Polyline
-                    {
-                        Stroke = stroke,
-                        StrokeThickness = 1.0,
-                        StrokeLineJoin = PenLineJoin.Round,
-                        StrokeStartLineCap = PenLineCap.Round,
-                        StrokeEndLineCap = PenLineCap.Round,
-                        StrokeDashArray = new DoubleCollection([4, 2])
-                    };
-                    foreach (var point in edge.Points)
-                    {
-                        poly.Points.Add(ModelToCanvas(point.X, point.Y));
-                    }
-                    _zoneCanvas.Children.Add(poly);
-                }
-
                 var w = Math.Max(edge.Width * _drawScale, 8.0);
                 var h = Math.Max(edge.Height * _drawScale, 8.0);
                 var marker = new WpfRectangle
@@ -3279,7 +3362,7 @@ namespace CADRecognition
                     _markCanvas.Children.Add(mark);
                 }
 
-                var shouldShowLabel = !_compactMode && ass.MoldId > 0 && !ass.Hole.HoleType.StartsWith("Contour", StringComparison.Ordinal) && !ass.Hole.HoleType.StartsWith("EdgePartial:", StringComparison.Ordinal) && !ass.Hole.HoleType.StartsWith("EdgeNotch:", StringComparison.Ordinal);
+                var shouldShowLabel = !_compactMode && ass.MoldId > 0 && !ass.Hole.HoleType.StartsWith("Contour", StringComparison.Ordinal) && !ass.Hole.HoleType.StartsWith("EdgeNotch:", StringComparison.Ordinal);
 
                 if (shouldShowLabel)
                 {
