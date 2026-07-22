@@ -713,6 +713,7 @@ namespace CADRecognition
         private CancellationTokenSource? _heartbeatCts;
         private Task? _heartbeatTask;
         private Task? _automationLoopTask;
+        private bool _automationStartupRequested;
         private readonly string _projectFolderSettingsPath = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "CADRecognition", "project-folder.txt");
 
         private PlcMonitorWindow? _plcMonitorWindow;
@@ -854,16 +855,20 @@ namespace CADRecognition
 
             if (stageId == 1)
             {
-                Stage1MoldComboBox.ItemsSource = _stage1MoldFiles.Select(System.IO.Path.GetFileName).ToList();
+                var items1 = new List<string> { "(无)" };
+                items1.AddRange(_stage1MoldFiles.Select(System.IO.Path.GetFileName));
+                Stage1MoldComboBox.ItemsSource = items1;
                 _selectedStage1File = _stage1MoldFiles.FirstOrDefault();
-                Stage1MoldComboBox.SelectedIndex = _selectedStage1File is null ? -1 : 0;
+                Stage1MoldComboBox.SelectedIndex = _selectedStage1File is null ? 0 : 1;
                 RefreshMoldPreviewList(1);
             }
             else
             {
-                Stage2MoldComboBox.ItemsSource = _stage2MoldFiles.Select(System.IO.Path.GetFileName).ToList();
+                var items2 = new List<string> { "(无)" };
+                items2.AddRange(_stage2MoldFiles.Select(System.IO.Path.GetFileName));
+                Stage2MoldComboBox.ItemsSource = items2;
                 _selectedStage2File = _stage2MoldFiles.FirstOrDefault();
-                Stage2MoldComboBox.SelectedIndex = _selectedStage2File is null ? -1 : 0;
+                Stage2MoldComboBox.SelectedIndex = _selectedStage2File is null ? 0 : 1;
                 RefreshMoldPreviewList(2);
             }
 
@@ -933,16 +938,20 @@ namespace CADRecognition
 
             if (stageId == 1)
             {
-                Stage1MoldComboBox.ItemsSource = _stage1MoldFiles.Select(System.IO.Path.GetFileName).ToList();
+                var items1 = new List<string> { "(无)" };
+                items1.AddRange(_stage1MoldFiles.Select(System.IO.Path.GetFileName));
+                Stage1MoldComboBox.ItemsSource = items1;
                 _selectedStage1File = _stage1MoldFiles.FirstOrDefault();
-                Stage1MoldComboBox.SelectedIndex = _selectedStage1File is null ? -1 : 0;
+                Stage1MoldComboBox.SelectedIndex = _selectedStage1File is null ? 0 : 1;
                 RefreshMoldPreviewList(1);
             }
             else
             {
-                Stage2MoldComboBox.ItemsSource = _stage2MoldFiles.Select(System.IO.Path.GetFileName).ToList();
+                var items2 = new List<string> { "(无)" };
+                items2.AddRange(_stage2MoldFiles.Select(System.IO.Path.GetFileName));
+                Stage2MoldComboBox.ItemsSource = items2;
                 _selectedStage2File = _stage2MoldFiles.FirstOrDefault();
-                Stage2MoldComboBox.SelectedIndex = _selectedStage2File is null ? -1 : 0;
+                Stage2MoldComboBox.SelectedIndex = _selectedStage2File is null ? 0 : 1;
                 RefreshMoldPreviewList(2);
             }
 
@@ -1378,6 +1387,11 @@ namespace CADRecognition
 
             if (comboBox.SelectedItem is string selectedName)
             {
+                if (selectedName == "(无)")
+                {
+                    return null;
+                }
+
                 var matched = files.FirstOrDefault(f =>
                     string.Equals(System.IO.Path.GetFileName(f), selectedName, StringComparison.OrdinalIgnoreCase));
                 if (!string.IsNullOrWhiteSpace(matched))
@@ -2062,7 +2076,8 @@ namespace CADRecognition
             var port = int.TryParse(TcpExportDialog.SharedTcpPort, out var parsedPort) ? parsedPort : 502;
             byte station = byte.TryParse(TcpExportDialog.SharedModbusStation, out var parsedStation) ? parsedStation : (byte)1;
             var registerAddress = TcpExportDialog.SharedModbusRegisterAddress;
-            await _modbusTcpCommService.SendExportModelAsync(host, port, station, registerAddress, model).ConfigureAwait(true);
+            var encoding = TcpExportDialog.SharedEncoding;
+            await _modbusTcpCommService.SendExportModelAsync(host, port, station, registerAddress, model, encoding).ConfigureAwait(true);
         }
 
         private Task<ModbusTcpNet> GetPlcClientAsync(string host, int port, byte station)
@@ -2750,8 +2765,8 @@ namespace CADRecognition
                     HoleType = row.Hole.HoleType,
                     MoldId = row.MoldId,
                     MoldCode = row.MoldId > 0 ? $"{(isStage1 ? "M" : "N")}{row.MoldId:D2}" : "未匹配",
-                    PosX = Math.Round(row.Hole.Centroid.X - _lastProjectProfile!.OuterRectangle.MinX, 0),
-                    PosY = Math.Round(row.Hole.Centroid.Y - _lastProjectProfile!.OuterRectangle.MinY, 0),
+                    PosX = Math.Round(row.Hole.Centroid.X - _lastProjectProfile!.OuterRectangle.MinX, 2),
+                    PosY = Math.Round(row.Hole.Centroid.Y - _lastProjectProfile!.OuterRectangle.MinY, 2),
                     AbsX = row.Hole.Centroid.X,
                     AbsY = row.Hole.Centroid.Y,
                     PositionRelation = isStage1 ? "台1区域" : "台2区域",
@@ -2870,7 +2885,7 @@ namespace CADRecognition
                     _lastProjectProfile.CornerCandidates,
                     _boardWidth,
                     splitY);
-                _viewer.RenderPendingEdgeRecognitionHoles(_lastProjectProfile.EdgeCandidates, splitY);
+                _viewer.RenderPendingEdgeRecognitionHoles(_lastProjectProfile.EdgeCandidates);
 
                 if (withAnnotation && _lastMatchResult is not null)
                 {
@@ -2902,6 +2917,24 @@ namespace CADRecognition
             var showAnnotation = _lastMatchResult is not null && path == _projectFile;
             RenderPreview(doc, path, showAnnotation);
             StatusText.Text = $"预览图纸：{System.IO.Path.GetFileName(path)}";
+        }
+
+        private void OpenFileLocation_Click(object sender, RoutedEventArgs e)
+        {
+            if (FileTreeView.SelectedItem is not TreeViewItem item || item.Tag is not string path)
+            {
+                return;
+            }
+            if (!System.IO.File.Exists(path))
+            {
+                System.Windows.MessageBox.Show($"文件不存在：{path}", "提示", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+            var directory = System.IO.Path.GetDirectoryName(path);
+            if (!string.IsNullOrEmpty(directory))
+            {
+                System.Diagnostics.Process.Start("explorer.exe", $"/select,\"{path}\"");
+            }
         }
 
         private void PositionGrid_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
@@ -3235,54 +3268,10 @@ namespace CADRecognition
             ResetView();
         }
 
-        public void RenderPendingEdgeRecognitionHoles(IReadOnlyList<EdgeCandidate> edgeCandidates, double? splitY)
+        public void RenderPendingEdgeRecognitionHoles(IReadOnlyList<EdgeCandidate> edgeCandidates)
         {
-            if (edgeCandidates.Count == 0)
-            {
-                return;
-            }
-
-            foreach (var edge in edgeCandidates)
-            {
-                var isStage2 = splitY.HasValue && edge.Centroid.Y >= splitY.Value;
-                var stroke = isStage2
-                    ? new SolidColorBrush(WpfColor.FromArgb(245, 3, 169, 244))
-                    : new SolidColorBrush(WpfColor.FromArgb(245, 255, 152, 0));
-                var fill = isStage2
-                    ? new SolidColorBrush(WpfColor.FromArgb(40, 3, 169, 244))
-                    : new SolidColorBrush(WpfColor.FromArgb(40, 255, 152, 0));
-                var center = ModelToCanvas(edge.Centroid.X, edge.Centroid.Y);
-
-                var w = Math.Max(edge.Width * _drawScale, 8.0);
-                var h = Math.Max(edge.Height * _drawScale, 8.0);
-                var marker = new WpfRectangle
-                {
-                    Width = w + 8,
-                    Height = h + 8,
-                    Stroke = stroke,
-                    Fill = fill,
-                    StrokeThickness = 0.8,
-                    StrokeDashArray = new DoubleCollection([3, 2])
-                };
-                Canvas.SetLeft(marker, center.X - marker.Width * 0.5);
-                Canvas.SetTop(marker, center.Y - marker.Height * 0.5);
-                _zoneCanvas.Children.Add(marker);
-
-                if (!_compactMode)
-                {
-                    var text = new TextBlock
-                    {
-                        Text = $"边缘孔{(isStage2 ? "N" : "M")}-{edge.Side}",
-                        Foreground = stroke,
-                        FontWeight = FontWeights.SemiBold,
-                        FontSize = 7,
-                        Background = new SolidColorBrush(WpfColor.FromArgb(120, 0, 0, 0))
-                    };
-                    Canvas.SetLeft(text, center.X + marker.Width * 0.5 + 2);
-                    Canvas.SetTop(text, center.Y - 7);
-                    _zoneCanvas.Children.Add(text);
-                }
-            }
+            // 边缘孔识别结果已通过 RenderAnnotations 中的 IsEdgeHole 标注体现，此处不再绘制额外标记。
+            _ = edgeCandidates;
         }
 
         public void RenderAnnotations(IReadOnlyList<HoleAssignment> assignments, IReadOnlyList<MoldProfile> molds, double? splitY)
@@ -4008,10 +3997,20 @@ namespace CADRecognition
             // 模具特征只取“可闭合几何”，避免 OpenPolyline 的伪面积干扰面积比匹配。
             var holes = ExtractHoles(doc, includeOpenPolylines: false);
             var outer = DetectOuterRectangle(doc);
+            var holesInfo = string.Join(", ", holes.Select(h => $"W={h.Width:F2},H={h.Height:F2},A={h.Area:F2}"));
+            AppLogger.Instance.Info($"[模具提取] M{moldId:D2} 提取完成: 共{holes.Count}个孔, 列表:[{holesInfo}], outer.Area={outer.Area:F2}");
             var candidates = holes
                 .Where(h => h.Area <= Math.Max(outer.Area * 0.75, 10.0))
                 .OrderByDescending(h => h.Area)
                 .ToList();
+
+            // Fallback: 如果 outer.Area 太小（DXF 没有外部矩形）导致 candidates 被全部过滤掉，
+            // 直接用所有 holes 的最大者作为模具特征，避免误用 BuildFeatureFromEntities 兜底造成面积失真。
+            if (candidates.Count == 0 && holes.Count > 0)
+            {
+                candidates = [holes.OrderByDescending(h => h.Area).First()];
+                AppLogger.Instance.Warn($"[模具提取] M{moldId:D2} candidates 为空, fallback 使用最大hole: W={candidates[0].Width:F2},H={candidates[0].Height:F2},A={candidates[0].Area:F2}");
+            }
 
             var feature = candidates.FirstOrDefault();
             if (feature is null)
@@ -4097,6 +4096,13 @@ namespace CADRecognition
                     .Where(h => h.Area <= maxHoleArea)
                     .ToList();
             }
+
+            // 输出每个内部孔相对外框左下角的坐标（绝对值与相对值同时输出，便于核对）。
+            var relHolesInfo = string.Join(" | ", innerHoles.Select(h =>
+                $"[W={h.Width:F2},H={h.Height:F2},A={h.Area:F2}] Abs=({h.Centroid.X:F2},{h.Centroid.Y:F2}) -> Rel=({h.Centroid.X - outer.MinX:F2},{h.Centroid.Y - outer.MinY:F2})"));
+            AppLogger.Instance.Info($"[项目提取] 共{innerHoles.Count}个内部孔, 外框: MinX={outer.MinX:F2}, MinY={outer.MinY:F2}, W={outer.Width:F2}, H={outer.Height:F2}");
+            AppLogger.Instance.Info($"[项目提取] 孔坐标(相对外框左下角): {relHolesInfo}");
+
             return new ProjectProfile(
                 outer,
                 DeduplicateHoles(innerHoles),
@@ -4896,9 +4902,13 @@ namespace CADRecognition
                 var d = c.Radius * 2;
                 var area = Math.PI * c.Radius * c.Radius;
                 var perimeter = 2 * Math.PI * c.Radius;
+                var circleMinX = c.Center.X - c.Radius;
+                var circleMaxX = c.Center.X + c.Radius;
+                var circleMinY = c.Center.Y - c.Radius;
+                var circleMaxY = c.Center.Y + c.Radius;
                 holes.Add(new HoleFeature(
                     "Circle",
-                    (c.Center.X, c.Center.Y),
+                    ((circleMinX + circleMaxX) * 0.5, (circleMinY + circleMaxY) * 0.5),
                     d,
                     d,
                     area,
@@ -4927,9 +4937,13 @@ namespace CADRecognition
                 var d = a.Radius * 2;
                 var area = Math.PI * a.Radius * a.Radius;
                 var perimeter = 2 * Math.PI * a.Radius;
+                var arcMinX = a.Center.X - a.Radius;
+                var arcMaxX = a.Center.X + a.Radius;
+                var arcMinY = a.Center.Y - a.Radius;
+                var arcMaxY = a.Center.Y + a.Radius;
                 holes.Add(new HoleFeature(
                     "ArcCircle",
-                    (a.Center.X, a.Center.Y),
+                    ((arcMinX + arcMaxX) * 0.5, (arcMinY + arcMaxY) * 0.5),
                     d,
                     d,
                     area,
@@ -4954,7 +4968,7 @@ namespace CADRecognition
                 var maxY = pts.Max(p => p.Item2);
                 holes.Add(new HoleFeature(
                     "Polyline",
-                    (pts.Average(p => p.Item1), pts.Average(p => p.Item2)),
+                    ((minX + maxX) * 0.5, (minY + maxY) * 0.5),
                     maxX - minX,
                     maxY - minY,
                     Math.Abs(area),
@@ -4986,7 +5000,7 @@ namespace CADRecognition
 
                 holes.Add(new HoleFeature(
                     "MixedArcLine",
-                    (loop.Average(p => p.X), loop.Average(p => p.Y)),
+                    ((minX + maxX) * 0.5, (minY + maxY) * 0.5),
                     maxX - minX,
                     maxY - minY,
                     area,
@@ -5021,7 +5035,7 @@ namespace CADRecognition
                     var pseudoArea = bboxArea * 0.6;
                     holes.Add(new HoleFeature(
                         "OpenPolyline",
-                        (pts.Average(p => p.X), pts.Average(p => p.Y)),
+                        ((minX + maxX) * 0.5, (minY + maxY) * 0.5),
                         width,
                         height,
                         pseudoArea,
@@ -5708,10 +5722,17 @@ namespace CADRecognition
         private const double EdgePartialDistanceRatio = 0.06;
         private const int CornerPathMaxPointsPerCorner = 24;
 
-        // 内孔严格匹配阈值（保留严格性，但允许CAD提取误差）
-        private const double StrictAreaRatioMin = 0.95;
-        private const double StrictAreaRatioMax = 1.05;
-        private const double ImpossibleMatchScoreThreshold = 0.95;
+        // 严格匹配阈值（0.01精度 = ±1%）
+        private const double StrictAreaRatioMin = 0.99;
+        private const double StrictAreaRatioMax = 1.01;
+        private const double StrictPerimRatioMin = 0.99;
+        private const double StrictPerimRatioMax = 1.01;
+        private const double StrictLongRatioMin = 0.99;
+        private const double StrictLongRatioMax = 1.01;
+        private const double StrictShortRatioMin = 0.99;
+        private const double StrictShortRatioMax = 1.01;
+        private const double StrictSigMax = 0.10;
+        private const double ImpossibleMatchScoreThreshold = 0.50;
 
         public MatchResult Match(ProjectProfile project, IReadOnlyList<MoldProfile> molds, bool isStage1)
         {
@@ -5732,13 +5753,21 @@ namespace CADRecognition
 
             var mold1 = validMolds.FirstOrDefault(m => m.MoldId == 1) ?? validMolds[0];
             var nonCornerMolds = validMolds.Where(m => m.MoldId != mold1.MoldId).ToList();
-            if (nonCornerMolds.Count == 0)
+
+            // M01：沿"青色差集线的外偏移路径"做连续冲压。
+            var contourStamps = GenerateContinuousContourStampCenters(project, mold1, guidePaths, isStage1);
+
+            // 当图纸四角无冲压区域时（contourStamps 为空），M01 无专属角落任务，
+            // 退化为普通模具：重新纳入 nonCornerMolds 以识别内部及边缘孔。
+            if (contourStamps.Count == 0)
+            {
+                nonCornerMolds = validMolds.ToList();
+            }
+            else if (nonCornerMolds.Count == 0)
             {
                 nonCornerMolds.Add(mold1);
             }
 
-            // M01：沿“青色差集线的外偏移路径”做连续冲压。
-            var contourStamps = GenerateContinuousContourStampCenters(project, mold1, guidePaths, isStage1);
             foreach (var s in contourStamps)
             {
                 rows.Add(new HoleAssignment(
@@ -5759,11 +5788,16 @@ namespace CADRecognition
 
             foreach (var hole in holePool)
             {
+                // 调试日志：输出当前孔信息和可用的模具列表
+                AppLogger.Instance.Info($"[匹配] 孔: {hole.HoleType}, W={hole.Width:F2}, H={hole.Height:F2}, A={hole.Area:F1}, Sig={hole.Signature:F2}");
+                AppLogger.Instance.Info($"[匹配] nonCornerMolds列表: [{string.Join(", ", nonCornerMolds.Select(m => $"M{m.MoldId:D2}({m.Feature.HoleType}, W={m.Feature.Width:F1}, H={m.Feature.Height:F1}, A={m.Feature.Area:F1})"))}]");
+
                 // 严格匹配：遍历模具库全部候选特征，必须满足同类+几何一致。
                 var ranked = nonCornerMolds
                     .SelectMany(m =>
                     {
                         var features = (m.CandidateFeatures is { Count: > 0 } ? m.CandidateFeatures : [m.Feature]);
+                        AppLogger.Instance.Info($"[匹配] M{m.MoldId:D2} 使用特征: {string.Join(", ", features.Select(f => $"W={f.Width:F2},H={f.Height:F2},A={f.Area:F1},Type={f.HoleType}"))}");
                         return features
                             .Where(f => IsShapeFamilyCompatible(hole, f))
                             .Select(f =>
@@ -5781,11 +5815,11 @@ namespace CADRecognition
                                 var shortRatio = hShort / Math.Max(fShort, 1e-6);
 
                                 var strict = typeMatch
-                                    && areaRatio >= 0.94 && areaRatio <= 1.06
-                                    && perimRatio >= 0.94 && perimRatio <= 1.06
-                                    && longRatio >= 0.94 && longRatio <= 1.06
-                                    && shortRatio >= 0.94 && shortRatio <= 1.06
-                                    && signature <= 0.22;
+                                    && areaRatio >= StrictAreaRatioMin && areaRatio <= StrictAreaRatioMax
+                                    && perimRatio >= StrictPerimRatioMin && perimRatio <= StrictPerimRatioMax
+                                    && longRatio >= StrictLongRatioMin && longRatio <= StrictLongRatioMax
+                                    && shortRatio >= StrictShortRatioMin && shortRatio <= StrictShortRatioMax
+                                    && signature <= StrictSigMax;
 
                                 var score = Math.Abs(areaRatio - 1.0)
                                             + Math.Abs(perimRatio - 1.0)
@@ -5793,11 +5827,11 @@ namespace CADRecognition
                                             + Math.Abs(shortRatio - 1.0)
                                             + signature * 0.5;
                                 var impossible = !typeMatch
-                                               || areaRatio < 0.45 || areaRatio > 1.8
-                                               || perimRatio < 0.55 || perimRatio > 1.55
-                                               || longRatio < 0.55 || longRatio > 1.55
-                                               || shortRatio < 0.55 || shortRatio > 1.55
-                                               || signature > 0.65
+                                               || areaRatio < 0.80 || areaRatio > 1.20
+                                               || perimRatio < 0.85 || perimRatio > 1.15
+                                               || longRatio < 0.85 || longRatio > 1.15
+                                               || shortRatio < 0.85 || shortRatio > 1.15
+                                               || signature > 0.40
                                                || score > ImpossibleMatchScoreThreshold;
 
                                 return new
@@ -5823,61 +5857,11 @@ namespace CADRecognition
                     continue;
                 }
 
+                AppLogger.Instance.Info($"[匹配] 孔(W={hole.Width:F2},H={hole.Height:F2}): ranked.Count={ranked.Count}, strictPass.Count={ranked.Count(x => x.Strict)}");
                 var strictPass = ranked.Where(x => x.Strict).OrderBy(x => x.Score).ToList();
                 if (strictPass.Count == 0)
                 {
-                    var partial = TryPartialBBoxContourMatch(hole, nonCornerMolds, isStage1);
-                    if (partial is not null)
-                    {
-                        var prefix = isStage1 ? "M" : "N";
-                        var placementHole = new HoleFeature(
-                            hole.HoleType,
-                            partial.Placement,
-                            hole.Width,
-                            hole.Height,
-                            hole.Area,
-                            hole.Perimeter,
-                            hole.Rotation,
-                            hole.Signature,
-                            hole.Points);
-                        rows.Add(new HoleAssignment(
-                            placementHole,
-                            partial.MoldId,
-                            "局部冲压",
-                            IsAnyCornerZone(hole, project.OuterRectangle),
-                            IsNearOuterEdge(hole, project.OuterRectangle),
-                            $"{prefix}{partial.MoldId:D2}:Partial={partial.Score:F2},Cover={partial.Coverage:P0},Corner={partial.CornerName},Align=({partial.Placement.X:F1},{partial.Placement.Y:F1})",
-                            $"Partial,W={partial.WidthRatio:F2},H={partial.HeightRatio:F2},D={partial.TrimmedDistance:F2}",
-                            "边缘点对齐后使用模具定位点",
-                            0,
-                            false));
-                        continue;
-                    }
-
-                    var viable = ranked.Where(x => !x.Impossible).ToList();
-                    if (viable.Count == 0)
-                    {
-                        continue;
-                    }
-
-                    var fallback = viable
-                        .Where(x => x.TypeMatch)
-                        .OrderBy(x => x.Score)
-                        .FirstOrDefault() ?? viable.OrderBy(x => x.Score).First();
-
-                    var debugPrefix = isStage1 ? "M" : "N";
-                    var debugTop = string.Join(" | ", ranked.Take(3).Select(r =>
-                        $"{debugPrefix}{r.MoldId:D2}:A={r.AreaRatio:F1},P={r.PerimRatio:F1},L={r.LongRatio:F1},S={r.ShortRatio:F1},Sig={r.Signature:F1},T={r.TypeMatch}"));
-
-                    rows.Add(new HoleAssignment(
-                        hole,
-                        fallback.MoldId,
-                        "单次冲压(兜底匹配)",
-                        IsAnyCornerZone(hole, project.OuterRectangle),
-                        IsNearOuterEdge(hole, project.OuterRectangle),
-                        debugTop,
-                        $"A={fallback.AreaRatio:F1},P={fallback.PerimRatio:F1}",
-                        "严格条件未通过，已使用兜底最近模具"));
+                    AppLogger.Instance.Info($"[匹配] 孔(W={hole.Width:F2},H={hole.Height:F2}): 严格条件未通过，跳过匹配");
                     continue;
                 }
 
@@ -5906,6 +5890,7 @@ namespace CADRecognition
                     edge.Points);
 
                 var partial = TryPartialBBoxContourMatch(edgeHole, nonCornerMolds, isStage1);
+                AppLogger.Instance.Info($"[边缘匹配] {edgeHole.HoleType}: W={edgeHole.Width:F2},H={edgeHole.Height:F2},Area={edgeHole.Area:F2},Pos=({edgeHole.Centroid.X:F2},{edgeHole.Centroid.Y:F2}), 匹配结果={(partial is null ? "无" : $"M{partial.MoldId:D2}(Cover={partial.Coverage:P1},D={partial.TrimmedDistance:F2})")}");
                 if (partial is null)
                 {
                     continue;
@@ -7422,13 +7407,13 @@ namespace CADRecognition
                 return $"shape family incompatible: hole={hole.HoleType}, mold={mold.HoleType}";
             }
 
-            const double sizeTolerance = 2.0;
+            const double sizeTolerance = 0.01;
             if (hole.Width > mold.Width + sizeTolerance || hole.Height > mold.Height + sizeTolerance)
             {
                 return $"size too large: hole=({hole.Width:F3},{hole.Height:F3}), mold=({mold.Width:F3},{mold.Height:F3}), tol={sizeTolerance:F1}";
             }
 
-            if (hole.Area > mold.Area * 1.1)
+            if (hole.Area > mold.Area * 1.001)
             {
                 return $"area too large: hole={hole.Area:F3}, moldLimit={mold.Area * 1.1:F3}";
             }
@@ -7442,12 +7427,12 @@ namespace CADRecognition
             var holeShort = Math.Max(Math.Min(holeBounds.Width, holeBounds.Height), 1e-6);
             var moldLong = Math.Max(moldBounds.Width, moldBounds.Height);
             var moldShort = Math.Max(Math.Min(moldBounds.Width, moldBounds.Height), 1e-6);
-            if (holeLong > moldLong + 3.0 || holeShort > moldShort + 3.0)
+            if (holeLong > moldLong + 0.01 || holeShort > moldShort + 0.01)
             {
                 return $"bbox long/short too large: hole=({holeLong:F3},{holeShort:F3}), mold=({moldLong:F3},{moldShort:F3})";
             }
 
-            if (hole.Perimeter > mold.Perimeter * 1.35)
+            if (hole.Perimeter > mold.Perimeter * 1.001)
             {
                 return $"perimeter too large: hole={hole.Perimeter:F3}, moldLimit={mold.Perimeter * 1.35:F3}";
             }
@@ -7483,7 +7468,7 @@ namespace CADRecognition
                     var refined = RefinePartialPlacement(holePoints, moldPoints, placement, out var coverage, out var trimmedDistance);
                     var score = trimmedDistance + (1.0 - coverage) * 5.0;
                     var anchorName = $"{holeAnchor.Name}->{moldAnchor.Name}";
-                    if (coverage < 0.8 || trimmedDistance > 1.8)
+                    if (coverage < 0.95 || trimmedDistance > 0.5)
                     {
                         if (score < bestFailedScore)
                         {
@@ -7510,6 +7495,16 @@ namespace CADRecognition
                 AppendEdgePartialDebugLog(bestFailedAnchor is null
                     ? $"    Best failed anchor: none evaluated."
                     : $"    Best failed anchor: {bestFailedAnchor}, Score={bestFailedScore:F3}, Cover={bestFailedCoverage:P1}, D={bestFailedDistance:F3}.");
+            }
+
+            // 轮廓对齐精度：残孔必须轮廓完全一致
+            if (best is not null && best.TrimmedDistance > 0.02)
+            {
+                if (enableDebugLog)
+                {
+                    AppendEdgePartialDebugLog($"  REJECT: 轮廓距离超差 D={best.TrimmedDistance:F3} (需≤0.02)");
+                }
+                return null;
             }
 
             return best;

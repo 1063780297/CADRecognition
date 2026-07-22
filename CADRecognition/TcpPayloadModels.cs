@@ -5,6 +5,8 @@ namespace CADRecognition
     public sealed class TcpCustomContentStore
     {
         public Dictionary<string, string> Values { get; set; } = new Dictionary<string, string>();
+        public string Encoding { get; set; } = "UTF-8";
+        public bool SwapBytes { get; set; } = false;
     }
 
     public sealed class TcpConnectionHistoryStore

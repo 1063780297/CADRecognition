@@ -14,12 +14,15 @@ namespace CADRecognition
     /// </summary>
     internal sealed class ModbusTcpCommService : IDisposable
     {
+        private bool _swapBytes;
         public static ModbusTcpCommService Shared { get; } = new();
         private static readonly Regex TrailingDigits = new(@"\d+$", RegexOptions.Compiled);
         private readonly object _sync = new();
         private ModbusTcpNet? _client;
         private string _clientKey = string.Empty;
         private readonly SemaphoreSlim _ioLock = new(1, 1);
+
+        public bool SwapBytes { get; set; }
 
         public void Dispose()
         {
@@ -48,7 +51,7 @@ namespace CADRecognition
             }
         }
 
-        public async Task SendExportModelAsync(string host, int port, byte station, string registerBaseText, TcpExportModel model)
+        public async Task SendExportModelAsync(string host, int port, byte station, string registerBaseText, TcpExportModel model, string encodingName = "UTF-8")
         {
             if (string.IsNullOrWhiteSpace(host))
             {
@@ -71,10 +74,12 @@ namespace CADRecognition
                 ? (baseOffset + relativeWord).ToString(CultureInfo.InvariantCulture)
                 : addressPrefix + (baseOffset + relativeWord).ToString(CultureInfo.InvariantCulture);
 
+            var swapBytes = this.SwapBytes;
+
             await _ioLock.WaitAsync().ConfigureAwait(false);
             try
             {
-                await WriteProgramNameAsync(client, Addr, model.ProgramName).ConfigureAwait(false);
+                await WriteProgramNameAsync(client, Addr, model.ProgramName, encodingName, swapBytes).ConfigureAwait(false);
 
             var programNoInt = ParseProgramNo(model.ProgramNo);
             var intBlock = new short[]
@@ -131,13 +136,13 @@ namespace CADRecognition
             }
         }
 
-        private static async Task WriteProgramNameAsync(ModbusTcpNet client, Func<int, string> addr, string programName)
+        private static async Task WriteProgramNameAsync(ModbusTcpNet client, Func<int, string> addr, string programName, string encodingName, bool swapBytes)
         {
-            var bytes = EncodeUtf8Fixed(programName ?? string.Empty, ModbusTcpExportLayout.ProgramNameWordLength);
+            var bytes = EncodeFixed(programName ?? string.Empty, ModbusTcpExportLayout.ProgramNameWordLength, encodingName, swapBytes);
             ThrowIfFailed(await client.WriteAsync(addr(ModbusTcpExportLayout.ProgramNameStart), bytes).ConfigureAwait(false));
         }
 
-        private static byte[] EncodeUtf8Fixed(string text, int maxWordLength)
+        private static byte[] EncodeFixed(string text, int maxWordLength, string encodingName, bool swapBytes)
         {
             var maxBytes = maxWordLength * 2;
             var buffer = new byte[maxBytes];
@@ -146,14 +151,37 @@ namespace CADRecognition
                 return buffer;
             }
 
-            var encoded = Encoding.UTF8.GetBytes(text);
+            Encoding encoding;
+            try
+            {
+                encoding = Encoding.GetEncoding(encodingName);
+            }
+            catch
+            {
+                encoding = Encoding.UTF8;
+            }
+
+            var encoded = encoding.GetBytes(text);
             var byteCount = Math.Min(encoded.Length, maxBytes);
             if (byteCount > 0)
             {
                 Array.Copy(encoded, buffer, byteCount);
             }
 
+            if (swapBytes)
+            {
+                SwapBytesPerWord(buffer);
+            }
+
             return buffer;
+        }
+
+        private static void SwapBytesPerWord(byte[] buffer)
+        {
+            for (var i = 0; i < buffer.Length - 1; i += 2)
+            {
+                (buffer[i], buffer[i + 1]) = (buffer[i + 1], buffer[i]);
+            }
         }
 
         private static void ValidateLayout()

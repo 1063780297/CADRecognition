@@ -93,7 +93,13 @@
                           Foreground="#FFFFFF"
                           BorderBrush="#7C97B8"
                           ItemContainerStyle="{StaticResource HighContrastTreeViewItemStyle}"
-                          MouseDoubleClick="FileTreeView_MouseDoubleClick"/>
+                          MouseDoubleClick="FileTreeView_MouseDoubleClick">
+                    <TreeView.ContextMenu>
+                        <ContextMenu>
+                            <MenuItem Header="打开文件所在文件夹" Click="OpenFileLocation_Click" />
+                        </ContextMenu>
+                    </TreeView.ContextMenu>
+                </TreeView>
             </DockPanel>
         </Border>
 

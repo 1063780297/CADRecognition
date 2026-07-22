@@ -52,7 +52,46 @@ namespace CADRecognition
             HookAutoSave(Spare3TextBox);
             HookAutoSave(Spare4TextBox);
 
+            InitializeEncodingComboBox();
+            InitializeSwapBytesCheckBox();
             LoadTcpHistoryToComboBoxes();
+        }
+
+        private void InitializeEncodingComboBox()
+        {
+            var encodings = new[] { "UTF-8", "GB2312", "GBK", "GB18030", "ASCII", "Unicode", "Big5", "Shift_JIS", "Unicode-big", "UTF32", "ANSI", "UTF-16", "UTF-16BE", "UTF-16LE", "Latin1", "Windows-1252" };
+            EncodingComboBox.ItemsSource = encodings;
+            EncodingComboBox.SelectedItem = _customContentStore.Encoding;
+            if (string.IsNullOrEmpty(_customContentStore.Encoding))
+            {
+                EncodingComboBox.SelectedItem = "UTF-8";
+            }
+            EncodingComboBox.SelectionChanged += (_, _) =>
+            {
+                if (EncodingComboBox.SelectedItem is string selectedEncoding)
+                {
+                    _customContentStore.Encoding = selectedEncoding;
+                    SaveCustomContentStore();
+                    OnFieldChanged();
+                }
+            };
+        }
+
+        private void InitializeSwapBytesCheckBox()
+        {
+            SwapBytesCheckBox.IsChecked = _customContentStore.SwapBytes;
+            SwapBytesCheckBox.Checked += (_, _) =>
+            {
+                _customContentStore.SwapBytes = true;
+                SaveCustomContentStore();
+                OnFieldChanged();
+            };
+            SwapBytesCheckBox.Unchecked += (_, _) =>
+            {
+                _customContentStore.SwapBytes = false;
+                SaveCustomContentStore();
+                OnFieldChanged();
+            };
         }
 
         public TcpExportModel Model { get; }
@@ -66,13 +105,17 @@ namespace CADRecognition
         public static string SharedTcpPort { get; private set; } = "502";
         public static string SharedModbusStation { get; private set; } = "1";
         public static string SharedModbusRegisterAddress { get; private set; } = "6000";
+        public static string SharedEncoding { get; private set; } = "UTF-8";
+        public static bool SharedSwapBytes { get; private set; } = false;
 
-        public static void UpdateSharedConnectionSettings(string host, string port, string station, string registerAddress)
+        public static void UpdateSharedConnectionSettings(string host, string port, string station, string registerAddress, string? encoding = null, bool? swapBytes = null)
         {
             if (!string.IsNullOrWhiteSpace(host)) SharedTcpHost = host.Trim();
             if (!string.IsNullOrWhiteSpace(port)) SharedTcpPort = port.Trim();
             if (!string.IsNullOrWhiteSpace(station)) SharedModbusStation = station.Trim();
             if (!string.IsNullOrWhiteSpace(registerAddress)) SharedModbusRegisterAddress = registerAddress.Trim();
+            if (!string.IsNullOrWhiteSpace(encoding)) SharedEncoding = encoding.Trim();
+            if (swapBytes.HasValue) SharedSwapBytes = swapBytes.Value;
         }
 
         private void HookAutoSave(TextBox textBox)
@@ -370,16 +413,19 @@ namespace CADRecognition
                 }
 
                 var registerAddr = ModbusRegisterComboBox.Text?.Trim() ?? "0";
+                var encoding = EncodingComboBox.SelectedItem?.ToString() ?? "UTF-8";
+                var swapBytes = SwapBytesCheckBox.IsChecked == true;
 
                 SaveTcpHistory(host ?? string.Empty, portText ?? string.Empty, stationText, registerAddr);
-                UpdateSharedConnectionSettings(host ?? string.Empty, portText ?? string.Empty, stationText, registerAddr);
+                UpdateSharedConnectionSettings(host ?? string.Empty, portText ?? string.Empty, stationText, registerAddr, encoding, swapBytes);
                 if (payload is not TcpExportModel exportModel)
                 {
                     StatusTextBlock.Text = "内部错误：导出模型类型不正确。";
                     return;
                 }
 
-                await _modbusTcpCommService.SendExportModelAsync(host ?? string.Empty, port, station, registerAddr, exportModel).ConfigureAwait(true);
+                _modbusTcpCommService.SwapBytes = swapBytes;
+                await _modbusTcpCommService.SendExportModelAsync(host ?? string.Empty, port, station, registerAddr, exportModel, encoding).ConfigureAwait(true);
                 StatusTextBlock.Text = $"Modbus TCP 已按表写入 {host}:{port}（站{station}，基址{registerAddr}）。 台1坐标={exportModel.Stage1DiagramCoordinates.Count}，台2坐标={exportModel.Stage2DiagramCoordinates.Count}。";
             }
             catch (Exception ex)
