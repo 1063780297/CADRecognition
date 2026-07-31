@@ -1,4 +1,4 @@
-using Microsoft.Win32;
+﻿using Microsoft.Win32;
 using netDxf;
 using netDxf.Entities;
 using System.Collections.ObjectModel;
@@ -713,7 +713,8 @@ namespace CADRecognition
         private CancellationTokenSource? _heartbeatCts;
         private Task? _heartbeatTask;
         private Task? _automationLoopTask;
-        private bool _automationStartupRequested;
+        private bool _automationStartInProgress;
+        private int _isResetting = 0;
         private readonly string _projectFolderSettingsPath = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "CADRecognition", "project-folder.txt");
 
         private PlcMonitorWindow? _plcMonitorWindow;
@@ -729,6 +730,7 @@ namespace CADRecognition
         private int _d624Value = 0;
         private int _d625Value = 0;
         private int _d626Value = 0;
+        private int _d627Value = 0;
 
         public MainWindow()
         {
@@ -758,6 +760,16 @@ namespace CADRecognition
             RestoreProjectFolder();
             await TryRestoreLastMoldsAsync();
             RefreshPlcRegisters();
+
+            // 软件启动后自动进入全自动化流程界面（PLC寄存器监视窗口 + 自动化后台循环）。
+            try
+            {
+                await StartAutomationFromUiAsync().ConfigureAwait(true);
+            }
+            catch (Exception ex)
+            {
+                AppLogger.Instance.Error($"启动时自动打开全自动化流程失败：{ex.Message}", ex);
+            }
         }
 
         private void MainWindow_Closing(object? sender, CancelEventArgs e)
@@ -979,6 +991,7 @@ namespace CADRecognition
             AddPlcRegisterRow("D624", "0", "识图中（1=进行中，0=结束）");
             AddPlcRegisterRow("D625", "0", "心跳");
             AddPlcRegisterRow("D626", "0", "任务号");
+            AddPlcRegisterRow("D627", "0", "复位（0→1触发重置）");
         }
 
         private string GetPlcAddress(string logicalName) => _plcRegisterMap.TryGetValue(logicalName, out var row) ? row.Address : logicalName;
@@ -1004,7 +1017,7 @@ namespace CADRecognition
 
         private void RefreshPlcRegistersCore()
         {
-            if (_plcRegisters.Count < 7) InitializePlcRegisters();
+            if (_plcRegisters.Count < 8) InitializePlcRegisters();
             _plcRegisters[0].Value = _d600Value;
             _plcRegisters[1].Value = _d620Value.ToString("0.###", CultureInfo.InvariantCulture);
             _plcRegisters[2].Value = _d622Value.ToString(CultureInfo.InvariantCulture);
@@ -1012,6 +1025,7 @@ namespace CADRecognition
             _plcRegisters[4].Value = _d624Value.ToString(CultureInfo.InvariantCulture);
             _plcRegisters[5].Value = _d625Value.ToString(CultureInfo.InvariantCulture);
             _plcRegisters[6].Value = _d626Value.ToString(CultureInfo.InvariantCulture);
+            _plcRegisters[7].Value = _d627Value.ToString(CultureInfo.InvariantCulture);
             OnPropertyChanged(nameof(PlcRegisters));
         }
 
@@ -1022,6 +1036,7 @@ namespace CADRecognition
             var d600Address = GetPlcAddressAt(0);
             var d620Address = GetPlcAddressAt(1);
             var d626Address = GetPlcAddressAt(6);
+            var d627Address = GetPlcAddressAt(7);
 
             if (string.IsNullOrWhiteSpace(d600Address) || string.IsNullOrWhiteSpace(d620Address) || string.IsNullOrWhiteSpace(d626Address))
             {
@@ -1032,12 +1047,28 @@ namespace CADRecognition
             try
             {
                 var previousD626 = _d626Value;
+                var previousD627 = _d627Value;
                 var plcHost = TcpExportDialog.SharedTcpHost;
                 var plcPort = int.TryParse(TcpExportDialog.SharedTcpPort, out var parsedPort) ? parsedPort : 502;
                 byte station = byte.TryParse(TcpExportDialog.SharedModbusStation, out var parsedStation) ? parsedStation : (byte)1;
                 await ReadD600FileNameAsync(plcHost, plcPort, station, d600Address, token).ConfigureAwait(true);
                 await ReadPlcBoundaryAsync(plcHost, plcPort, station, d620Address, token).ConfigureAwait(true);
                 await ReadIntAsync(plcHost, plcPort, station, d626Address, 626, token).ConfigureAwait(true);
+                if (!string.IsNullOrWhiteSpace(d627Address))
+                {
+                    await ReadIntAsync(plcHost, plcPort, station, d627Address, 627, token).ConfigureAwait(true);
+                    if (previousD627 == 0 && _d627Value == 1)
+                    {
+                        AppLogger.Instance.Info($"检测到 D627 复位信号（0→1），执行软件重置...");
+                        SetStatus("收到复位信号，正在重置软件...");
+                        await TriggerSoftwareResetAsync(token).ConfigureAwait(true);
+                        // 复位完成后写回 D627=0 到 PLC
+                        _d627Value = 0;
+                        RefreshPlcRegisters();
+                        await WriteSingleIntAsync(plcHost, plcPort, station, d627Address, 0, token).ConfigureAwait(true);
+                        AppLogger.Instance.Info("D627 已写回 0");
+                    }
+                }
                 RefreshPlcRegisters();
             }
             catch (Exception ex) when (ex is OperationCanceledException or InvalidOperationException or FormatException or TimeoutException)
@@ -1449,6 +1480,15 @@ namespace CADRecognition
 
         private async void AutoImportRecognizeSend_Click(object sender, RoutedEventArgs e)
         {
+            await StartAutomationFromUiAsync().ConfigureAwait(true);
+        }
+
+        /// <summary>
+        /// 启动“全自动化流程”界面：弹出 PLC 寄存器监视窗口并启动后台自动化循环。
+        /// 可由“全自动流程”按钮或软件启动时调用，启动时调用不会拦截文件夹选择弹窗。
+        /// </summary>
+        private async Task StartAutomationFromUiAsync()
+        {
             if (_plcMonitorWindow is null || !_plcMonitorWindow.IsLoaded)
             {
                 _plcMonitorWindow = new PlcMonitorWindow(this)
@@ -1496,11 +1536,166 @@ namespace CADRecognition
             AppLogger.Instance.Info("自动化任务已停止");
         }
 
+        /// <summary>
+        /// D627 触发：停止当前工作，重置软件识别状态（保留已导入的模具图纸）。
+        /// </summary>
+        private async Task TriggerSoftwareResetAsync(CancellationToken token)
+        {
+            // 重入保护：已有复位任务在执行时直接忽略
+            if (System.Threading.Interlocked.Exchange(ref _isResetting, 1) == 1)
+            {
+                AppLogger.Instance.Debug("D627 复位已在执行中，忽略重复触发");
+                return;
+            }
+
+            try
+            {
+                AppLogger.Instance.Info("开始执行 D627 软复位...");
+
+                // 1. 停止自动化任务（创建独立 token，避免受原 token 影响）
+                var resetCts = new CancellationTokenSource();
+                await StopAutomationAsync().ConfigureAwait(true);
+
+                // 2. 在 UI 线程执行重置操作
+                await Dispatcher.InvokeAsync(() =>
+                {
+                    // 清空识别结果和项目状态（保留模具文件列表 _stage1MoldFiles / _stage2MoldFiles）
+                    _lastMatchResult = null;
+                    _lastProjectProfile = null;
+                    _lastMolds = [];
+                    _lastOuterContourPoints = [];
+                    _projectFile = null;
+                    _projectDoc = null;
+                    _boardWidth = 0;
+
+                    // 清空位置行和图例
+                    _stage1PositionRows.Clear();
+                    _stage2PositionRows.Clear();
+                    Stage1LegendPanel.Children.Clear();
+                    Stage2LegendPanel.Children.Clear();
+
+                    // 清空文档缓存
+                    _documentCache.Clear();
+                    _documentCacheLru.Clear();
+                    _documentCacheLruNodes.Clear();
+
+                    // 重置视图：清空预览画布（保留模具图纸预览缓存）
+                    _viewer.RenderCornerContours(null, null, null, null, 0, null);
+                    _viewer.RenderAnnotations([], [], null);
+                    PreviewHintText.Visibility = Visibility.Visible;
+
+                    // 重置 PLC 状态寄存器
+                    _d620Value = 0;
+                    _d622Value = 0;
+                    _d623Value = 0;
+                    _d624Value = 0;
+                    _d625Value = 0;
+                    _d626Value = 0;
+                    _d627Value = 0;
+                    _d600Value = string.Empty;
+
+                    // 重置 UI 显示
+                    ProjectFileText.Text = "未加载";
+                    MoldCountText.Text = $"{_stage1MoldFiles.Count}/{_stage2MoldFiles.Count}";
+                    if (BoardWidthTextBox is not null)
+                    {
+                        BoardWidthTextBox.Text = "0";
+                    }
+
+                    // 刷新文件树（保留模具节点，清空工程图节点）
+                    RefreshFileList();
+                    RefreshPlcRegisters();
+                }, DispatcherPriority.Normal);
+
+                AppLogger.Instance.Info("D627 软复位完成，模具图纸已保留");
+                SetStatus("软件已重置，等待新任务...");
+
+                // 3. 重新启动自动化（用独立任务，不阻塞当前调用链）
+                _ = RestartAutomationAsync(resetCts.Token);
+            }
+            finally
+            {
+                System.Threading.Interlocked.Exchange(ref _isResetting, 0);
+            }
+        }
+
+        /// <summary>
+        /// 在独立线程中重启自动化，避免阻塞调用链。
+        /// </summary>
+        private async Task RestartAutomationAsync(CancellationToken token)
+        {
+            try
+            {
+                if (_automationCts is not null)
+                {
+                    _automationCts.Cancel();
+                    _automationCts.Dispose();
+                }
+                _automationCts = new CancellationTokenSource();
+                var linkedToken = CancellationTokenSource.CreateLinkedTokenSource(token, _automationCts.Token).Token;
+
+                if (_plcMonitorWindow is null || !_plcMonitorWindow.IsLoaded)
+                {
+                    await Dispatcher.InvokeAsync(() =>
+                    {
+                        _plcMonitorWindow = new PlcMonitorWindow(this) { Owner = this };
+                        _plcMonitorWindow.Closed += async (_, _) =>
+                        {
+                            await StopAutomationAsync().ConfigureAwait(true);
+                            _plcMonitorWindow = null;
+                        };
+                        _plcMonitorWindow.Show();
+                    });
+                }
+
+                _automationStartInProgress = true;
+                SetStatus("正在启动全自动化流程...");
+
+                _automationLoopTask = Task.Run(async () =>
+                {
+                    try
+                    {
+                        if (!await EnsureProjectAndMoldsReadyForAutomationAsync(linkedToken).ConfigureAwait(false))
+                        {
+                            SetStatus("启动全自动化已取消：缺少台1或台2模具。");
+                            return;
+                        }
+                        await RunFullAutomationAsync(linkedToken).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        SetStatus("自动流程已取消。");
+                    }
+                    catch (Exception ex)
+                    {
+                        SetStatus($"自动流程失败：{ex.Message}");
+                    }
+                    finally
+                    {
+                        _automationCts?.Dispose();
+                        _automationCts = null;
+                        _automationLoopTask = null;
+                        _automationStartInProgress = false;
+                    }
+                }, linkedToken);
+            }
+            catch (Exception ex)
+            {
+                AppLogger.Instance.Error($"重启自动化失败: {ex.Message}", ex);
+                SetStatus($"重启自动化失败：{ex.Message}");
+            }
+        }
+
         private async Task EnsureAutomationLoopRunningAsync()
         {
             if (_automationLoopTask is not null && !_automationLoopTask.IsCompleted)
             {
                 StatusText.Text = "自动识别后台已在运行。";
+                return;
+            }
+
+            if (_automationStartInProgress)
+            {
                 return;
             }
 
@@ -1511,12 +1706,58 @@ namespace CADRecognition
 
             _automationCts = new CancellationTokenSource();
             var token = _automationCts.Token;
+            _automationStartInProgress = true;
+            SetStatus("正在启动全自动化流程...");
+
+            var existingMonitor = _plcMonitorWindow;
+            Exception? preflightFailure = null;
+            try
+            {
+                // “启动即全自动化”场景下，如果还没选过图纸文件夹，
+                // 弹一次文件夹选择窗口让用户确认。弹窗必须在 UI 线程。
+                await RunOnUiThreadAsync(() =>
+                {
+                    if (string.IsNullOrWhiteSpace(_projectFolder) || !Directory.Exists(_projectFolder))
+                    {
+                        using var dialog = new FormsFolderBrowserDialog
+                        {
+                            Description = "请选择图纸文件所在文件夹",
+                            ShowNewFolderButton = false,
+                            SelectedPath = _projectFolder ?? string.Empty
+                        };
+
+                        if (dialog.ShowDialog() != System.Windows.Forms.DialogResult.OK || string.IsNullOrWhiteSpace(dialog.SelectedPath))
+                        {
+                            preflightFailure = new OperationCanceledException("用户取消选择图纸文件夹。");
+                            return Task.CompletedTask;
+                        }
+
+                        SetProjectFolder(dialog.SelectedPath);
+                    }
+                    return Task.CompletedTask;
+                }).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                preflightFailure = ex;
+            }
+
+            if (preflightFailure is not null)
+            {
+                _automationCts?.Dispose();
+                _automationCts = null;
+                _automationStartInProgress = false;
+                SetStatus($"启动全自动化失败：{preflightFailure.Message}");
+                return;
+            }
+
             _automationLoopTask = Task.Run(async () =>
             {
                 try
                 {
                     if (!await EnsureProjectAndMoldsReadyForAutomationAsync(token).ConfigureAwait(false))
                     {
+                        SetStatus("启动全自动化已取消：缺少台1或台2模具。");
                         return;
                     }
 
@@ -1535,6 +1776,7 @@ namespace CADRecognition
                     _automationCts?.Dispose();
                     _automationCts = null;
                     _automationLoopTask = null;
+                    _automationStartInProgress = false;
                 }
             }, token);
 
@@ -1799,6 +2041,8 @@ namespace CADRecognition
             var d624Address = GetPlcAddressAt(4);
             var d625Address = GetPlcAddressAt(5);
             var d626Address = GetPlcAddressAt(6);
+            var d627Address = GetPlcAddressAt(7);
+            var previousD627 = _d627Value; // 记录进入循环前的值，用于边沿检测
 
             AppLogger.Instance.Info($"PLC配置: Host={plcHost}, Port={plcPort}, Station={station}");
 
@@ -1815,7 +2059,25 @@ namespace CADRecognition
                 while (!token.IsCancellationRequested)
                 {
                     AppLogger.Instance.Debug("读取 PLC 寄存器快照...");
-                    await UpdatePlcSnapshotAsync(plcHost, plcPort, station, d600Address, d620Address, d622Address, d623Address, d624Address, d625Address, d626Address, token).ConfigureAwait(true);
+                    await UpdatePlcSnapshotAsync(plcHost, plcPort, station, d600Address, d620Address, d622Address, d623Address, d624Address, d625Address, d626Address, d627Address, token).ConfigureAwait(true);
+
+                    // 检测 D627 复位信号（0→1 边沿）
+                    if (previousD627 == 0 && _d627Value == 1)
+                    {
+                        AppLogger.Instance.Info("检测到 D627 复位信号（0→1），停止当前工作并重置软件...");
+                        SetStatus("收到复位信号，正在重置软件...");
+                        await TriggerSoftwareResetAsync(token).ConfigureAwait(true);
+                        // 复位完成后清除 D627 值，继续监听
+                        _d627Value = 0;
+                        previousD627 = 0;
+                        RefreshPlcRegisters();
+                        if (!string.IsNullOrWhiteSpace(d627Address))
+                        {
+                            await WriteSingleIntAsync(plcHost, plcPort, station, d627Address, 0, token).ConfigureAwait(true);
+                        }
+                        continue;
+                    }
+                    previousD627 = _d627Value;
 
                     var initialD626 = _d626Value;
                     SetStatus($"已记录 {d626Address} 初始值：{initialD626}，等待变化...");
@@ -2080,19 +2342,99 @@ namespace CADRecognition
             await _modbusTcpCommService.SendExportModelAsync(host, port, station, registerAddress, model, encoding).ConfigureAwait(true);
         }
 
-        private Task<ModbusTcpNet> GetPlcClientAsync(string host, int port, byte station)
+        private async Task<ModbusTcpNet?> GetPlcClientAsync(string host, int port, byte station)
         {
             var key = $"{host}:{port}:{station}";
+            var isFirstConnect = _plcClient is null || !string.Equals(_plcClientKey, key, StringComparison.Ordinal);
+
+            // 已验证连接有效：直接复用
             if (_plcClient is not null && string.Equals(_plcClientKey, key, StringComparison.Ordinal) && _plcIsConnected)
             {
-                return Task.FromResult(_plcClient);
+                return _plcClient;
             }
 
-            _plcClient?.Dispose();
-            _plcClient = new ModbusTcpNet(host, port, station) { AddressStartWithZero = true };
-            _plcClientKey = key;
-            _plcIsConnected = true;
-            return Task.FromResult(_plcClient);
+            // 节流：上次重连失败后未到冷却时间，复用旧客户端（即使未连接），避免 1336 次重复 ERROR
+            if (_plcClient is not null && !_plcIsConnected && !ShouldReconnectPlc())
+            {
+                return _plcClient;
+            }
+
+            // 旧客户端已断开且超过冷却时间，释放旧资源后重建
+            SafeDisposePlcClient();
+
+            ModbusTcpNet? newClient = null;
+            try
+            {
+                newClient = new ModbusTcpNet(host, port, station) { AddressStartWithZero = true };
+                var connectStartTime = DateTime.Now;
+                var connectResult = await newClient.ConnectServerAsync().ConfigureAwait(false);
+                var connectElapsed = (DateTime.Now - connectStartTime).TotalMilliseconds;
+
+                if (connectResult.IsSuccess)
+                {
+                    _plcClient = newClient;
+                    _plcClientKey = key;
+                    _plcIsConnected = true;
+                    _lastPlcReconnectAttempt = DateTime.MinValue;
+
+                    if (isFirstConnect)
+                    {
+                        AppLogger.Instance.Info($"【首次连接PLC-成功】地址: {host}:{port}, 站号: {station}, 耗时: {connectElapsed:F0}ms");
+                    }
+                    else
+                    {
+                        AppLogger.Instance.Debug($"PLC连接已验证: {host}:{port}, 耗时: {connectElapsed:F0}ms");
+                    }
+                    return _plcClient;
+                }
+                else
+                {
+                    AppLogger.Instance.Error($"PLC连接验证失败: {connectResult.Message}, 地址: {host}:{port}, 耗时: {connectElapsed:F0}ms");
+                    _plcIsConnected = false;
+                    _lastPlcReconnectAttempt = DateTime.Now;
+                    SafeDisposePlcClient(newClient);
+                    return null;
+                }
+            }
+            catch (Exception ex)
+            {
+                var connectElapsed = (DateTime.Now - (_lastPlcReconnectAttempt == DateTime.MinValue ? DateTime.Now : _lastPlcReconnectAttempt)).TotalMilliseconds;
+                AppLogger.Instance.Error($"PLC连接验证异常: {ex.GetType().Name} - {ex.Message}, 地址: {host}:{port}", ex);
+                _plcIsConnected = false;
+                _lastPlcReconnectAttempt = DateTime.Now;
+                SafeDisposePlcClient(newClient);
+                return null;
+            }
+        }
+
+        private void SafeDisposePlcClient(ModbusTcpNet? client = null)
+        {
+            var target = client ?? _plcClient;
+            if (target is null) return;
+
+            try
+            {
+                target.ConnectClose();
+            }
+            catch
+            {
+                // 忽略关闭异常，目标资源即将被释放
+            }
+
+            try
+            {
+                target.Dispose();
+            }
+            catch
+            {
+                // 忽略二次释放引发的 ObjectDisposedException
+            }
+
+            if (client is null)
+            {
+                _plcClient = null;
+                _plcClientKey = string.Empty;
+            }
         }
 
         private void MarkPlcDisconnected()
@@ -2123,6 +2465,10 @@ namespace CADRecognition
             {
                 token.ThrowIfCancellationRequested();
                 var client = await GetPlcClientAsync(host, port, station).ConfigureAwait(true);
+                if (client is null)
+                {
+                    throw new TimeoutException($"PLC连接不可用：{host}:{port}");
+                }
                 var plcAddress = NormalizePlcAddress(address);
                 var wordValue = value < short.MinValue ? short.MinValue : value > short.MaxValue ? short.MaxValue : (short)value;
                 await _plcIoLock.WaitAsync(ct).ConfigureAwait(true);
@@ -2147,6 +2493,10 @@ namespace CADRecognition
             try
             {
                 var client = await GetPlcClientAsync(host, port, station).ConfigureAwait(false);
+                if (client is null)
+                {
+                    return;
+                }
                 var plcAddress = NormalizePlcAddress(address);
                 var wordValue = value < short.MinValue ? short.MinValue : value > short.MaxValue ? short.MaxValue : (short)value;
 
@@ -2179,6 +2529,10 @@ namespace CADRecognition
             {
                 token.ThrowIfCancellationRequested();
                 var client = await GetPlcClientAsync(host, port, station).ConfigureAwait(true);
+                if (client is null)
+                {
+                    return _d600Value;
+                }
                 var plcAddress = NormalizePlcAddress(address);
 
                 try
@@ -2362,6 +2716,10 @@ namespace CADRecognition
             {
                 token.ThrowIfCancellationRequested();
                 var client = await GetPlcClientAsync(host, port, station).ConfigureAwait(true);
+                if (client is null)
+                {
+                    throw new TimeoutException($"PLC连接不可用：{host}:{port}");
+                }
                 var plcAddress = NormalizePlcAddress(address);
                 await _plcIoLock.WaitAsync(ct).ConfigureAwait(true);
                 try
@@ -2429,6 +2787,10 @@ namespace CADRecognition
             {
                 token.ThrowIfCancellationRequested();
                 var client = await GetPlcClientAsync(host, port, station).ConfigureAwait(true);
+                if (client is null)
+                {
+                    return _d620Value;
+                }
                 var plcAddress = NormalizePlcAddress(address);
                 await _plcIoLock.WaitAsync(ct).ConfigureAwait(true);
                 try
@@ -2526,6 +2888,9 @@ namespace CADRecognition
                 case 626:
                     if (_d626Value != value) changed = true;
                     _d626Value = value; break;
+                case 627:
+                    if (_d627Value != value) changed = true;
+                    _d627Value = value; break;
                 default: return;
             }
 
@@ -2537,7 +2902,7 @@ namespace CADRecognition
             RefreshPlcRegisters();
         }
 
-        private async Task UpdatePlcSnapshotAsync(string host, int port, byte station, string d600Address, string d620Address, string d622Address, string d623Address, string d624Address, string d625Address, string d626Address, CancellationToken token)
+        private async Task UpdatePlcSnapshotAsync(string host, int port, byte station, string d600Address, string d620Address, string d622Address, string d623Address, string d624Address, string d625Address, string d626Address, string d627Address, CancellationToken token)
         {
             _d600Value = await ReadD600FileNameAsync(host, port, station, d600Address, token).ConfigureAwait(true);
             _d620Value = await ReadPlcBoundaryAsync(host, port, station, d620Address, token).ConfigureAwait(true);
@@ -2545,6 +2910,7 @@ namespace CADRecognition
             _d623Value = await ReadIntAsync(host, port, station, d623Address, 623, token).ConfigureAwait(true);
             _d624Value = await ReadIntAsync(host, port, station, d624Address, 624, token).ConfigureAwait(true);
             _d626Value = await ReadIntAsync(host, port, station, d626Address, 626, token).ConfigureAwait(true);
+            _d627Value = await ReadIntAsync(host, port, station, d627Address, 627, token).ConfigureAwait(true);
             _d625Value = 1;
             RefreshPlcRegisters();
         }
@@ -4793,8 +5159,26 @@ namespace CADRecognition
                     continue;
                 }
 
+                // 边缘孔必须是"有意义"的特征——中心到最远边的距离至少是外框短边的 6%，
+                // 排除板料轮廓线、窄缝隙等干扰数据。
+                var groupMinX = group.Min(p => p.X);
+                var groupMaxX = group.Max(p => p.X);
+                var groupMinY = group.Min(p => p.Y);
+                var groupMaxY = group.Max(p => p.Y);
                 var cx = group.Average(p => p.X);
                 var cy = group.Average(p => p.Y);
+                var minSideDist = new[]
+                {
+                    Math.Abs(cx - groupMinX),
+                    Math.Abs(groupMaxX - cx),
+                    Math.Abs(cy - groupMinY),
+                    Math.Abs(groupMaxY - cy)
+                }.Min();
+                if (minSideDist < Math.Min(outer.Width, outer.Height) * 0.06)
+                {
+                    continue;
+                }
+
                 var sideDistances = new[]
                 {
                     (Side: "Left", Distance: Math.Abs(cx - outer.MinX)),
@@ -5091,6 +5475,12 @@ namespace CADRecognition
                 }
             }
 
+            // 关键修复：当孔的几何特征与板外轮廓共线/共点时（如左边缘凹陷处的孔），
+            // 它们会被连成一条长链而不是独立闭环。这里先把与外轮廓共线/共点的
+            // 边剥离出来，剩下的边才能正确形成独立孔的闭合环。
+            var outer = DetectOuterRectangle(doc);
+            segments = StripOuterContourSegments(segments, outer);
+
             var tol = 1.0;
             (double X, double Y) Snap((double X, double Y) p)
                 => (Math.Round(p.X / tol) * tol, Math.Round(p.Y / tol) * tol);
@@ -5180,6 +5570,97 @@ namespace CADRecognition
             }
 
             return loops;
+        }
+
+        /// <summary>
+        /// 剥离与板外轮廓共线/共点的边，使剩余边能正确拼成独立孔的闭环。
+        /// 判定规则：边两端点 X 都贴近 outer.MinX/MaxX，或 Y 都贴近 outer.MinY/MaxY，或
+        /// 任一端点恰好落在外轮廓路径上的（用 outer 的边作为剔除依据）。
+        /// </summary>
+        private static List<(double X, double Y)[]> StripOuterContourSegments(List<(double X, double Y)[]> segments, RectBounds outer)
+        {
+            if (segments.Count == 0 || outer.Width <= 0 || outer.Height <= 0)
+            {
+                return segments;
+            }
+
+            // 容差：取外框短边的 1% 作为"贴近边界"判定阈值。
+            var edgeTol = Math.Max(Math.Min(outer.Width, outer.Height) * 0.01, 0.5);
+
+            // 收集板边界上的所有"外边端点"。
+            var edgeEndpoints = new HashSet<(double X, double Y)>();
+            void AddEdgePoint(double x, double y)
+            {
+                edgeEndpoints.Add((Math.Round(x, 3), Math.Round(y, 3)));
+            }
+
+            // 四条边角
+            AddEdgePoint(outer.MinX, outer.MinY);
+            AddEdgePoint(outer.MinX, outer.MaxY);
+            AddEdgePoint(outer.MaxX, outer.MinY);
+            AddEdgePoint(outer.MaxX, outer.MaxY);
+
+            // 提取所有 Line 中"明显沿着外框边"的端点（X 极近 MinX/MaxX 或 Y 极近 MinY/MaxY 且长度 >= 外框短边的 5%）
+            var minSideLen = Math.Min(outer.Width, outer.Height) * 0.05;
+            foreach (var l in doc.Entities.Lines)
+            {
+                AddEdgePoint(l.StartPoint.X, l.StartPoint.Y);
+                AddEdgePoint(l.EndPoint.X, l.EndPoint.Y);
+            }
+
+            bool IsOnOuterEdge((double X, double Y) p)
+            {
+                if (Math.Abs(p.X - outer.MinX) <= edgeTol) return true;
+                if (Math.Abs(p.X - outer.MaxX) <= edgeTol) return true;
+                if (Math.Abs(p.Y - outer.MinY) <= edgeTol) return true;
+                if (Math.Abs(p.Y - outer.MaxY) <= edgeTol) return true;
+                return false;
+            }
+
+            var kept = new List<(double X, double Y)[]>();
+            foreach (var seg in segments)
+            {
+                if (seg.Length < 2)
+                {
+                    kept.Add(seg);
+                    continue;
+                }
+
+                var s0 = seg[0];
+                var s1 = seg[^1];
+
+                var s0OnEdge = IsOnOuterEdge(s0);
+                var s1OnEdge = IsOnOuterEdge(s1);
+
+                // 两端都不在边界上 → 内部特征，保留
+                if (!s0OnEdge && !s1OnEdge)
+                {
+                    kept.Add(seg);
+                    continue;
+                }
+
+                // 计算"沿外边方向的长度分量"：水平线段长度 = |x2-x1|，垂直线段长度 = |y2-y1|
+                var dx = Math.Abs(s0.X - s1.X);
+                var dy = Math.Abs(s0.Y - s1.Y);
+
+                // 两端都在边界，且边长大于外框短边的 5% → 视为板外轮廓边，剥离
+                if (s0OnEdge && s1OnEdge)
+                {
+                    var lengthAlongEdge = Math.Max(dx, dy);
+                    if (lengthAlongEdge >= minSideLen)
+                    {
+                        continue;
+                    }
+                    // 短边但两端都在外边 → 通常是孔的边界线（如垂直外边的孔边），保留
+                    kept.Add(seg);
+                    continue;
+                }
+
+                // 仅一端在边界上：保留（属于孔的一部分）
+                kept.Add(seg);
+            }
+
+            return kept;
         }
 
         public static IReadOnlyList<(double X, double Y)> ExpandPolyline2D(Polyline2D polyline, int bulgeSamplesPerSegment)
@@ -5471,9 +5952,8 @@ namespace CADRecognition
         {
             var pts = new List<(double X, double Y)>();
             pts.AddRange(doc.Entities.Lines.SelectMany(l => new[] { (l.StartPoint.X, l.StartPoint.Y), (l.EndPoint.X, l.EndPoint.Y) }));
-            pts.AddRange(doc.Entities.Circles.SelectMany(c => SampleArc(new Arc(c.Center, c.Radius, 0, 360), 24)));
-            pts.AddRange(doc.Entities.Arcs.SelectMany(a => SampleArc(a, 24)));
-            pts.AddRange(doc.Entities.Polylines2D.SelectMany(pl => ExpandPolyline2D(pl, 24)));
+            pts.AddRange(doc.Entities.Arcs.SelectMany(a => new[] { (a.Center.X + a.Radius, a.Center.Y), (a.Center.X - a.Radius, a.Center.Y) }));
+            pts.AddRange(doc.Entities.Circles.Select(c => (c.Center.X, c.Center.Y)));
             return pts;
         }
 
@@ -7423,18 +7903,25 @@ namespace CADRecognition
 
         private static string? GetEdgePartialPrefilterRejectReason(HoleFeature hole, RectBounds holeBounds, HoleFeature mold, RectBounds moldBounds)
         {
+            // 边缘孔是沿板边开放轮廓，提取的 bbox 可能与模具 bbox 存在 90° 旋转差异。
+            // 检查两种方向：原始 和 旋转90°，只要有一种方向满足尺寸要求即放行。
             var holeLong = Math.Max(holeBounds.Width, holeBounds.Height);
-            var holeShort = Math.Max(Math.Min(holeBounds.Width, holeBounds.Height), 1e-6);
+            var holeShort = Math.Min(holeBounds.Width, holeBounds.Height);
             var moldLong = Math.Max(moldBounds.Width, moldBounds.Height);
-            var moldShort = Math.Max(Math.Min(moldBounds.Width, moldBounds.Height), 1e-6);
-            if (holeLong > moldLong + 0.01 || holeShort > moldShort + 0.01)
+            var moldShort = Math.Min(moldBounds.Width, moldBounds.Height);
+            const double sizeTolerance = 0.50; // 允许 hole 比 mold 大 50%（长宽均适用）
+            var fitsOriginal = holeLong <= moldLong * (1.0 + sizeTolerance) && holeShort <= moldShort * (1.0 + sizeTolerance);
+            var fitsRotated = holeLong <= moldShort * (1.0 + sizeTolerance) && holeShort <= moldLong * (1.0 + sizeTolerance);
+            if (!fitsOriginal && !fitsRotated)
             {
-                return $"bbox long/short too large: hole=({holeLong:F3},{holeShort:F3}), mold=({moldLong:F3},{moldShort:F3})";
+                return $"bbox too large (both orientations): hole=({holeLong:F3},{holeShort:F3}), mold=({moldLong:F3},{moldShort:F3})";
             }
 
-            if (hole.Perimeter > mold.Perimeter * 1.001)
+            // 周长允许大 50%（边缘孔是开放轮廓，周长会更大）
+            const double perimTolerance = 0.50;
+            if (hole.Perimeter > mold.Perimeter * (1.0 + perimTolerance))
             {
-                return $"perimeter too large: hole={hole.Perimeter:F3}, moldLimit={mold.Perimeter * 1.35:F3}";
+                return $"perimeter too large: hole={hole.Perimeter:F3}, moldLimit={mold.Perimeter * (1.0 + perimTolerance):F3}";
             }
 
             return null;
@@ -7468,7 +7955,9 @@ namespace CADRecognition
                     var refined = RefinePartialPlacement(holePoints, moldPoints, placement, out var coverage, out var trimmedDistance);
                     var score = trimmedDistance + (1.0 - coverage) * 5.0;
                     var anchorName = $"{holeAnchor.Name}->{moldAnchor.Name}";
-                    if (coverage < 0.95 || trimmedDistance > 0.5)
+                    // 放宽覆盖率要求：边缘孔是开放轮廓，与完整模具轮廓的覆盖率自然低于完整孔匹配。
+                    // 从 95% 降至 80%，允许更多候选锚点对参与评分。
+                    if (coverage < 0.80 || trimmedDistance > 0.5)
                     {
                         if (score < bestFailedScore)
                         {
@@ -7980,4 +8469,3 @@ namespace CADRecognition
         public event PropertyChangedEventHandler? PropertyChanged;
     }
 }
-
