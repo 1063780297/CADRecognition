@@ -761,6 +761,16 @@ namespace CADRecognition
             await TryRestoreLastMoldsAsync();
             RefreshPlcRegisters();
 
+            // 启动自动化前，先把手动发送保存的 PLC 连接参数恢复到进程内共享字段。
+            try
+            {
+                TcpExportDialog.LoadSharedSettingsFromHistory();
+            }
+            catch (Exception ex)
+            {
+                AppLogger.Instance.Warn($"加载已保存的 PLC 连接设置失败，将使用默认值：{ex.Message}");
+            }
+
             // 软件启动后自动进入全自动化流程界面（PLC寄存器监视窗口 + 自动化后台循环）。
             try
             {

@@ -118,6 +118,50 @@ namespace CADRecognition
             if (swapBytes.HasValue) SharedSwapBytes = swapBytes.Value;
         }
 
+        public static void LoadSharedSettingsFromHistory()
+        {
+            var settingsDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "CADRecognition");
+            var historyPath = Path.Combine(settingsDirectory, "tcp-history.json");
+            var customContentPath = Path.Combine(settingsDirectory, "tcp-custom-content.json");
+
+            try
+            {
+                if (File.Exists(historyPath))
+                {
+                    var historyJson = File.ReadAllText(historyPath);
+                    var history = JsonSerializer.Deserialize<TcpConnectionHistoryStore>(historyJson);
+                    if (history is not null)
+                    {
+                        UpdateSharedConnectionSettings(
+                            history.LastHost,
+                            history.LastPort,
+                            history.LastStation,
+                            history.LastHoldingRegisterAddress);
+                    }
+                }
+
+                if (File.Exists(customContentPath))
+                {
+                    var customContentJson = File.ReadAllText(customContentPath);
+                    var customContent = JsonSerializer.Deserialize<TcpCustomContentStore>(customContentJson);
+                    if (customContent is not null)
+                    {
+                        UpdateSharedConnectionSettings(
+                            string.Empty,
+                            string.Empty,
+                            string.Empty,
+                            string.Empty,
+                            customContent.Encoding,
+                            customContent.SwapBytes);
+                    }
+                }
+            }
+            catch
+            {
+                // 设置文件损坏或不可读时保留默认配置，避免阻止软件启动。
+            }
+        }
+
         private void HookAutoSave(TextBox textBox)
         {
             textBox.TextChanged += (_, __) =>
