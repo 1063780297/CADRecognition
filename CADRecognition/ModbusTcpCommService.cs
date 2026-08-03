@@ -28,30 +28,9 @@ namespace CADRecognition
         {
             lock (_sync)
             {
-                DisposeClient(_client);
+                _client?.Dispose();
                 _client = null;
                 _clientKey = string.Empty;
-            }
-        }
-
-        private static void DisposeClient(ModbusTcpNet? client)
-        {
-            if (client is null) return;
-            try
-            {
-                client.ConnectClose();
-            }
-            catch
-            {
-                // 忽略关闭异常，目标资源即将被释放
-            }
-            try
-            {
-                client.Dispose();
-            }
-            catch
-            {
-                // 忽略二次释放引发的 ObjectDisposedException
             }
         }
 
@@ -65,7 +44,7 @@ namespace CADRecognition
                     return _client;
                 }
 
-                DisposeClient(_client);
+                _client?.Dispose();
                 _client = new ModbusTcpNet(host, port, station) { AddressStartWithZero = true };
                 _clientKey = key;
                 return _client;

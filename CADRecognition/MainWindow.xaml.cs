@@ -2352,41 +2352,37 @@ namespace CADRecognition
             await _modbusTcpCommService.SendExportModelAsync(host, port, station, registerAddress, model, encoding).ConfigureAwait(true);
         }
 
-        private async Task<ModbusTcpNet?> GetPlcClientAsync(string host, int port, byte station)
+        private async Task<ModbusTcpNet> GetPlcClientAsync(string host, int port, byte station)
         {
             var key = $"{host}:{port}:{station}";
             var isFirstConnect = _plcClient is null || !string.Equals(_plcClientKey, key, StringComparison.Ordinal);
 
-            // 已验证连接有效：直接复用
             if (_plcClient is not null && string.Equals(_plcClientKey, key, StringComparison.Ordinal) && _plcIsConnected)
             {
                 return _plcClient;
             }
 
-            // 节流：上次重连失败后未到冷却时间，复用旧客户端（即使未连接），避免 1336 次重复 ERROR
-            if (_plcClient is not null && !_plcIsConnected && !ShouldReconnectPlc())
+            _plcClient?.Dispose();
+            _plcClient = new ModbusTcpNet(host, port, station) { AddressStartWithZero = true };
+            _plcClientKey = key;
+
+            // 首次连接或切换PLC时，记录详细信息
+            if (isFirstConnect)
             {
-                return _plcClient;
+                AppLogger.Instance.Info($"【首次连接PLC】目标地址: {host}:{port}, 站号: {station}, 时间: {DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}");
             }
 
-            // 旧客户端已断开且超过冷却时间，释放旧资源后重建
-            SafeDisposePlcClient();
-
-            ModbusTcpNet? newClient = null;
+            // 尝试进行一次读取验证连接是否真正建立
+            var connectStartTime = DateTime.Now;
             try
             {
-                newClient = new ModbusTcpNet(host, port, station) { AddressStartWithZero = true };
-                var connectStartTime = DateTime.Now;
-                var connectResult = await newClient.ConnectServerAsync().ConfigureAwait(false);
+                using var connectCts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                var testResult = await _plcClient.ReadAsync("0", 1).ConfigureAwait(false);
                 var connectElapsed = (DateTime.Now - connectStartTime).TotalMilliseconds;
 
-                if (connectResult.IsSuccess)
+                if (testResult.IsSuccess)
                 {
-                    _plcClient = newClient;
-                    _plcClientKey = key;
                     _plcIsConnected = true;
-                    _lastPlcReconnectAttempt = DateTime.MinValue;
-
                     if (isFirstConnect)
                     {
                         AppLogger.Instance.Info($"【首次连接PLC-成功】地址: {host}:{port}, 站号: {station}, 耗时: {connectElapsed:F0}ms");
@@ -2399,51 +2395,17 @@ namespace CADRecognition
                 }
                 else
                 {
-                    AppLogger.Instance.Error($"PLC连接验证失败: {connectResult.Message}, 地址: {host}:{port}, 耗时: {connectElapsed:F0}ms");
+                    AppLogger.Instance.Error($"PLC连接验证失败: {testResult.Message}, 地址: {host}:{port}, 耗时: {connectElapsed:F0}ms");
                     _plcIsConnected = false;
-                    _lastPlcReconnectAttempt = DateTime.Now;
-                    SafeDisposePlcClient(newClient);
-                    return null;
+                    return _plcClient;
                 }
             }
             catch (Exception ex)
             {
-                var connectElapsed = (DateTime.Now - (_lastPlcReconnectAttempt == DateTime.MinValue ? DateTime.Now : _lastPlcReconnectAttempt)).TotalMilliseconds;
-                AppLogger.Instance.Error($"PLC连接验证异常: {ex.GetType().Name} - {ex.Message}, 地址: {host}:{port}", ex);
+                var connectElapsed = (DateTime.Now - connectStartTime).TotalMilliseconds;
+                AppLogger.Instance.Error($"PLC连接验证异常: {ex.GetType().Name} - {ex.Message}, 地址: {host}:{port}, 耗时: {connectElapsed:F0}ms", ex);
                 _plcIsConnected = false;
-                _lastPlcReconnectAttempt = DateTime.Now;
-                SafeDisposePlcClient(newClient);
-                return null;
-            }
-        }
-
-        private void SafeDisposePlcClient(ModbusTcpNet? client = null)
-        {
-            var target = client ?? _plcClient;
-            if (target is null) return;
-
-            try
-            {
-                target.ConnectClose();
-            }
-            catch
-            {
-                // 忽略关闭异常，目标资源即将被释放
-            }
-
-            try
-            {
-                target.Dispose();
-            }
-            catch
-            {
-                // 忽略二次释放引发的 ObjectDisposedException
-            }
-
-            if (client is null)
-            {
-                _plcClient = null;
-                _plcClientKey = string.Empty;
+                return _plcClient;
             }
         }
 
@@ -2475,10 +2437,6 @@ namespace CADRecognition
             {
                 token.ThrowIfCancellationRequested();
                 var client = await GetPlcClientAsync(host, port, station).ConfigureAwait(true);
-                if (client is null)
-                {
-                    throw new TimeoutException($"PLC连接不可用：{host}:{port}");
-                }
                 var plcAddress = NormalizePlcAddress(address);
                 var wordValue = value < short.MinValue ? short.MinValue : value > short.MaxValue ? short.MaxValue : (short)value;
                 await _plcIoLock.WaitAsync(ct).ConfigureAwait(true);
@@ -2503,10 +2461,6 @@ namespace CADRecognition
             try
             {
                 var client = await GetPlcClientAsync(host, port, station).ConfigureAwait(false);
-                if (client is null)
-                {
-                    return;
-                }
                 var plcAddress = NormalizePlcAddress(address);
                 var wordValue = value < short.MinValue ? short.MinValue : value > short.MaxValue ? short.MaxValue : (short)value;
 
@@ -2539,10 +2493,6 @@ namespace CADRecognition
             {
                 token.ThrowIfCancellationRequested();
                 var client = await GetPlcClientAsync(host, port, station).ConfigureAwait(true);
-                if (client is null)
-                {
-                    return _d600Value;
-                }
                 var plcAddress = NormalizePlcAddress(address);
 
                 try
@@ -2726,10 +2676,6 @@ namespace CADRecognition
             {
                 token.ThrowIfCancellationRequested();
                 var client = await GetPlcClientAsync(host, port, station).ConfigureAwait(true);
-                if (client is null)
-                {
-                    throw new TimeoutException($"PLC连接不可用：{host}:{port}");
-                }
                 var plcAddress = NormalizePlcAddress(address);
                 await _plcIoLock.WaitAsync(ct).ConfigureAwait(true);
                 try
@@ -2797,10 +2743,6 @@ namespace CADRecognition
             {
                 token.ThrowIfCancellationRequested();
                 var client = await GetPlcClientAsync(host, port, station).ConfigureAwait(true);
-                if (client is null)
-                {
-                    return _d620Value;
-                }
                 var plcAddress = NormalizePlcAddress(address);
                 await _plcIoLock.WaitAsync(ct).ConfigureAwait(true);
                 try
@@ -5169,26 +5111,8 @@ namespace CADRecognition
                     continue;
                 }
 
-                // 边缘孔必须是"有意义"的特征——中心到最远边的距离至少是外框短边的 6%，
-                // 排除板料轮廓线、窄缝隙等干扰数据。
-                var groupMinX = group.Min(p => p.X);
-                var groupMaxX = group.Max(p => p.X);
-                var groupMinY = group.Min(p => p.Y);
-                var groupMaxY = group.Max(p => p.Y);
                 var cx = group.Average(p => p.X);
                 var cy = group.Average(p => p.Y);
-                var minSideDist = new[]
-                {
-                    Math.Abs(cx - groupMinX),
-                    Math.Abs(groupMaxX - cx),
-                    Math.Abs(cy - groupMinY),
-                    Math.Abs(groupMaxY - cy)
-                }.Min();
-                if (minSideDist < Math.Min(outer.Width, outer.Height) * 0.06)
-                {
-                    continue;
-                }
-
                 var sideDistances = new[]
                 {
                     (Side: "Left", Distance: Math.Abs(cx - outer.MinX)),
@@ -5485,12 +5409,6 @@ namespace CADRecognition
                 }
             }
 
-            // 关键修复：当孔的几何特征与板外轮廓共线/共点时（如左边缘凹陷处的孔），
-            // 它们会被连成一条长链而不是独立闭环。这里先把与外轮廓共线/共点的
-            // 边剥离出来，剩下的边才能正确形成独立孔的闭合环。
-            var outer = DetectOuterRectangle(doc);
-            segments = StripOuterContourSegments(segments, outer);
-
             var tol = 1.0;
             (double X, double Y) Snap((double X, double Y) p)
                 => (Math.Round(p.X / tol) * tol, Math.Round(p.Y / tol) * tol);
@@ -5580,97 +5498,6 @@ namespace CADRecognition
             }
 
             return loops;
-        }
-
-        /// <summary>
-        /// 剥离与板外轮廓共线/共点的边，使剩余边能正确拼成独立孔的闭环。
-        /// 判定规则：边两端点 X 都贴近 outer.MinX/MaxX，或 Y 都贴近 outer.MinY/MaxY，或
-        /// 任一端点恰好落在外轮廓路径上的（用 outer 的边作为剔除依据）。
-        /// </summary>
-        private static List<(double X, double Y)[]> StripOuterContourSegments(List<(double X, double Y)[]> segments, RectBounds outer)
-        {
-            if (segments.Count == 0 || outer.Width <= 0 || outer.Height <= 0)
-            {
-                return segments;
-            }
-
-            // 容差：取外框短边的 1% 作为"贴近边界"判定阈值。
-            var edgeTol = Math.Max(Math.Min(outer.Width, outer.Height) * 0.01, 0.5);
-
-            // 收集板边界上的所有"外边端点"。
-            var edgeEndpoints = new HashSet<(double X, double Y)>();
-            void AddEdgePoint(double x, double y)
-            {
-                edgeEndpoints.Add((Math.Round(x, 3), Math.Round(y, 3)));
-            }
-
-            // 四条边角
-            AddEdgePoint(outer.MinX, outer.MinY);
-            AddEdgePoint(outer.MinX, outer.MaxY);
-            AddEdgePoint(outer.MaxX, outer.MinY);
-            AddEdgePoint(outer.MaxX, outer.MaxY);
-
-            // 提取所有 Line 中"明显沿着外框边"的端点（X 极近 MinX/MaxX 或 Y 极近 MinY/MaxY 且长度 >= 外框短边的 5%）
-            var minSideLen = Math.Min(outer.Width, outer.Height) * 0.05;
-            foreach (var l in doc.Entities.Lines)
-            {
-                AddEdgePoint(l.StartPoint.X, l.StartPoint.Y);
-                AddEdgePoint(l.EndPoint.X, l.EndPoint.Y);
-            }
-
-            bool IsOnOuterEdge((double X, double Y) p)
-            {
-                if (Math.Abs(p.X - outer.MinX) <= edgeTol) return true;
-                if (Math.Abs(p.X - outer.MaxX) <= edgeTol) return true;
-                if (Math.Abs(p.Y - outer.MinY) <= edgeTol) return true;
-                if (Math.Abs(p.Y - outer.MaxY) <= edgeTol) return true;
-                return false;
-            }
-
-            var kept = new List<(double X, double Y)[]>();
-            foreach (var seg in segments)
-            {
-                if (seg.Length < 2)
-                {
-                    kept.Add(seg);
-                    continue;
-                }
-
-                var s0 = seg[0];
-                var s1 = seg[^1];
-
-                var s0OnEdge = IsOnOuterEdge(s0);
-                var s1OnEdge = IsOnOuterEdge(s1);
-
-                // 两端都不在边界上 → 内部特征，保留
-                if (!s0OnEdge && !s1OnEdge)
-                {
-                    kept.Add(seg);
-                    continue;
-                }
-
-                // 计算"沿外边方向的长度分量"：水平线段长度 = |x2-x1|，垂直线段长度 = |y2-y1|
-                var dx = Math.Abs(s0.X - s1.X);
-                var dy = Math.Abs(s0.Y - s1.Y);
-
-                // 两端都在边界，且边长大于外框短边的 5% → 视为板外轮廓边，剥离
-                if (s0OnEdge && s1OnEdge)
-                {
-                    var lengthAlongEdge = Math.Max(dx, dy);
-                    if (lengthAlongEdge >= minSideLen)
-                    {
-                        continue;
-                    }
-                    // 短边但两端都在外边 → 通常是孔的边界线（如垂直外边的孔边），保留
-                    kept.Add(seg);
-                    continue;
-                }
-
-                // 仅一端在边界上：保留（属于孔的一部分）
-                kept.Add(seg);
-            }
-
-            return kept;
         }
 
         public static IReadOnlyList<(double X, double Y)> ExpandPolyline2D(Polyline2D polyline, int bulgeSamplesPerSegment)
@@ -5962,8 +5789,9 @@ namespace CADRecognition
         {
             var pts = new List<(double X, double Y)>();
             pts.AddRange(doc.Entities.Lines.SelectMany(l => new[] { (l.StartPoint.X, l.StartPoint.Y), (l.EndPoint.X, l.EndPoint.Y) }));
-            pts.AddRange(doc.Entities.Arcs.SelectMany(a => new[] { (a.Center.X + a.Radius, a.Center.Y), (a.Center.X - a.Radius, a.Center.Y) }));
-            pts.AddRange(doc.Entities.Circles.Select(c => (c.Center.X, c.Center.Y)));
+            pts.AddRange(doc.Entities.Circles.SelectMany(c => SampleArc(new Arc(c.Center, c.Radius, 0, 360), 24)));
+            pts.AddRange(doc.Entities.Arcs.SelectMany(a => SampleArc(a, 24)));
+            pts.AddRange(doc.Entities.Polylines2D.SelectMany(pl => ExpandPolyline2D(pl, 24)));
             return pts;
         }
 
@@ -7913,25 +7741,18 @@ namespace CADRecognition
 
         private static string? GetEdgePartialPrefilterRejectReason(HoleFeature hole, RectBounds holeBounds, HoleFeature mold, RectBounds moldBounds)
         {
-            // 边缘孔是沿板边开放轮廓，提取的 bbox 可能与模具 bbox 存在 90° 旋转差异。
-            // 检查两种方向：原始 和 旋转90°，只要有一种方向满足尺寸要求即放行。
             var holeLong = Math.Max(holeBounds.Width, holeBounds.Height);
-            var holeShort = Math.Min(holeBounds.Width, holeBounds.Height);
+            var holeShort = Math.Max(Math.Min(holeBounds.Width, holeBounds.Height), 1e-6);
             var moldLong = Math.Max(moldBounds.Width, moldBounds.Height);
-            var moldShort = Math.Min(moldBounds.Width, moldBounds.Height);
-            const double sizeTolerance = 0.50; // 允许 hole 比 mold 大 50%（长宽均适用）
-            var fitsOriginal = holeLong <= moldLong * (1.0 + sizeTolerance) && holeShort <= moldShort * (1.0 + sizeTolerance);
-            var fitsRotated = holeLong <= moldShort * (1.0 + sizeTolerance) && holeShort <= moldLong * (1.0 + sizeTolerance);
-            if (!fitsOriginal && !fitsRotated)
+            var moldShort = Math.Max(Math.Min(moldBounds.Width, moldBounds.Height), 1e-6);
+            if (holeLong > moldLong + 0.01 || holeShort > moldShort + 0.01)
             {
-                return $"bbox too large (both orientations): hole=({holeLong:F3},{holeShort:F3}), mold=({moldLong:F3},{moldShort:F3})";
+                return $"bbox long/short too large: hole=({holeLong:F3},{holeShort:F3}), mold=({moldLong:F3},{moldShort:F3})";
             }
 
-            // 周长允许大 50%（边缘孔是开放轮廓，周长会更大）
-            const double perimTolerance = 0.50;
-            if (hole.Perimeter > mold.Perimeter * (1.0 + perimTolerance))
+            if (hole.Perimeter > mold.Perimeter * 1.001)
             {
-                return $"perimeter too large: hole={hole.Perimeter:F3}, moldLimit={mold.Perimeter * (1.0 + perimTolerance):F3}";
+                return $"perimeter too large: hole={hole.Perimeter:F3}, moldLimit={mold.Perimeter * 1.35:F3}";
             }
 
             return null;
@@ -7965,9 +7786,7 @@ namespace CADRecognition
                     var refined = RefinePartialPlacement(holePoints, moldPoints, placement, out var coverage, out var trimmedDistance);
                     var score = trimmedDistance + (1.0 - coverage) * 5.0;
                     var anchorName = $"{holeAnchor.Name}->{moldAnchor.Name}";
-                    // 放宽覆盖率要求：边缘孔是开放轮廓，与完整模具轮廓的覆盖率自然低于完整孔匹配。
-                    // 从 95% 降至 80%，允许更多候选锚点对参与评分。
-                    if (coverage < 0.80 || trimmedDistance > 0.5)
+                    if (coverage < 0.95 || trimmedDistance > 0.5)
                     {
                         if (score < bestFailedScore)
                         {
@@ -8479,3 +8298,4 @@ namespace CADRecognition
         public event PropertyChangedEventHandler? PropertyChanged;
     }
 }
+
