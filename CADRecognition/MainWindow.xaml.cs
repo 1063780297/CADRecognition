@@ -6767,25 +6767,67 @@ namespace CADRecognition
                 }
             }
 
-            // 规则：不要求“完整落模在板内”，只要模具与板材有交集即可冲。
-            bool IntersectsBoard((double X, double Y) center)
+            // 规则：冲压点必须与板材矩形有交集，且交集在两个方向上 ≥ 2mm。
+            // 同时不能完全落在板材外（中心距离板材太远）。
+            const double minBoardOverlapMm = 2.0;
+            bool IsValidStamp((double X, double Y) center)
             {
                 var minX = center.X - moldOutlineWidth * 0.5;
                 var maxX = center.X + moldOutlineWidth * 0.5;
                 var minY = center.Y - moldOutlineHeight * 0.5;
                 var maxY = center.Y + moldOutlineHeight * 0.5;
 
-                return maxX >= project.OuterRectangle.MinX &&
-                       minX <= project.OuterRectangle.MaxX &&
-                       maxY >= project.OuterRectangle.MinY &&
-                       minY <= project.OuterRectangle.MaxY;
+                var overlapX = Math.Min(maxX, project.OuterRectangle.MaxX) - Math.Max(minX, project.OuterRectangle.MinX);
+                var overlapY = Math.Min(maxY, project.OuterRectangle.MaxY) - Math.Max(minY, project.OuterRectangle.MinY);
+                if (overlapX < minBoardOverlapMm || overlapY < minBoardOverlapMm)
+                {
+                    return false;
+                }
+                return true;
+            }
+
+            // 已被其他模具覆盖判定：以矩形重叠面积 ≥ 50% 视为重复冲压。
+            bool IsCoveredByOtherHole((double X, double Y) center)
+            {
+                var stampMinX = center.X - moldOutlineWidth * 0.5;
+                var stampMaxX = center.X + moldOutlineWidth * 0.5;
+                var stampMinY = center.Y - moldOutlineHeight * 0.5;
+                var stampMaxY = center.Y + moldOutlineHeight * 0.5;
+                var stampArea = moldOutlineWidth * moldOutlineHeight;
+                if (stampArea <= 1e-9)
+                {
+                    return false;
+                }
+                foreach (var hole in project.Holes)
+                {
+                    var holeMinX = hole.Centroid.X - hole.Width * 0.5;
+                    var holeMaxX = hole.Centroid.X + hole.Width * 0.5;
+                    var holeMinY = hole.Centroid.Y - hole.Height * 0.5;
+                    var holeMaxY = hole.Centroid.Y + hole.Height * 0.5;
+                    var interX = Math.Min(stampMaxX, holeMaxX) - Math.Max(stampMinX, holeMinX);
+                    var interY = Math.Min(stampMaxY, holeMaxY) - Math.Max(stampMinY, holeMinY);
+                    if (interX <= 0 || interY <= 0)
+                    {
+                        continue;
+                    }
+                    var inter = interX * interY;
+                    if (inter / stampArea >= 0.5)
+                    {
+                        return true;
+                    }
+                }
+                return false;
             }
 
             var dedup = new List<HoleFeature>();
             const double minKeepDistance = 3.0; // 固定：相邻冲点中心距 >= 3mm 才保留
             foreach (var p in points)
             {
-                if (!IntersectsBoard(p.Centroid))
+                if (!IsValidStamp(p.Centroid))
+                {
+                    continue;
+                }
+                if (IsCoveredByOtherHole(p.Centroid))
                 {
                     continue;
                 }
