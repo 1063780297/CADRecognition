@@ -3736,28 +3736,15 @@ namespace CADRecognition
             }
 
             // 2) 画当前识别到的真实外轮廓（红色）
-            if (outerContourPoints is not null && outerContourPoints.Count >= 2)
-            {
-                var polyAll = new Polyline
-                {
-                    Stroke = new SolidColorBrush(WpfColor.FromArgb(245, 255, 82, 82)),
-                    StrokeThickness = 0.1,
-                    StrokeLineJoin = PenLineJoin.Round,
-                    StrokeStartLineCap = PenLineCap.Round,
-                    StrokeEndLineCap = PenLineCap.Round
-                };
-                foreach (var p in outerContourPoints)
-                {
-                    polyAll.Points.Add(ModelToCanvas(p.X, p.Y));
-                }
-                _zoneCanvas.Children.Add(polyAll);
-            }
+            // === 修正：外轮廓用 DetectOuterRectangle 的 bbox 表示（已是黄色虚线），无需再画红色。 ===
+            // 之前 SelectOuterContourPoints 在异型板材上会把内部符号和边界缝成一条混合路径（含斜边），
+            // 改用 bbox 后不再需要这层红色外轮廓，避免与黄色虚线重复显示。
+            _ = outerContourPoints; // suppress unused warning
 
             // 3) 青色线 = 红色外轮廓 - 矩形外轮廓（按“线段差集”绘制，避免跨段误连）
-            if (outerContourPoints is null || outerContourPoints.Count < 2)
+            // === 修正：外轮廓已简化为 bbox（黄色虚线），不再有差集可画；整段逻辑禁用。 ===
+            if (false && outerContourPoints is not null && outerContourPoints.Count >= 2)
             {
-                return;
-            }
 
             var edgeTol = Compat.Clamp(Math.Min(rect.Width, rect.Height) * 0.0004, 0.05, 0.1);
             bool IsSegmentOnRectEdge((double X, double Y) a, (double X, double Y) b)
@@ -3887,6 +3874,9 @@ namespace CADRecognition
                 return;
             }
 
+            // === DEBUG: 暂时隐藏青色 runs，便于核对几何本身是否正确 ===
+            if (false)
+            {
             foreach (var run in runs)
             {
                 var cyanPoly = new Polyline
@@ -3903,6 +3893,7 @@ namespace CADRecognition
                     cyanPoly.Points.Add(ModelToCanvas(p.X, p.Y));
                 }
                 _zoneCanvas.Children.Add(cyanPoly);
+            }
             }
 
             if (!_compactMode)
@@ -3970,6 +3961,7 @@ namespace CADRecognition
                     Canvas.SetTop(label, labelAnchor.Y - 18);
                     _zoneCanvas.Children.Add(label);
                 }
+            }
             }
         }
 
@@ -4440,124 +4432,73 @@ namespace CADRecognition
 
         public static IReadOnlyList<(double X, double Y)> ExtractOuterContourForDebug(DxfDocument doc)
         {
+            // 直接用 DetectOuterRectangle 返回的 bbox 作为视觉参考（4 个角点的矩形），
+            // 避免 BuildOuterContourByStitching 在异型板材上把内部符号与边界混合，产生斜边。
             var outer = DetectOuterRectangle(doc);
-            var contour = SelectOuterContourPoints(doc, outer).ToList();
-            if (contour.Count >= 2)
-            {
-                return contour;
-            }
-
-            // Debug fallback: pick points near outer rectangle edges so red contour is always visible.
-            var tol = Math.Max(Math.Min(outer.Width, outer.Height) * 0.01, 2.0);
-            var edgePts = CollectGeometryPoints(doc)
-                .Where(p =>
-                    Math.Abs(p.X - outer.MinX) <= tol ||
-                    Math.Abs(p.X - outer.MaxX) <= tol ||
-                    Math.Abs(p.Y - outer.MinY) <= tol ||
-                    Math.Abs(p.Y - outer.MaxY) <= tol)
-                .DistinctBy(p => ($"{Math.Round(p.X, 2)}|{Math.Round(p.Y, 2)}"))
-                .ToList();
-
-            if (edgePts.Count < 2)
-            {
-                return [];
-            }
-
-            var cx = (outer.MinX + outer.MaxX) * 0.5;
-            var cy = (outer.MinY + outer.MaxY) * 0.5;
-            return edgePts
-                .OrderBy(p => Math.Atan2(p.Y - cy, p.X - cx))
-                .ThenBy(p => Math.Sqrt((p.X - cx) * (p.X - cx) + (p.Y - cy) * (p.Y - cy)))
-                .ToList();
+            return
+            [
+                (outer.MinX, outer.MinY),
+                (outer.MaxX, outer.MinY),
+                (outer.MaxX, outer.MaxY),
+                (outer.MinX, outer.MaxY)
+            ];
         }
 
         private static IReadOnlyList<CornerStepPath> ExtractContourDifferencePaths(DxfDocument doc, RectBounds rect)
         {
-            var contour = SelectOuterContourPoints(doc, rect).ToList();
-            if (contour.Count < 2)
-            {
-                return [];
-            }
-
+            // M01 连续冲压路径 = 板材 bbox 边上的"凸出/凹进"部分，
+            // 这些部分需要被 M01 沿外轮廓路径反复冲压切除，使板材最终形状与图纸相符。
+            // 用 ExtractEdgePartialCandidates 的结果（已正确识别"板材bbox边上的凸缘"）作为 M01 路径。
+            // 板材内部的孤立场异型符号（如 L26-L30）不属于 M01 路径，需过滤。
+            var edgeCandidates = ExtractEdgePartialCandidates(doc, rect);
+            var paths = new List<CornerStepPath>();
             var edgeTol = Compat.Clamp(Math.Min(rect.Width, rect.Height) * 0.0004, 0.05, 0.1);
-            bool IsSegmentOnRectEdge((double X, double Y) a, (double X, double Y) b)
+            var minEdge = Math.Min(rect.Width, rect.Height);
+            var minContourLength = Math.Max(minEdge * 0.03, 15.0);  // 太小 = 异型符号而非边凸缘
+
+            foreach (var edge in edgeCandidates)
             {
-                var horizontal = Math.Abs(a.Y - b.Y) <= edgeTol;
-                var vertical = Math.Abs(a.X - b.X) <= edgeTol;
-
-                if (vertical)
+                if (edge.Points is null || edge.Points.Count < 2)
                 {
-                    var onLeft = Math.Abs(a.X - rect.MinX) <= edgeTol && Math.Abs(b.X - rect.MinX) <= edgeTol;
-                    var onRight = Math.Abs(a.X - rect.MaxX) <= edgeTol && Math.Abs(b.X - rect.MaxX) <= edgeTol;
-                    return onLeft || onRight;
-                }
-
-                if (horizontal)
-                {
-                    var onBottom = Math.Abs(a.Y - rect.MinY) <= edgeTol && Math.Abs(b.Y - rect.MinY) <= edgeTol;
-                    var onTop = Math.Abs(a.Y - rect.MaxY) <= edgeTol && Math.Abs(b.Y - rect.MaxY) <= edgeTol;
-                    return onBottom || onTop;
-                }
-
-                return false;
-            }
-
-            var closeGap = Math.Sqrt(
-                (contour[0].X - contour[^1].X) * (contour[0].X - contour[^1].X) +
-                (contour[0].Y - contour[^1].Y) * (contour[0].Y - contour[^1].Y));
-            var isClosed = closeGap <= edgeTol * 1.5;
-            var segCount = isClosed ? contour.Count : contour.Count - 1;
-
-            var runs = new List<List<(double X, double Y)>>();
-            var current = new List<(double X, double Y)>();
-
-            for (var i = 0; i < segCount; i++)
-            {
-                var a = contour[i];
-                var b = contour[(i + 1) % contour.Count];
-                var keepSeg = !IsSegmentOnRectEdge(a, b);
-
-                if (!keepSeg)
-                {
-                    if (current.Count >= 2)
-                    {
-                        runs.Add(current);
-                    }
-                    current = new List<(double X, double Y)>();
                     continue;
                 }
 
-                if (current.Count == 0)
+                // 计算轮廓长度
+                double length = 0;
+                for (var i = 1; i < edge.Points.Count; i++)
                 {
-                    current.Add(a);
-                    current.Add(b);
+                    var dx = edge.Points[i].X - edge.Points[i - 1].X;
+                    var dy = edge.Points[i].Y - edge.Points[i - 1].Y;
+                    length += Math.Sqrt(dx * dx + dy * dy);
                 }
-                else
+                if (length < minContourLength)
                 {
-                    var last = current[^1];
-                    if (Math.Abs(last.X - a.X) <= 1e-6 && Math.Abs(last.Y - a.Y) <= 1e-6)
-                    {
-                        current.Add(b);
-                    }
-                    else
-                    {
-                        if (current.Count >= 2)
-                        {
-                            runs.Add(current);
-                        }
-                        current = new List<(double X, double Y)> { a, b };
-                    }
+                    continue;
                 }
-            }
 
-            if (current.Count >= 2)
-            {
-                runs.Add(current);
-            }
+                // 至少一个端点必须接触 bbox 边
+                var touchesRect = edge.Points.Any(p =>
+                    Math.Abs(p.X - rect.MinX) <= edgeTol ||
+                    Math.Abs(p.X - rect.MaxX) <= edgeTol ||
+                    Math.Abs(p.Y - rect.MinY) <= edgeTol ||
+                    Math.Abs(p.Y - rect.MaxY) <= edgeTol);
+                if (!touchesRect)
+                {
+                    continue;
+                }
 
-            return runs
-                .Select((r, idx) => new CornerStepPath($"Contour{idx + 1}", r))
-                .ToList();
+                // 排除板材内部小型异型符号：bbox 边凸缘的某条边长度必须 > 30 mm，
+                // 而板材内部的小 C 形/L 形符号两个方向都 < 30 mm。
+                var xRange = edge.Points.Max(p => p.X) - edge.Points.Min(p => p.X);
+                var yRange = edge.Points.Max(p => p.Y) - edge.Points.Min(p => p.Y);
+                if (Math.Max(xRange, yRange) < 30.0)
+                {
+                    continue;
+                }
+
+                paths.Add(new CornerStepPath($"Contour:{edge.Side}", edge.Points.ToList()));
+            }
+            return paths;
         }
 
         private static List<(double X, double Y)> SelectOuterContourPoints(DxfDocument doc, RectBounds outer)
@@ -4863,59 +4804,15 @@ namespace CADRecognition
             var connectTol = Math.Max(Math.Min(outer.Width, outer.Height) * 0.002, 1.0);
             var minElementLength = Math.Max(Math.Min(outer.Width, outer.Height) * 0.01, 5.0);
             var segments = new List<List<(double X, double Y)>>();
-            var boardContour = SelectOuterContourPoints(doc, outer).ToList();
-            if (boardContour.Count >= 2)
-            {
-                var first = boardContour[0];
-                var last = boardContour[^1];
-                var closeDist = Math.Sqrt((first.X - last.X) * (first.X - last.X) + (first.Y - last.Y) * (first.Y - last.Y));
-                if (closeDist > edgeTol)
-                {
-                    boardContour.Add(first);
-                }
-            }
-
-            static double PointToSegmentDistance((double X, double Y) p, (double X, double Y) a, (double X, double Y) b)
-            {
-                var vx = b.X - a.X;
-                var vy = b.Y - a.Y;
-                var wx = p.X - a.X;
-                var wy = p.Y - a.Y;
-                var len2 = vx * vx + vy * vy;
-                if (len2 <= 1e-12)
-                {
-                    var dx0 = p.X - a.X;
-                    var dy0 = p.Y - a.Y;
-                    return Math.Sqrt(dx0 * dx0 + dy0 * dy0);
-                }
-
-                var t = Compat.Clamp((wx * vx + wy * vy) / len2, 0.0, 1.0);
-                var projX = a.X + vx * t;
-                var projY = a.Y + vy * t;
-                var dx = p.X - projX;
-                var dy = p.Y - projY;
-                return Math.Sqrt(dx * dx + dy * dy);
-            }
 
             bool IsOnRealBoardContour((double X, double Y) p)
             {
-                if (boardContour.Count < 2)
-                {
-                    return Math.Abs(p.X - outer.MinX) <= edgeTol
-                        || Math.Abs(p.X - outer.MaxX) <= edgeTol
-                        || Math.Abs(p.Y - outer.MinY) <= edgeTol
-                        || Math.Abs(p.Y - outer.MaxY) <= edgeTol;
-                }
-
-                for (var i = 1; i < boardContour.Count; i++)
-                {
-                    if (PointToSegmentDistance(p, boardContour[i - 1], boardContour[i]) <= edgeTol)
-                    {
-                        return true;
-                    }
-                }
-
-                return false;
+                // 板材边 = 直接判定该点是否贴在 outer bbox 的 4 条边上。
+                // 之前用 SelectOuterContourPoints 会把异型符号和板材边缝在一起，导致 IsOnRealBoardContour 误判。
+                return Math.Abs(p.X - outer.MinX) <= edgeTol
+                    || Math.Abs(p.X - outer.MaxX) <= edgeTol
+                    || Math.Abs(p.Y - outer.MinY) <= edgeTol
+                    || Math.Abs(p.Y - outer.MaxY) <= edgeTol;
             }
 
             bool IsBoardEdgeSegment(IReadOnlyList<(double X, double Y)> points)
@@ -7038,6 +6935,38 @@ namespace CADRecognition
             var center = ((outer.MinX + outer.MaxX) * 0.5, (outer.MinY + outer.MaxY) * 0.5);
             const double eps = 1e-9;
 
+            // 判断 b 是否是凹角（外法线方向相反）：用于短边删除 / 近共线删除时保护凹角拐点，
+            // 避免偏移路径"跳过凹角"造成紫色虚线斜跨板内。
+            // 算法：对每条边取左法线（顺时针外偏移方向），看两条边的法线点积：
+            //   dot > 0  → 凸角（两条边向外发散）
+            //   dot < 0  → 凹角（两条边向外反向）
+            bool IsConcaveCorner((double X, double Y) a, (double X, double Y) b, (double X, double Y) c)
+            {
+                var abx = b.X - a.X;
+                var aby = b.Y - a.Y;
+                var bcx = c.X - b.X;
+                var bcy = c.Y - b.Y;
+                var lab = Math.Sqrt(abx * abx + aby * aby);
+                var lbc = Math.Sqrt(bcx * bcx + bcy * bcy);
+                if (lab <= eps || lbc <= eps)
+                {
+                    return false;
+                }
+
+                var tx1 = abx / lab;
+                var ty1 = aby / lab;
+                var tx2 = bcx / lbc;
+                var ty2 = bcy / lbc;
+
+                // 顺时针外偏移方向：左法线 ( -ty, tx )
+                var n1x = -ty1;
+                var n1y = tx1;
+                var n2x = -ty2;
+                var n2y = tx2;
+
+                return (n1x * n2x + n1y * n2y) < 0.0;
+            }
+
             // 先清理重复点，避免零长度段造成角点错位。
             var clean = new List<(double X, double Y)>();
             foreach (var p in chain)
@@ -7062,7 +6991,9 @@ namespace CADRecognition
 
             // 关键：偏移前先净化路径，去掉“极短边 + 近共线伪拐点”，避免产生额外角点。
             // 这能消除图中 2~6 一带那种由微小抖动引入的多余折线。
-            var axisMergeTol = Math.Max(Math.Min(outer.Width, outer.Height) * 0.002, 0.6);
+            // 注意：阈值不能太大，否则会把凹角的真实拐点也吞掉，导致偏移路径“跳过凹角”，
+            //       渲染出斜跨板内的紫色虚线。
+            var axisMergeTol = Math.Max(Math.Min(outer.Width, outer.Height) * 0.0005, 0.15);
             bool changed;
             do
             {
@@ -7076,6 +7007,13 @@ namespace CADRecognition
                     var c = clean[i + 1];
                     var ab = Math.Sqrt((b.X - a.X) * (b.X - a.X) + (b.Y - a.Y) * (b.Y - a.Y));
                     var bc = Math.Sqrt((c.X - b.X) * (c.X - b.X) + (c.Y - b.Y) * (c.Y - b.Y));
+
+                    // 凹角保护：若 a→b 与 b→c 的外法线方向相反，b 是凹角拐点，不能删。
+                    if (IsConcaveCorner(a, b, c))
+                    {
+                        continue;
+                    }
+
                     if (ab <= axisMergeTol || bc <= axisMergeTol)
                     {
                         clean.RemoveAt(i);
@@ -7102,6 +7040,13 @@ namespace CADRecognition
 
                     var lab = Math.Sqrt(abx * abx + aby * aby);
                     var lbc = Math.Sqrt(bcx * bcx + bcy * bcy);
+
+                    // 凹角保护：保留凹角拐点，避免偏移路径“跳过凹角”造成斜跨。
+                    if (IsConcaveCorner(a, b, c))
+                    {
+                        continue;
+                    }
+
                     if (lab <= eps || lbc <= eps)
                     {
                         clean.RemoveAt(i);
@@ -7235,8 +7180,10 @@ namespace CADRecognition
                     }
                 }
 
-                // 退化：只保留“当前拐点对应的一个角点”，然后按角点顺序连线。
-                // 不再插入 p2/p3，避免产生额外折返段。
+                // 退化（凹角 / 反向外法线）：走正交 L 形桥接，避免单点斜跨板内。
+                // 候选 1：先沿 p2 段到 bridge=(p2.X, p3.Y)，再水平走到 p3
+                // 候选 2：先水平走到 bridge=(p3.X, p2.Y)，再沿 p3 段到 p3
+                // 选离 center 更远的一组，保证桥接路径始终落在"轮廓外侧"。
                 var b1 = (p2.Item1, p3.Item2);
                 var b2 = (p3.Item1, p2.Item2);
 
@@ -7244,9 +7191,20 @@ namespace CADRecognition
                 var d1y = b1.Item2 - center.Item2;
                 var d2x = b2.Item1 - center.Item1;
                 var d2y = b2.Item2 - center.Item2;
-                var bridge = (d1x * d1x + d1y * d1y) >= (d2x * d2x + d2y * d2y) ? b1 : b2;
+                var useB1 = (d1x * d1x + d1y * d1y) >= (d2x * d2x + d2y * d2y);
 
-                result.Add(bridge);
+                if (useB1)
+                {
+                    result.Add((p2.Item1, p2.Item2));
+                    result.Add((b1.Item1, b1.Item2));
+                    result.Add((p3.Item1, p3.Item2));
+                }
+                else
+                {
+                    result.Add((p2.Item1, p2.Item2));
+                    result.Add((b2.Item1, b2.Item2));
+                    result.Add((p3.Item1, p3.Item2));
+                }
             }
 
             // 终点 = 尾段终点偏移
