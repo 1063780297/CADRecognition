@@ -6372,7 +6372,47 @@ namespace CADRecognition
                     false));
             }
 
-            var cleaned = DeduplicateAssignments(rows);
+            // 连续冲压（差异冲压）避让已由孔匹配覆盖的位置：
+            // 同一边缘孔/孔不重复冲压——该处已由匹配模具切除，连续冲压点跳过，保证"一个孔一个模具（差异冲压自身多点除外）"。
+            var holeMatchCenters = rows
+                .Where(r => !r.Hole.HoleType.StartsWith("ContourPath:", StringComparison.Ordinal)
+                            && !r.Hole.HoleType.StartsWith("ContourCornerHit:", StringComparison.Ordinal)
+                            && !r.Hole.HoleType.StartsWith("Coverage:", StringComparison.Ordinal)
+                            && !r.Hole.HoleType.StartsWith("EdgeNotch:", StringComparison.Ordinal)
+                            && !r.Hole.HoleType.StartsWith("CornerMissing:", StringComparison.Ordinal))
+                .Select(r => r.Hole.Centroid)
+                .ToList();
+            const double contourAvoidHoleDist = 2.5; // mm：连续冲压点与孔匹配中心距小于该值视为同一孔，跳过连续冲压点
+            var rowsAfterContourAvoid = new List<HoleAssignment>();
+            foreach (var r in rows)
+            {
+                var isContour = r.Hole.HoleType.StartsWith("ContourPath:", StringComparison.Ordinal)
+                                || r.Hole.HoleType.StartsWith("ContourCornerHit:", StringComparison.Ordinal)
+                                || r.Hole.HoleType.StartsWith("Coverage:", StringComparison.Ordinal);
+                if (isContour)
+                {
+                    var dx = holeMatchCenters.Select(c => c.X - r.Hole.Centroid.X).ToList();
+                    var dy = holeMatchCenters.Select(c => c.Y - r.Hole.Centroid.Y).ToList();
+                    var hit = false;
+                    for (var k = 0; k < holeMatchCenters.Count; k++)
+                    {
+                        if (Math.Sqrt(dx[k] * dx[k] + dy[k] * dy[k]) < contourAvoidHoleDist)
+                        {
+                            hit = true;
+                            break;
+                        }
+                    }
+
+                    if (hit)
+                    {
+                        continue;
+                    }
+                }
+
+                rowsAfterContourAvoid.Add(r);
+            }
+
+            var cleaned = DeduplicateAssignments(rowsAfterContourAvoid);
             var ordered = OrderAssignmentsForStamping(cleaned, guidePaths, project.OuterRectangle);
             return new MatchResult(ordered, guidePaths);
         }
@@ -8817,7 +8857,20 @@ namespace CADRecognition
 
         private static string BuildHoleKey(HoleFeature hole)
         {
-            return $"{Math.Round(hole.Centroid.X, 4):F4}|{Math.Round(hole.Centroid.Y, 4):F4}|{Math.Round(hole.Width, 4):F4}|{Math.Round(hole.Height, 4):F4}|{hole.HoleType}";
+            var type = hole.HoleType;
+            // 差异冲压/排样类（连续冲压路径、角落补冲、差集覆盖、边缘缺口）：按类型+位置+尺寸独立，
+            // 不与其他孔位冲压互相去重——差异冲压本身需要多点/多模具覆盖，不属于"一孔一模"。
+            if (type.StartsWith("ContourPath:", StringComparison.Ordinal)
+                || type.StartsWith("ContourCornerHit:", StringComparison.Ordinal)
+                || type.StartsWith("Coverage:", StringComparison.Ordinal)
+                || type.StartsWith("EdgeNotch:", StringComparison.Ordinal)
+                || type.StartsWith("CornerMissing:", StringComparison.Ordinal))
+            {
+                return $"{type}|{Math.Round(hole.Centroid.X, 2):F2}|{Math.Round(hole.Centroid.Y, 2):F2}|{Math.Round(hole.Width, 2):F2}|{Math.Round(hole.Height, 2):F2}";
+            }
+
+            // 孔类（完整孔单次冲压、边缘孔局部冲压）：同一几何位置只保留一个模具匹配——一个孔一个模具（差异冲压除外）。
+            return $"HOLE|{Math.Round(hole.Centroid.X, 2):F2}|{Math.Round(hole.Centroid.Y, 2):F2}";
         }
 
         private static double AssignmentPriority(HoleAssignment row)
