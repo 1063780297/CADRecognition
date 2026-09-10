@@ -7589,15 +7589,30 @@ namespace CADRecognition
 
                 bool SegStrict((double X, double Y) a, (double X, double Y) b, (double X, double Y) c, (double X, double Y) d)
                 {
+                    // 共线/贴合容差：叉积绝对值 < 1e-6（mm² 级）视为共线/贴合，
+                    // 用于消除 halfW/halfH 浮点残差（~1e-13 mm）导致的"边界贴合被误判为严格相交"。
+                    const double eps = 1e-6;
                     var o1 = Orient(a, b, c);
                     var o2 = Orient(a, b, d);
                     var o3 = Orient(c, d, a);
                     var o4 = Orient(c, d, b);
+                    if (Math.Abs(o1) < eps || Math.Abs(o2) < eps || Math.Abs(o3) < eps || Math.Abs(o4) < eps)
+                    {
+                        return false;
+                    }
+
                     return o1 * o2 < 0 && o3 * o4 < 0;
                 }
 
                 bool RectIntersectsPoly(double x0, double y0, double x1, double y1, IReadOnlyList<(double X, double Y)> poly)
                 {
+                    bool ripProbe = (Math.Abs(x0 - 4494.6) < 0.7 && Math.Abs(x1 - 4544.6) < 0.7) ||
+                                    (Math.Abs(x0 - 4513.4) < 0.7 && Math.Abs(x1 - 4563.4) < 0.7);
+                    if (ripProbe)
+                    {
+                        AppLogger.Instance.Info($"[Coverage] RIP enter ({x0.ToString("F6")},{y0.ToString("F6")},{x1.ToString("F6")},{y1.ToString("F6")}) polyCount={poly.Count}");
+                    }
+
                     var rect = new[] { (x0, y0), (x1, y0), (x1, y1), (x0, y1) };
                     for (var i = 0; i < poly.Count; i++)
                     {
@@ -7606,6 +7621,11 @@ namespace CADRecognition
                         if (SegStrict(a, b, rect[0], rect[1]) || SegStrict(a, b, rect[1], rect[2]) ||
                             SegStrict(a, b, rect[2], rect[3]) || SegStrict(a, b, rect[3], rect[0]))
                         {
+                            if (ripProbe)
+                            {
+                                AppLogger.Instance.Info($"[Coverage] RIP SegStrict hit edge i={i} ({a.X.ToString("F4")},{a.Y.ToString("F4")})->({b.X.ToString("F4")},{b.Y.ToString("F4")})");
+                            }
+
                             return true;
                         }
                     }
@@ -7619,9 +7639,19 @@ namespace CADRecognition
                             var sy = y0 + (y1 - y0) * (j + 0.5) / 5.0;
                             if (PointInPolygon((sx, sy), poly))
                             {
+                                if (ripProbe)
+                                {
+                                    AppLogger.Instance.Info($"[Coverage] RIP sample inside ({sx.ToString("F6")},{sy.ToString("F6")}) i={i} j={j}");
+                                }
+
                                 return true;
                             }
                         }
+                    }
+
+                    if (ripProbe)
+                    {
+                        AppLogger.Instance.Info($"[Coverage] RIP no hit");
                     }
 
                     return false;
@@ -7629,9 +7659,21 @@ namespace CADRecognition
 
                 void AddCand(double cx, double cy)
                 {
+                    bool probeP = (Math.Abs(cx - 4538.4) < 0.7 && Math.Abs(cy - (-4868.2)) < 0.7) ||
+                                  (Math.Abs(cx - 4519.6) < 0.7 && Math.Abs(cy - (-4868.2)) < 0.7);
+                    if (probeP)
+                    {
+                        AppLogger.Instance.Info($"[Coverage] PROBE enter ({Math.Round(cx,4)},{Math.Round(cy,4)}) halfW={halfW} halfH={halfH} splitY={splitY} isStage1={isStage1}");
+                    }
+
                     var inThisHalfC = double.IsNaN(splitY) ? true : (isStage1 ? cy < splitY : cy >= splitY);
                     if (!inThisHalfC)
                     {
+                        if (probeP)
+                        {
+                            AppLogger.Instance.Info($"[Coverage] PROBE reject: not in half (inHalf={inThisHalfC})");
+                        }
+
                         return;
                     }
 
@@ -7639,7 +7681,13 @@ namespace CADRecognition
                     var bx1 = cx + halfW;
                     var by0 = cy - halfH;
                     var by1 = cy + halfH;
-                    if (RectIntersectsPoly(bx0, by0, bx1, by1, chain))
+                    var rejP = RectIntersectsPoly(bx0, by0, bx1, by1, chain);
+                    if (probeP)
+                    {
+                        AppLogger.Instance.Info($"[Coverage] PROBE reject={rejP} rect({Math.Round(bx0,3)},{Math.Round(by0,3)},{Math.Round(bx1,3)},{Math.Round(by1,3)})");
+                    }
+
+                    if (rejP)
                     {
                         return;
                     }
@@ -7664,6 +7712,11 @@ namespace CADRecognition
                     if (Math.Abs(cx - 60518.6) < 1.0 && Math.Abs(cy - 13325.8) < 1.0)
                     {
                         AppLogger.Instance.Info($"[Coverage] ProbeCand ({Math.Round(cx, 2)}, {Math.Round(cy, 2)}) reject={RectIntersectsPoly(bx0, by0, bx1, by1, chain)} cells={cells.Count}");
+                    }
+
+                    if (probeP)
+                    {
+                        AppLogger.Instance.Info($"[Coverage] PROBE cells={cells.Count}");
                     }
 
                     if (cells.Count > 0)
@@ -7789,6 +7842,7 @@ namespace CADRecognition
                 }
 
                 cands = cands2;
+                AppLogger.Instance.Info($"[Coverage] chain all: {string.Join(" ", chain.Select(p => $"({p.X.ToString("F4")},{p.Y.ToString("F4")})"))}");
                 AppLogger.Instance.Info($"[Coverage] 候选中心 {cands.Count} 个");
 
                 // 3) 贪心覆盖：每步选覆盖最多“未覆盖差集格”的候选，直到无候选可覆盖
@@ -7911,6 +7965,17 @@ namespace CADRecognition
                     }
                 }
                 plan = planAdj;
+
+                AppLogger.Instance.Info($"[Coverage] plan 全部点: {string.Join(" ", plan.Select(pp => $"({Math.Round(pp.X,1)},{Math.Round(pp.Y,1)})"))}");
+                {
+                    var holeCand = cands.Any(c => Math.Abs(c.X - 4538.4) < 0.6 && Math.Abs(c.Y - (-4868.2)) < 0.6);
+                    AppLogger.Instance.Info($"[Coverage] 凹口候选(4538.4,-4868.2)是否在候选: {holeCand}");
+                    var inPlan = plan.Any(p => Math.Abs(p.X - 4538.4) < 0.6 && Math.Abs(p.Y - (-4868.2)) < 0.6);
+                    AppLogger.Instance.Info($"[Coverage] 凹口候选(4538.4,-4868.2)是否在plan: {inPlan}");
+                    var nearCands = cands.Where(c => c.X > 4500 && c.X < 4600 && c.Y > -4900 && c.Y < -4830)
+                        .Select(c => $"({Math.Round(c.X,1)},{Math.Round(c.Y,1)}:{c.Cells.Count})").ToList();
+                    AppLogger.Instance.Info($"[Coverage] 左下凹口附近候选 {nearCands.Count} 个: {string.Join(" ", nearCands.Take(30))}");
+                }
 
                 // 4.5) 边缘贴边补漏：外框每条边，若存在“距边 ≤2mm 的差集格”未被
                 //      “到边方块”（模具外边达到或越过该矩形边 ±0.5mm）覆盖，
