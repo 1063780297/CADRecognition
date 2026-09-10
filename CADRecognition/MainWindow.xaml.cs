@@ -2300,11 +2300,11 @@ namespace CADRecognition
                         Dispatcher.Invoke(() => loadingDialog?.SetMessage("正在匹配台1模具..."));
 
                         var matcher = new MoldMatcher();
-                        var stage1Result = matcher.Match(stage1Project, stage1Molds, isStage1: true, _lastOuterContourPoints);
+                        var stage1Result = matcher.Match(stage1Project, stage1Molds, isStage1: true, _lastOuterContourPoints, splitY);
 
                         Dispatcher.Invoke(() => loadingDialog?.SetMessage("正在匹配台2模具..."));
 
-                        var stage2Result = matcher.Match(stage2Project, stage2Molds, isStage1: false, _lastOuterContourPoints);
+                        var stage2Result = matcher.Match(stage2Project, stage2Molds, isStage1: false, _lastOuterContourPoints, splitY);
                         // M01（台1模具1）与 N01（台2模具1）的连续冲压外偏移路径都保留并绘制：
                         // 各自 CornerName 加台前缀（M01:/N01:），便于在预览中区分两条路径的 pass 标签。
                         var guidePathsAll = new List<CornerStepPath>();
@@ -6183,7 +6183,7 @@ namespace CADRecognition
         private const double StrictSigMax = 0.10;
         private const double ImpossibleMatchScoreThreshold = 0.50;
 
-        public MatchResult Match(ProjectProfile project, IReadOnlyList<MoldProfile> molds, bool isStage1, IReadOnlyList<(double X, double Y)>? outerContour = null)
+        public MatchResult Match(ProjectProfile project, IReadOnlyList<MoldProfile> molds, bool isStage1, IReadOnlyList<(double X, double Y)>? outerContour = null, double splitY = double.NaN)
         {
             var rows = new List<HoleAssignment>();
             var guidePaths = new List<CornerStepPath>();
@@ -6204,7 +6204,7 @@ namespace CADRecognition
             var nonCornerMolds = validMolds.Where(m => m.MoldId != mold1.MoldId).ToList();
 
             // M01：沿"青色差集线的外偏移路径"做连续冲压。
-            var contourStamps = GenerateContinuousContourStampCenters(project, mold1, guidePaths, isStage1, outerContour);
+            var contourStamps = GenerateContinuousContourStampCenters(project, mold1, guidePaths, isStage1, outerContour, splitY);
 
             // 当图纸四角无冲压区域时（contourStamps 为空），M01 无专属角落任务，
             // 退化为普通模具：重新纳入 nonCornerMolds 以识别内部及边缘孔。
@@ -6708,7 +6708,7 @@ namespace CADRecognition
             return (point.X + sx * pushX, point.Y + sy * pushY);
         }
 
-        private static IReadOnlyList<HoleFeature> GenerateContinuousContourStampCenters(ProjectProfile project, MoldProfile mold1, List<CornerStepPath> guidePaths, bool isStage1, IReadOnlyList<(double X, double Y)>? outerContour = null)
+        private static IReadOnlyList<HoleFeature> GenerateContinuousContourStampCenters(ProjectProfile project, MoldProfile mold1, List<CornerStepPath> guidePaths, bool isStage1, IReadOnlyList<(double X, double Y)>? outerContour = null, double splitY = double.NaN)
         {
             var outline = mold1.OutlinePoints;
             if (outline is null || outline.Count < 2)
@@ -6945,7 +6945,7 @@ namespace CADRecognition
             if (outerContour is not null && outerContour.Count >= 3)
             {
                 // 新算法：整圈差集轮廓偏移（矩形外轮廓板材 − 成品形状 = 需要冲掉的部分 → 外偏半模具）。
-                BuildFullDiffGuidePaths(project.OuterRectangle, outerContour, initialOffsetX, initialOffsetY, mold1, guidePaths, points);
+                BuildFullDiffGuidePaths(project.OuterRectangle, outerContour, initialOffsetX, initialOffsetY, mold1, guidePaths, points, isStage1, splitY);
             }
             else
             {
@@ -7116,7 +7116,9 @@ namespace CADRecognition
             double halfY,
             MoldProfile mold1,
             List<CornerStepPath> guidePaths,
-            List<HoleFeature> points)
+            List<HoleFeature> points,
+            bool isStage1,
+            double splitY)
         {
             // ---- 归一化闭合环（去尾重复点 / 去相邻重复点） ----
             var chain = new List<(double X, double Y)>();
@@ -7500,6 +7502,7 @@ namespace CADRecognition
                     return;
                 }
 
+                AppLogger.Instance.Info($"[Coverage] 半区: isStage1={isStage1} splitY={(double.IsNaN(splitY) ? "整张" : Math.Round(splitY, 1).ToString())} 取{(isStage1 ? "下半 Y<splitY" : "上半 Y>=splitY")}");
                 AppLogger.Instance.Info($"[Coverage] chain 顶点数 {chain.Count}");
                 for (var ci = 0; ci < chain.Count; ci++)
                 {
@@ -7535,11 +7538,12 @@ namespace CADRecognition
                     {
                         var cx = minX + (gx + 0.5) * cell;
                         var cy = minY + (gy + 0.5) * cell;
-                        if (PointInPolygon((cx, cy), chain))
+                        var inThisHalf = double.IsNaN(splitY) ? true : (isStage1 ? cy < splitY : cy >= splitY);
+                        if (inThisHalf && PointInPolygon((cx, cy), chain))
                         {
                             partCells.Add(Key(gx, gy));
                         }
-                        else
+                        else if (inThisHalf)
                         {
                             foreach (var ring in rings)
                             {
@@ -7559,6 +7563,15 @@ namespace CADRecognition
                     }
                 }
 
+                var bandStat = new Dictionary<int, int>();
+                foreach (var k in diffCells)
+                {
+                    var gyk0 = (int)(k % 100000);
+                    var cye0 = minY + (gyk0 + 0.5) * cell;
+                    var band0 = (int)((cye0 - minY) / 50.0);
+                    bandStat[band0] = bandStat.TryGetValue(band0, out var bv0) ? bv0 + 1 : 1;
+                }
+                AppLogger.Instance.Info($"[Coverage] 差集格 {diffCells.Count} 个，Y带分布(每50mm): {string.Join(" ", bandStat.OrderBy(b => b.Key).Select(b => $"Y{b.Key * 50}+:{b.Value}"))}");
                 if (diffCells.Count == 0)
                 {
                     return;
@@ -7616,6 +7629,12 @@ namespace CADRecognition
 
                 void AddCand(double cx, double cy)
                 {
+                    var inThisHalfC = double.IsNaN(splitY) ? true : (isStage1 ? cy < splitY : cy >= splitY);
+                    if (!inThisHalfC)
+                    {
+                        return;
+                    }
+
                     var bx0 = cx - halfW;
                     var bx1 = cx + halfW;
                     var by0 = cy - halfH;
@@ -7770,6 +7789,7 @@ namespace CADRecognition
                 }
 
                 cands = cands2;
+                AppLogger.Instance.Info($"[Coverage] 候选中心 {cands.Count} 个");
 
                 // 3) 贪心覆盖：每步选覆盖最多“未覆盖差集格”的候选，直到无候选可覆盖
                 var remaining = new HashSet<long>(diffCells);
@@ -7811,6 +7831,17 @@ namespace CADRecognition
                         remaining.Remove(c);
                     }
                 }
+
+                var planBand = new Dictionary<int, int>();
+                foreach (var pp in plan)
+                {
+                    var by0 = (int)((pp.Y - minY) / 50.0);
+                    planBand[by0] = planBand.TryGetValue(by0, out var pv0) ? pv0 + 1 : 1;
+                }
+                AppLogger.Instance.Info($"[Coverage] 贪心 plan {plan.Count} 个，Y带分布: {string.Join(" ", planBand.OrderBy(b => b.Key).Select(b => $"Y{b.Key * 50}+:{b.Value}"))}");
+                var planXS = plan.Select(pp => Math.Round(pp.X, 1)).OrderBy(x => x).ToList();
+                var planYS = plan.Select(pp => Math.Round(pp.Y, 1)).OrderBy(y => y).Distinct().ToList();
+                AppLogger.Instance.Info($"[Coverage] 贪心 plan X样例: {string.Join(" ", planXS.Take(20))} ... Y唯一值({planYS.Count}): {string.Join(" ", planYS.Take(20))}");
 
                 // 4.5) 模具间重叠修正：同一行/列相邻模具若中心距≈模宽（边界恰好相接、无重叠），
                 //      调整为重叠 5mm，避免实际冲压时两次模具接缝处留下毛边/未切断缝隙。
