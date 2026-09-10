@@ -7617,7 +7617,7 @@ namespace CADRecognition
                 //    方形不切成品（精确几何判定）且至少覆盖 1 格差集；另加差集环多边形边贴边候选。
                 var stepCX = Math.Max(fullMW * 0.5, 1.0);
                 var stepCY = Math.Max(fullMH * 0.5, 1.0);
-                var cands = new List<(double X, double Y, HashSet<long> Cells)>();
+                var cands = new List<(double X, double Y, HashSet<long> Cells, HashSet<long> LooseCells)>();
 
                 // ---- 精确几何：模具矩形与成品多边形是否【内部】相交（仅边界贴合不算切入）----
                 double Orient((double X, double Y) a, (double X, double Y) b, (double X, double Y) c) =>
@@ -7693,6 +7693,7 @@ namespace CADRecognition
                     var gy0 = Math.Max(0, (int)Math.Floor((by0 - minY) / cell));
                     var gy1 = Math.Min(gH - 1, (int)Math.Floor((by1 - minY) / cell));
                     var cells = new HashSet<long>();
+                    var loose = new HashSet<long>();
                     for (var gy = gy0; gy <= gy1; gy++)
                     {
                         for (var gx = gx0; gx <= gx1; gx++)
@@ -7700,14 +7701,24 @@ namespace CADRecognition
                             var k = Key(gx, gy);
                             if (diffCells.Contains(k))
                             {
-                                cells.Add(k);
+                                loose.Add(k);
+                                // 严格覆盖：差集格四角必须完全落在模具矩形内（含边界容差），
+                                // 避免"格中心在模具内"但缺口底角/格边悬空导致的冲压残留。
+                                var cgx0 = minX + gx * cell;
+                                var cgy0 = minY + gy * cell;
+                                const double cellEps = 1e-6;
+                                if (bx0 <= cgx0 + cellEps && bx1 >= cgx0 + cell - cellEps &&
+                                    by0 <= cgy0 + cellEps && by1 >= cgy0 + cell - cellEps)
+                                {
+                                    cells.Add(k);
+                                }
                             }
                         }
                     }
 
-                    if (cells.Count > 0)
+                    if (loose.Count > 0)
                     {
-                        cands.Add((cx, cy, cells));
+                        cands.Add((cx, cy, cells, loose));
                     }
                 }
 
@@ -7817,13 +7828,13 @@ namespace CADRecognition
 
                 // 去重
                 var seen = new HashSet<(long, long)>();
-                var cands2 = new List<(double X, double Y, HashSet<long> Cells)>();
-                foreach (var (cx, cy, cells) in cands)
+                var cands2 = new List<(double X, double Y, HashSet<long> Cells, HashSet<long> LooseCells)>();
+                foreach (var (cx, cy, cells, loose) in cands)
                 {
                     var kk = ((long)Math.Round(cx * 1000.0), (long)Math.Round(cy * 1000.0));
                     if (seen.Add(kk))
                     {
-                        cands2.Add((cx, cy, cells));
+                        cands2.Add((cx, cy, cells, loose));
                     }
                 }
 
@@ -7834,14 +7845,20 @@ namespace CADRecognition
                 var remaining = new HashSet<long>(diffCells);
                 var plan = new List<(double X, double Y)>();
                 var guard = 0;
+                // 第一轮：严格完全包含覆盖（差集格四角均在模具内），确保模具真正切净差集边界。
                 while (remaining.Count > 0 && guard < 50000)
                 {
                     guard++;
                     (double X, double Y) bestC = (0.0, 0.0);
                     var bestScore = 0;
                     HashSet<long>? bestCells = null;
-                    foreach (var (cx, cy, cells) in cands)
+                    foreach (var (cx, cy, cells, loose) in cands)
                     {
+                        if (cells.Count == 0)
+                        {
+                            continue;
+                        }
+
                         var score = 0;
                         foreach (var c in cells)
                         {
@@ -7856,6 +7873,45 @@ namespace CADRecognition
                             bestScore = score;
                             bestC = (cx, cy);
                             bestCells = cells;
+                        }
+                    }
+
+                    if (bestScore <= 0)
+                    {
+                        break;
+                    }
+
+                    plan.Add(bestC);
+                    foreach (var c in bestCells!)
+                    {
+                        remaining.Remove(c);
+                    }
+                }
+
+                // 第二轮：宽松中心覆盖保底（极端几何下无候选能完全包含剩余格时，退回中心判定，
+                // 避免差集区完全无法排样；此时已尽可能贴边，残留仅剩亚毫米级边界）。
+                while (remaining.Count > 0 && guard < 50000)
+                {
+                    guard++;
+                    (double X, double Y) bestC = (0.0, 0.0);
+                    var bestScore = 0;
+                    HashSet<long>? bestCells = null;
+                    foreach (var (cx, cy, cells, loose) in cands)
+                    {
+                        var score = 0;
+                        foreach (var c in loose)
+                        {
+                            if (remaining.Contains(c))
+                            {
+                                score++;
+                            }
+                        }
+
+                        if (score > bestScore)
+                        {
+                            bestScore = score;
+                            bestC = (cx, cy);
+                            bestCells = loose;
                         }
                     }
 
@@ -8010,7 +8066,7 @@ namespace CADRecognition
                     }
                     for (var round = 0; round < 3; round++)
                     {
-                        (double X, double Y, HashSet<long> Cells)? bestE = null;
+                        (double X, double Y, HashSet<long> Cells, HashSet<long> LooseCells)? bestE = null;
                         var bestScore = 0;
                         foreach (var cand in cands)
                         {
