@@ -2369,6 +2369,8 @@ namespace CADRecognition
             byte station = byte.TryParse(TcpExportDialog.SharedModbusStation, out var parsedStation) ? parsedStation : (byte)1;
             var registerAddress = TcpExportDialog.SharedModbusRegisterAddress;
             var encoding = TcpExportDialog.SharedEncoding;
+            // 自动发送与手动发送保持一致的字节序配置（手动界面“交换字节”勾选保存在 SharedSwapBytes）
+            _modbusTcpCommService.SwapBytes = TcpExportDialog.SharedSwapBytes;
             await _modbusTcpCommService.SendExportModelAsync(host, port, station, registerAddress, model, encoding).ConfigureAwait(true);
         }
 

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Globalization;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -10,7 +10,7 @@ namespace CADRecognition
 {
     /// <summary>
     /// 按固定字地址将 <see cref="TcpExportModel"/> 写入 Modbus TCP 保持寄存器。
-    /// 首字段使用 UTF-8 字符串写入，支持中文；其余字段的顺序、数组长度和 INT/REAL/DINT 宽度与表格定义一致。
+    /// 首字段使用 GB2312（小端）字符串写入，支持中文；其余字段的顺序、数组长度和 INT/REAL/DINT 宽度与表格定义一致。
     /// </summary>
     internal sealed class ModbusTcpCommService : IDisposable
     {
@@ -51,7 +51,7 @@ namespace CADRecognition
             }
         }
 
-        public async Task SendExportModelAsync(string host, int port, byte station, string registerBaseText, TcpExportModel model, string encodingName = "UTF-8")
+        public async Task SendExportModelAsync(string host, int port, byte station, string registerBaseText, TcpExportModel model, string encodingName = "GB2312")
         {
             if (string.IsNullOrWhiteSpace(host))
             {

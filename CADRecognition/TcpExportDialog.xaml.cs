@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.IO;
@@ -64,7 +64,7 @@ namespace CADRecognition
             EncodingComboBox.SelectedItem = _customContentStore.Encoding;
             if (string.IsNullOrEmpty(_customContentStore.Encoding))
             {
-                EncodingComboBox.SelectedItem = "UTF-8";
+                EncodingComboBox.SelectedItem = "GB2312";
             }
             EncodingComboBox.SelectionChanged += (_, _) =>
             {
@@ -105,8 +105,8 @@ namespace CADRecognition
         public static string SharedTcpPort { get; private set; } = "502";
         public static string SharedModbusStation { get; private set; } = "1";
         public static string SharedModbusRegisterAddress { get; private set; } = "6000";
-        public static string SharedEncoding { get; private set; } = "UTF-8";
-        public static bool SharedSwapBytes { get; private set; } = false;
+        public static string SharedEncoding { get; private set; } = "GB2312";
+        public static bool SharedSwapBytes { get; private set; } = true;
 
         public static void UpdateSharedConnectionSettings(string host, string port, string station, string registerAddress, string? encoding = null, bool? swapBytes = null)
         {
@@ -457,7 +457,7 @@ namespace CADRecognition
                 }
 
                 var registerAddr = ModbusRegisterComboBox.Text?.Trim() ?? "0";
-                var encoding = EncodingComboBox.SelectedItem?.ToString() ?? "UTF-8";
+                var encoding = EncodingComboBox.SelectedItem?.ToString() ?? "GB2312";
                 var swapBytes = SwapBytesCheckBox.IsChecked == true;
 
                 SaveTcpHistory(host ?? string.Empty, portText ?? string.Empty, stationText, registerAddr);
