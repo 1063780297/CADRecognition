@@ -6374,15 +6374,16 @@ namespace CADRecognition
 
             // 连续冲压（差异冲压）避让已由孔匹配覆盖的位置：
             // 同一边缘孔/孔不重复冲压——该处已由匹配模具切除，连续冲压点跳过，保证"一个孔一个模具（差异冲压自身多点除外）"。
-            var holeMatchCenters = rows
+            // 孔匹配行（含匹配模具尺寸）：完整孔单次冲压 + 边缘孔局部冲压等非差异冲压类。
+            var holeMatches = rows
                 .Where(r => !r.Hole.HoleType.StartsWith("ContourPath:", StringComparison.Ordinal)
                             && !r.Hole.HoleType.StartsWith("ContourCornerHit:", StringComparison.Ordinal)
                             && !r.Hole.HoleType.StartsWith("Coverage:", StringComparison.Ordinal)
                             && !r.Hole.HoleType.StartsWith("EdgeNotch:", StringComparison.Ordinal)
                             && !r.Hole.HoleType.StartsWith("CornerMissing:", StringComparison.Ordinal))
-                .Select(r => r.Hole.Centroid)
+                .Select(r => (r.Hole.Centroid.X, r.Hole.Centroid.Y, r.Hole.Width, r.Hole.Height))
                 .ToList();
-            const double contourAvoidHoleDist = 2.5; // mm：连续冲压点与孔匹配中心距小于该值视为同一孔，跳过连续冲压点
+            const double contourAvoidOverlapTol = 0.01; // mm：矩形恰好贴边（间隙=0）不算重叠；只要两个模具矩形区域真正相交即视为同一孔重复冲压
             var rowsAfterContourAvoid = new List<HoleAssignment>();
             foreach (var r in rows)
             {
@@ -6391,12 +6392,13 @@ namespace CADRecognition
                                 || r.Hole.HoleType.StartsWith("Coverage:", StringComparison.Ordinal);
                 if (isContour)
                 {
-                    var dx = holeMatchCenters.Select(c => c.X - r.Hole.Centroid.X).ToList();
-                    var dy = holeMatchCenters.Select(c => c.Y - r.Hole.Centroid.Y).ToList();
                     var hit = false;
-                    for (var k = 0; k < holeMatchCenters.Count; k++)
+                    foreach (var (hx, hy, hw, hh) in holeMatches)
                     {
-                        if (Math.Sqrt(dx[k] * dx[k] + dy[k] * dy[k]) < contourAvoidHoleDist)
+                        // 差异冲压模具与孔匹配模具矩形相交（模具实体重叠）→ 同一孔区域已被孔匹配模具切除，
+                        // 跳过该连续冲压/排样点，保证"一个孔一个模具（差异冲压自身多点除外）"。
+                        if (Math.Abs(r.Hole.Centroid.X - hx) < (r.Hole.Width + hw) / 2.0 - contourAvoidOverlapTol
+                            && Math.Abs(r.Hole.Centroid.Y - hy) < (r.Hole.Height + hh) / 2.0 - contourAvoidOverlapTol)
                         {
                             hit = true;
                             break;
