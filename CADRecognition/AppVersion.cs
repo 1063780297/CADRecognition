@@ -10,7 +10,7 @@ namespace CADRecognition
         /// <summary>
         /// 当前版本号
         /// </summary>
-        public static string Version => "2.1.0";
+        public static string Version => "2.1.1";
 
         /// <summary>
         /// 版本详细信息，包含构建日期等

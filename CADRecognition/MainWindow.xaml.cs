@@ -725,6 +725,10 @@ namespace CADRecognition
         private bool _compactAnnotation = false;
         private bool _showMoldAnnotation = true;
         private double _boardWidth = 0;
+
+        // 界面配置：重叠(mm)，默认 2，同时作用于步进冲压与差集区覆盖排样。
+        // 在 UI 线程 TextChanged 中更新，识别流程（后台线程）经 MoldMatcher.Match 参数透传，避免跨线程访问控件。
+        private double _overlapMm = 2.0;
         private string _d600Value = string.Empty;
         private double _d620Value = 0;
         private int _d622Value = 0;
@@ -1240,6 +1244,21 @@ namespace CADRecognition
                     _lastProjectProfile.CornerCandidates,
                     width,
                     _lastProjectProfile.OuterRectangle.MinY + width);
+            }
+        }
+
+        private void OverlapParamTextBox_TextChanged(object sender, TextChangedEventArgs e)
+        {
+            if (sender is not System.Windows.Controls.TextBox tb)
+            {
+                return;
+            }
+
+            var ok = double.TryParse(tb.Text, out var v) && v >= 0.0 && v <= 1000.0;
+            tb.ToolTip = ok ? null : "请输入 0~1000 的数值（mm）";
+            if (ok)
+            {
+                _overlapMm = v;
             }
         }
 
@@ -2300,11 +2319,11 @@ namespace CADRecognition
                         Dispatcher.Invoke(() => loadingDialog?.SetMessage("正在匹配台1模具..."));
 
                         var matcher = new MoldMatcher();
-                        var stage1Result = matcher.Match(stage1Project, stage1Molds, isStage1: true, _lastOuterContourPoints, splitY);
+                        var stage1Result = matcher.Match(stage1Project, stage1Molds, isStage1: true, _overlapMm, _lastOuterContourPoints, splitY);
 
                         Dispatcher.Invoke(() => loadingDialog?.SetMessage("正在匹配台2模具..."));
 
-                        var stage2Result = matcher.Match(stage2Project, stage2Molds, isStage1: false, _lastOuterContourPoints, splitY);
+                        var stage2Result = matcher.Match(stage2Project, stage2Molds, isStage1: false, _overlapMm, _lastOuterContourPoints, splitY);
                         // M01（台1模具1）与 N01（台2模具1）的连续冲压外偏移路径都保留并绘制：
                         // 各自 CornerName 加台前缀（M01:/N01:），便于在预览中区分两条路径的 pass 标签。
                         var guidePathsAll = new List<CornerStepPath>();
@@ -6185,7 +6204,7 @@ namespace CADRecognition
         private const double StrictSigMax = 0.10;
         private const double ImpossibleMatchScoreThreshold = 0.50;
 
-        public MatchResult Match(ProjectProfile project, IReadOnlyList<MoldProfile> molds, bool isStage1, IReadOnlyList<(double X, double Y)>? outerContour = null, double splitY = double.NaN)
+        public MatchResult Match(ProjectProfile project, IReadOnlyList<MoldProfile> molds, bool isStage1, double overlapMm, IReadOnlyList<(double X, double Y)>? outerContour = null, double splitY = double.NaN)
         {
             var rows = new List<HoleAssignment>();
             var guidePaths = new List<CornerStepPath>();
@@ -6206,7 +6225,7 @@ namespace CADRecognition
             var nonCornerMolds = validMolds.Where(m => m.MoldId != mold1.MoldId).ToList();
 
             // M01：沿"青色差集线的外偏移路径"做连续冲压。
-            var contourStamps = GenerateContinuousContourStampCenters(project, mold1, guidePaths, isStage1, outerContour, splitY);
+            var contourStamps = GenerateContinuousContourStampCenters(project, mold1, guidePaths, isStage1, overlapMm, outerContour, splitY);
 
             // 当图纸四角无冲压区域时（contourStamps 为空），M01 无专属角落任务，
             // 退化为普通模具：重新纳入 nonCornerMolds 以识别内部及边缘孔。
@@ -6752,7 +6771,7 @@ namespace CADRecognition
             return (point.X + sx * pushX, point.Y + sy * pushY);
         }
 
-        private static IReadOnlyList<HoleFeature> GenerateContinuousContourStampCenters(ProjectProfile project, MoldProfile mold1, List<CornerStepPath> guidePaths, bool isStage1, IReadOnlyList<(double X, double Y)>? outerContour = null, double splitY = double.NaN)
+        private static IReadOnlyList<HoleFeature> GenerateContinuousContourStampCenters(ProjectProfile project, MoldProfile mold1, List<CornerStepPath> guidePaths, bool isStage1, double overlapMm, IReadOnlyList<(double X, double Y)>? outerContour = null, double splitY = double.NaN)
         {
             var outline = mold1.OutlinePoints;
             if (outline is null || outline.Count < 2)
@@ -6893,11 +6912,11 @@ namespace CADRecognition
                 return passIndex == 1 ? baseName : $"{baseName}_P{passIndex}";
             }
 
+            // 步进重叠由界面"重叠(mm)"配置（默认2mm），替代原固定 15%（夹取 2~10mm）规则。
             double GetStepLengthForDirection(double ux, double uy)
             {
                 var dirToolLength = Math.Max(Math.Abs(ux) * moldOutlineWidth + Math.Abs(uy) * moldOutlineHeight, 1.0);
-                var overlapMm = Compat.Clamp(dirToolLength * 0.15, 2.0, 10.0);
-                return Math.Max(dirToolLength - overlapMm, 0.5);
+                return Math.Max(dirToolLength - Math.Max(overlapMm, 0.0), 0.5);
             }
 
             double GetHalfTrimForDirection(double ux, double uy)
@@ -6989,7 +7008,7 @@ namespace CADRecognition
             if (outerContour is not null && outerContour.Count >= 3)
             {
                 // 新算法：整圈差集轮廓偏移（矩形外轮廓板材 − 成品形状 = 需要冲掉的部分 → 外偏半模具）。
-                BuildFullDiffGuidePaths(project.OuterRectangle, outerContour, initialOffsetX, initialOffsetY, mold1, guidePaths, points, isStage1, splitY);
+                BuildFullDiffGuidePaths(project.OuterRectangle, outerContour, initialOffsetX, initialOffsetY, mold1, guidePaths, points, isStage1, splitY, overlapMm);
             }
             else
             {
@@ -7162,7 +7181,8 @@ namespace CADRecognition
             List<CornerStepPath> guidePaths,
             List<HoleFeature> points,
             bool isStage1,
-            double splitY)
+            double splitY,
+            double overlapMm)
         {
             // ---- 归一化闭合环（去尾重复点 / 去相邻重复点） ----
             var chain = new List<(double X, double Y)>();
@@ -7617,8 +7637,10 @@ namespace CADRecognition
 
                 // 2) 候选中心：网格扫描（中心可伸出板材外半模，用户口径：模具可冲压出板材，仅不得切入成品内部）
                 //    方形不切成品（精确几何判定）且至少覆盖 1 格差集；另加差集环多边形边贴边候选。
-                var stepCX = Math.Max(fullMW * 0.5, 1.0);
-                var stepCY = Math.Max(fullMH * 0.5, 1.0);
+                // 扫描步长 = 模具尺寸 − 重叠值（界面"重叠(mm)"配置，默认2mm），
+                // 使相邻候选中心排布时模具重叠正好等于配置值（原固定半模宽步长导致重叠≈半模宽）。
+                var stepCX = Math.Max(fullMW - Math.Max(overlapMm, 0.0), 1.0);
+                var stepCY = Math.Max(fullMH - Math.Max(overlapMm, 0.0), 1.0);
                 var cands = new List<(double X, double Y, HashSet<long> Cells, HashSet<long> LooseCells)>();
 
                 // ---- 精确几何：模具矩形与成品多边形是否【内部】相交（仅边界贴合不算切入）----
@@ -7940,24 +7962,29 @@ namespace CADRecognition
                 var planYS = plan.Select(pp => Math.Round(pp.Y, 1)).OrderBy(y => y).Distinct().ToList();
                 AppLogger.Instance.Info($"[Coverage] 贪心 plan X样例: {string.Join(" ", planXS.Take(20))} ... Y唯一值({planYS.Count}): {string.Join(" ", planYS.Take(20))}");
 
-                // 4.5) 模具间重叠修正：同一行/列相邻模具若中心距≈模宽（边界恰好相接、无重叠），
-                //      调整为重叠 5mm，避免实际冲压时两次模具接缝处留下毛边/未切断缝隙。
-                //      多轮迭代：链式相邻对（间距=50 连续出现）逐轮收敛；每轮结束后按最新坐标重新分组。
-                var overlapTarget = 5.0;
+                // 4.5) 模具间重叠修正：同一行/列相邻模具若间距小于模宽（有重叠），但重叠量
+                //      不足目标值（0 < 模宽−间距 < overlapTarget），则把后一个向相邻方向移，
+                //      使间距=模宽−overlapTarget（重叠补足到目标值，界面"重叠(mm)"配置，默认2mm），
+                //      避免实际冲压时两次模具接缝处留下毛边/未切断缝隙。
+                //      多轮迭代：链式相邻对逐轮收敛；每轮结束后按最新坐标重新分组。
+                //      注意：贪心排样间距通常远小于模宽（重叠已远超目标），此时不触发。
+                var overlapTarget = Math.Max(overlapMm, 0.0);
                 var moldW2 = halfW * 2.0;
                 var moldH2 = halfH * 2.0;
                 var planAdj = new List<(double X, double Y)>(plan);
+                AppLogger.Instance.Info($"[Coverage] 重叠修正 target={overlapTarget:0.###}mm，模具 {moldW2:0.###}x{moldH2:0.###}，plan {plan.Count} 个");
+                var adjustCount = 0;
                 for (var pass = 0; pass < 4; pass++)
                 {
                     var changed = false;
-                    // 同列（X 相同）：按 Y 排序，|ΔY|≈模高 → 后一个向相邻方向移，使间距=模高-5
+                    // 同列（X 相同）：按 Y 排序，重叠不足 target → 后一个向相邻方向移，使间距=模高−target
                     foreach (var g in planAdj.GroupBy(p => p.X).ToList())
                     {
                         var sorted = g.OrderBy(p => p.Y).ToList();
                         for (var i2 = 1; i2 < sorted.Count; i2++)
                         {
                             var dy = sorted[i2].Y - sorted[i2 - 1].Y;
-                            if (Math.Abs(dy - moldH2) < 1e-6)
+                            if (dy < moldH2 + 1e-6 && moldH2 - dy < overlapTarget)
                             {
                                 var nx = sorted[i2].X;
                                 var ny = sorted[i2 - 1].Y + (moldH2 - overlapTarget);
@@ -7969,6 +7996,7 @@ namespace CADRecognition
                                         {
                                             planAdj[k2] = (nx, ny);
                                             changed = true;
+                                            adjustCount++;
                                             break;
                                         }
                                     }
@@ -7976,14 +8004,14 @@ namespace CADRecognition
                             }
                         }
                     }
-                    // 同行（Y 相同）：按 X 排序，|ΔX|≈模宽 → 后一个向相邻方向移，使间距=模宽-5
+                    // 同行（Y 相同）：按 X 排序，重叠不足 target → 后一个向相邻方向移，使间距=模宽−target
                     foreach (var g in planAdj.GroupBy(p => p.Y).ToList())
                     {
                         var sorted = g.OrderBy(p => p.X).ToList();
                         for (var i2 = 1; i2 < sorted.Count; i2++)
                         {
                             var dx = sorted[i2].X - sorted[i2 - 1].X;
-                            if (Math.Abs(dx - moldW2) < 1e-6)
+                            if (dx < moldW2 + 1e-6 && moldW2 - dx < overlapTarget)
                             {
                                 var nx = sorted[i2 - 1].X + (moldW2 - overlapTarget);
                                 var ny = sorted[i2].Y;
@@ -7995,6 +8023,7 @@ namespace CADRecognition
                                         {
                                             planAdj[k2] = (nx, ny);
                                             changed = true;
+                                            adjustCount++;
                                             break;
                                         }
                                     }
@@ -8008,6 +8037,7 @@ namespace CADRecognition
                     }
                 }
                 plan = planAdj;
+                AppLogger.Instance.Info($"[Coverage] 重叠修正完成，调整点 {adjustCount} 个");
 
                 // 4.5) 边缘贴边补漏：外框每条边，若存在“距边 ≤2mm 的差集格”未被
                 //      “到边方块”（模具外边达到或越过该矩形边 ±0.5mm）覆盖，
