@@ -17,10 +17,11 @@
 
   <ItemGroup>
     <Reference Include="CADImport">
-      <HintPath>..\..\CAD.NET_v16.1.0.65224(1)\Dlls\net40\CADImport.dll</HintPath>
+      <HintPath>..\libs\CADImport.dll</HintPath>
+      <Private>true</Private>
     </Reference>
     <Reference Include="HslCommunication">
-      <HintPath>D:\HslCommunicationDemo\HslCommunication.dll</HintPath>
+      <HintPath>..\libs\HslCommunication.dll</HintPath>
       <Private>true</Private>
     </Reference>
   </ItemGroup>
